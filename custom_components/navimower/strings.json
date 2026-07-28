@@ -57,12 +57,15 @@
     "step": {
       "init": {
         "title": "Navimower options",
-        "description": "Zones are normally discovered from the decoded map. The zones field is only an id:name fallback. Channels are local X/Y rectangles supplied as a JSON list.",
+        "description": "Zones are normally discovered from the decoded map. The zones field is only an id:name fallback. Channels are local X/Y rectangles supplied as JSON, for example [{\"name\":\"Gate\",\"x_min\":5,\"x_max\":8,\"y_min\":-72,\"y_max\":-60}].",
         "data": {
           "zones": "Zones (id:name,...)",
           "channels": "Channels JSON"
         }
       }
+    },
+    "error": {
+      "invalid_channels": "Channels must be a valid JSON list containing name, x_min, x_max, y_min and y_max."
     }
   },
   "entity": {
