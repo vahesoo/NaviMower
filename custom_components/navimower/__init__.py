@@ -34,7 +34,7 @@ _CARDS = (
     "navimower-mow-card.js",
     "navimower-map-card.js",
 )
-_CARD_VER = "0.1.0"
+_CARD_VER = "0.1.1"
 _FRONTEND_KEY = f"{DOMAIN}_frontend_registered"
 
 
