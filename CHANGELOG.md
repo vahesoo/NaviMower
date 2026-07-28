@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — validation and translation fixes
+
+- Added the Home Assistant config-entry-only `CONFIG_SCHEMA` required by hassfest.
+- Fixed invalid translation placeholders caused by an inline JSON example in the options description.
+- Moved the channel JSON example to the README reference text.
+- Bumped the integration version to 0.1.2.
+
 ## 0.1.1 — map trail and channel options fixes
 
 - Fixed the Configure/options dialog returning a 500 error on current Home Assistant versions.
