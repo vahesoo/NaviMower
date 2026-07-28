@@ -356,7 +356,7 @@ class NavimowConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(entry: ConfigEntry) -> OptionsFlow:
-        return NavimowOptionsFlow(entry)
+        return NavimowOptionsFlow()
 
 
 class NavimowOptionsFlow(OptionsFlowWithReload):
