@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Editors / operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local secrets and runtime files
+secrets.yaml
+*.env
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local packages and exports
+*.zip
+navimow_private_export_*.json
