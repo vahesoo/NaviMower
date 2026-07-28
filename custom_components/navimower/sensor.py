@@ -296,4 +296,6 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "channel_count": len(self.coordinator.channels),
             "map_version": map_data.get("version"),
             "map_modified_count": map_data.get("modified_count"),
+            "trail_session": self.coordinator.trail_session,
+            "trail_points": len(self.data.get("trail") or []),
         }
