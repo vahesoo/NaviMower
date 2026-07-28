@@ -147,13 +147,15 @@ show_tunnels: true
 
 The large static geometry is served by an authenticated local endpoint instead
 of being stored in Home Assistant state attributes and Recorder on every poll.
-The initial persisted mowing trail is loaded with the map; fresh MQTT points are
-then appended in the browser.
+The persisted mowing trail is loaded from the integration backend; fresh MQTT
+points are then appended in the browser. Session resets are controlled by the
+backend, so short frontend state changes do not erase the visible trail.
 
 ## Channel configuration
 
 Open the Navimower integration's **Configure** dialog. Enter channels as a JSON
-list using the same local meter coordinates as the position sensors:
+list using the same local meter coordinates as the position sensors. Saving the
+options reloads Navimower and creates one binary sensor for each channel:
 
 ```json
 [
