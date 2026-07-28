@@ -580,6 +580,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         # debounced from _async_update_data only when _trail_dirty is set).
         self._trail_store: Store = trail_store(hass, entry.entry_id)
         self._trail_dirty = False
+        # Monotonic session identifier used by the map card. It changes only
+        # when the backend observes a genuine new docked->mowing transition.
+        # This prevents transient frontend state changes from wiping the trail.
+        self._trail_session = 0
         self._last_trail_save = 0.0  # time.monotonic() of the last real write
         # User's pending zone choice for the native lawn_mower "mow" button.
         # The zone select only STORES this (does not start); the mower's
@@ -636,6 +640,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._trail = trail[-TRAIL_MAX_POINTS:]
             prev = data.get("prev_state_code")
             self._prev_state_code = prev if isinstance(prev, str) else None
+            try:
+                self._trail_session = max(0, int(data.get("trail_session", 0)))
+            except (TypeError, ValueError):
+                self._trail_session = 0
         _LOGGER.debug("trail: restored %d points", len(trail))
 
     def _trail_store_data(self) -> dict:
@@ -644,6 +652,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return {
                 "sn": self.sn,
                 "prev_state_code": self._prev_state_code,
+                "trail_session": self._trail_session,
                 "trail": list(self._trail),
             }
 
@@ -1085,6 +1094,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return None
         return {"x": x, "y": y, "heading": _as_float(self._mqtt_location.get("theta"))}
 
+    @property
+    def trail_session(self) -> int:
+        """Identifier of the current persisted mowing-trail session."""
+        return self._trail_session
+
     def pose_age(self) -> float | None:
         """Age in seconds of the latest MQTT pose."""
         if self._mqtt_last_update is None:
@@ -1174,6 +1188,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             # then appends fresh MQTT X/Y points locally without re-fetching the
             # full map on every pose update.
             "trail": data.get("trail") or [],
+            "trail_session": self._trail_session,
             "channels": [channel.as_dict() for channel in self.channels],
         }
 
@@ -1236,9 +1251,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """
         with self._trail_lock:
             if state_code == STATE_MOWING and self._prev_state_code in DOCKED_STATES:
+                self._trail_session += 1
                 if self._trail:
                     self._trail = []  # fresh mow (left the dock) -> new trail
-                    self._trail_dirty = True
+                self._trail_dirty = True
             self._prev_state_code = state_code
 
             if state_code == STATE_MOWING and position:
