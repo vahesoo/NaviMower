@@ -4,11 +4,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
@@ -29,6 +30,8 @@ PLATFORMS: list[Platform] = [
     Platform.CALENDAR,
 ]
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 _CARDS = (
     "navimower-scheduler-card.js",
     "navimower-mow-card.js",
@@ -38,7 +41,7 @@ _CARD_VER = "0.1.1"
 _FRONTEND_KEY = f"{DOMAIN}_frontend_registered"
 
 
-async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up shared HTTP resources."""
     hass.data.setdefault(DOMAIN, {})
     async_register_map_api(hass)
