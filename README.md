@@ -58,13 +58,19 @@ Navimower can select an existing `navimow` OAuth config entry and use it for:
 - a denser mowing trail than private-cloud polling can provide;
 - MQTT connection, pose-valid and pose-age diagnostics.
 
-For the first test version the OAuth entry is intentionally reused rather than
-copied. Create the existing Navimow OAuth integration first. After Navimower is
-configured, the old Navimow integration can be **disabled** to avoid running two
-complete integrations while preserving its OAuth config entry and tokens.
+For live MQTT position, Navimower currently reuses an existing OAuth config
+entry created by [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA).
+Install and configure NavimowHA first so Home Assistant has a valid Navimow OAuth
+entry. During Navimower setup, select that OAuth entry as the MQTT source.
 
-Navimower also works without an OAuth source, but then its position falls back
-to the slower private-cloud data.
+After Navimower has been configured, the older NavimowHA integration may be
+**disabled** to avoid running two complete integrations at the same time. Do not
+delete its config entry, because Navimower still reads the stored OAuth session
+and tokens from it for MQTT access.
+
+Navimower also works without a NavimowHA OAuth source, but live MQTT `X`, `Y` and
+heading are then unavailable and position falls back to slower private-cloud
+polling.
 
 ### Local channels
 
@@ -91,13 +97,10 @@ The integration also bundles `custom:navimower-mow-card` and
 
 ### HACS custom repository
 
-1. Create this repository on GitHub and upload the files from the release ZIP.
-2. Create a GitHub release/tag named `v0.1.0` and do **not** mark it as a
-   pre-release if you want HACS to offer it normally.
-3. In HACS, open **Integrations -> three-dot menu -> Custom repositories**.
-4. Add `https://github.com/vahesoo/Navimower` as category **Integration**.
-5. Install Navimower and restart Home Assistant.
-6. Open **Settings -> Devices & services -> Add integration -> Navimower**.
+1. In HACS, open **Integrations -> three-dot menu -> Custom repositories**.
+2. Add `https://github.com/vahesoo/Navimower` as category **Integration**.
+3. Install Navimower and restart Home Assistant.
+4. Open **Settings -> Devices & services -> Add integration -> Navimower**.
 
 Manual installation is also possible by copying
 `custom_components/navimower` into `/config/custom_components/` and restarting.
@@ -113,8 +116,20 @@ Manual installation is also possible by copying
 
 ## Map card
 
-The integration copies and registers the bundled cards automatically. Add the
-map card in YAML and select the entities created for the same mower:
+Navimower includes its own dashboard cards in
+`custom_components/navimower/www/`. During integration setup they are copied to
+`/config/www/navimower/` and registered automatically in the Home Assistant
+frontend.
+
+The bundled **`custom:navimower-map-card`** is a new card designed for
+Navimower's private-cloud geometry, MQTT live position, heading, mowing trail
+and local channels. It does not depend on the separate
+[vahesoo/Navimow-map-card](https://github.com/vahesoo/Navimow-map-card)
+repository.
+
+The older `Navimow-map-card` can remain installed for an existing NavimowHA
+setup, but Navimower does not load or update it automatically and its entity
+configuration is different. For Navimower, use the bundled card below:
 
 ```yaml
 type: custom:navimower-map-card
