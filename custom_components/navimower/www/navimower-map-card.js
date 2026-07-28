@@ -43,7 +43,7 @@ class NavimowerMapCard extends HTMLElement {
     this._retryAfter = 0;
     this._trail = [];
     this._lastPointKey = null;
-    this._previousStatus = null;
+    this._trailSession = null;
 
     this.innerHTML = `
       <ha-card>
@@ -116,7 +116,7 @@ class NavimowerMapCard extends HTMLElement {
       this._render();
       return;
     }
-    const key = [apiPath, attrs.map_version, attrs.map_modified_count, entity.state].join("|");
+    const key = [apiPath, attrs.map_version, attrs.map_modified_count, attrs.trail_session, entity.state].join("|");
     if (key === this._mapKey || this._loadingMap) return;
     if (key === this._failedMapKey && Date.now() < this._retryAfter) return;
 
@@ -129,11 +129,23 @@ class NavimowerMapCard extends HTMLElement {
       this._mapKey = key;
       this._failedMapKey = null;
       this._retryAfter = 0;
-      if (!this._trail.length && Array.isArray(payload?.trail)) {
-        this._trail = payload.trail
+      const payloadSession = Number(payload?.trail_session ?? attrs.trail_session ?? 0);
+      const backendTrail = Array.isArray(payload?.trail)
+        ? payload.trail
           .filter((point) => Array.isArray(point) && point.length >= 2)
           .map((point) => [Number(point[0]), Number(point[1])])
-          .filter((point) => point.every(Number.isFinite));
+          .filter((point) => point.every(Number.isFinite))
+        : [];
+      // The coordinator owns session boundaries. Replace the browser copy only
+      // on initial load or when the backend reports a genuinely new session.
+      if (this._trailSession === null || payloadSession !== this._trailSession) {
+        this._trail = backendTrail;
+        this._trailSession = payloadSession;
+        const last = this._trail[this._trail.length - 1];
+        this._lastPointKey = last ? `${last[0].toFixed(3)},${last[1].toFixed(3)}` : null;
+        this._trimTrail();
+      } else if (!this._trail.length && backendTrail.length) {
+        this._trail = backendTrail;
         this._trimTrail();
       }
     } catch (err) {
@@ -151,12 +163,6 @@ class NavimowerMapCard extends HTMLElement {
     const x = this._number(this._config.x_entity);
     const y = this._number(this._config.y_entity);
     const status = this._text(this._config.status_entity, "unknown");
-
-    if (status === "mowing" && ["docked", "idle"].includes(this._previousStatus)) {
-      this._trail = [];
-      this._lastPointKey = null;
-    }
-    this._previousStatus = status;
 
     if (status === "mowing" && x !== null && y !== null) {
       const key = `${x.toFixed(3)},${y.toFixed(3)}`;
