@@ -1,0 +1,20 @@
+{
+  "domain": "navimower",
+  "name": "Navimower",
+  "after_dependencies": [
+    "frontend",
+    "http"
+  ],
+  "codeowners": [
+    "@vahesoo"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/vahesoo/Navimower",
+  "integration_type": "device",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/vahesoo/Navimower/issues",
+  "requirements": [
+    "navimow-sdk>=0.1.2"
+  ],
+  "version": "0.1.0"
+}

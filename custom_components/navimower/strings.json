@@ -1,0 +1,233 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Navimower login",
+        "description": "Enter the email and password of the Segway/Navimow account that owns (or was shared) the mower. Tip: use a dedicated account that the mower is shared with, so your primary phone session is not disturbed.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "select_vehicle": {
+        "title": "Choose a mower",
+        "description": "More than one mower was found on this account.",
+        "data": {
+          "vehicle_sn": "Mower"
+        }
+      },
+      "manual": {
+        "title": "Enter your mower's serial",
+        "description": "No mower is listed on this account (this is normal for a shared account). Enter the mower serial number (found in the Navimow app under device info, e.g. S4THAxxxxxxxxxx). It will be validated with a live read.",
+        "data": {
+          "vehicle_sn": "Serial number",
+          "vehicle_name": "Name (optional)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Navimow",
+        "description": "The stored session expired. Enter the account password again.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "mqtt_source": {
+        "title": "Live MQTT position (optional)",
+        "description": "Select an existing Navimow OAuth config entry to use live X/Y/heading from MQTT. To avoid two simultaneous MQTT connections, the old Navimow integration can be disabled after Navimower is created. Leave this empty for private-cloud map and sensors only.",
+        "data": {
+          "mqtt_source_entry_id": "Navimow OAuth config entry"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Could not reach the Navimow cloud. Try again.",
+      "no_vehicles": "No mower is associated with this account.",
+      "vehicle_not_found": "That serial could not be read on this account. Check the serial and that the mower is shared with this account.",
+      "unknown": "Unexpected error. Check the logs.",
+      "mqtt_source_missing": "The selected Navimow OAuth config entry no longer exists."
+    },
+    "abort": {
+      "already_configured": "This mower is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Navimower options",
+        "description": "Zones are normally discovered from the decoded map. The zones field is only an id:name fallback. Channels are local X/Y rectangles supplied as a JSON list.",
+        "data": {
+          "zones": "Zones (id:name,...)",
+          "channels": "Channels JSON"
+        }
+      }
+    }
+  },
+  "entity": {
+    "lawn_mower": {
+      "mower": {
+        "name": "Mower"
+      }
+    },
+    "sensor": {
+      "battery": {
+        "name": "Battery"
+      },
+      "state": {
+        "name": "Status"
+      },
+      "state_code": {
+        "name": "State code"
+      },
+      "mowing_progress": {
+        "name": "Mowing progress"
+      },
+      "current_zone": {
+        "name": "Current zone"
+      },
+      "session_area": {
+        "name": "Session area"
+      },
+      "weekly_area": {
+        "name": "Area this week"
+      },
+      "total_area": {
+        "name": "Total area"
+      },
+      "next_mow": {
+        "name": "Next mow"
+      },
+      "error_text": {
+        "name": "Error"
+      },
+      "signal_wifi": {
+        "name": "Wi-Fi signal"
+      },
+      "blades_life": {
+        "name": "Blades life"
+      },
+      "chassis_life": {
+        "name": "Chassis life"
+      },
+      "schedule": {
+        "name": "Schedule"
+      },
+      "coverage": {
+        "name": "Coverage"
+      }
+    },
+    "calendar": {
+      "schedule": {
+        "name": "Mowing schedule"
+      }
+    },
+    "binary_sensor": {
+      "problem": {
+        "name": "Problem"
+      },
+      "online": {
+        "name": "Online"
+      },
+      "docked": {
+        "name": "Docked"
+      }
+    },
+    "switch": {
+      "night_mow": {
+        "name": "Night mowing"
+      },
+      "rain_sensor": {
+        "name": "Rain sensor"
+      },
+      "rain_detection": {
+        "name": "Rain detection"
+      },
+      "sound": {
+        "name": "Sound"
+      },
+      "power_saving": {
+        "name": "Power saving"
+      },
+      "child_lock": {
+        "name": "Child lock"
+      },
+      "lift_alarm": {
+        "name": "Lift alarm"
+      },
+      "mowing_cycle": {
+        "name": "Cyclic mowing"
+      },
+      "frost_delay": {
+        "name": "Frost delay"
+      },
+      "snow_delay": {
+        "name": "Snow delay"
+      },
+      "storm_delay": {
+        "name": "Strong wind delay"
+      },
+      "high_temp_delay": {
+        "name": "High-temperature delay"
+      },
+      "efls": {
+        "name": "Camera positioning (EFLS)"
+      },
+      "obstacle_avoidance": {
+        "name": "Obstacle avoidance"
+      },
+      "traction_control": {
+        "name": "Traction control"
+      },
+      "animal_protection": {
+        "name": "Animal-friendly"
+      },
+      "night_light": {
+        "name": "Night light"
+      },
+      "weather_rain": {
+        "name": "Rain forecast"
+      },
+      "rain_delay_mode": {
+        "name": "Delay on rain"
+      }
+    },
+    "select": {
+      "zone": {
+        "name": "Mow zone"
+      },
+      "night_light_level": {
+        "name": "Night light brightness",
+        "state": {
+          "dim": "Dim",
+          "very_dim": "Very dim"
+        }
+      },
+      "weather_sensitivity": {
+        "name": "Rain sensitivity",
+        "state": {
+          "drizzle": "Drizzle",
+          "light": "Light rain",
+          "moderate": "Moderate"
+        }
+      }
+    },
+    "number": {
+      "return_battery_level": {
+        "name": "Return-to-dock battery"
+      },
+      "charging_limit": {
+        "name": "Charging limit"
+      },
+      "rain_delay_time": {
+        "name": "Rain delay time"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "Map"
+      }
+    }
+  }
+}
