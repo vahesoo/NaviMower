@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 — map trail and channel options fixes
+
+- Fixed the Configure/options dialog returning a 500 error on current Home Assistant versions.
+- Kept the custom map card trail tied to the coordinator's persisted mowing session instead of clearing it on transient frontend mower-state changes.
+- Added a backend trail-session marker so the card resets only for a genuine new mowing session.
+- Improved channel JSON guidance and validation feedback.
+- Bumped the bundled frontend card cache version.
+
 ## 0.1.0 — initial test release
 
 - Added private-cloud authentication and read-only map decoding.
