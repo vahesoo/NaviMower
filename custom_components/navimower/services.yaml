@@ -74,3 +74,27 @@ mow:
       default: true
       selector:
         boolean:
+
+export_diagnostics:
+  name: Export diagnostics
+  description: >-
+    Run all known read-only private-cloud queries and export sanitized raw data,
+    nested key paths, keyword matches and the passive MQTT topic/key inventory.
+    No mower command, settings write or map edit is made. The existing client may
+    automatically reauthenticate if its stored session has expired.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    include_compressed_map:
+      name: Include compressed map request
+      description: >-
+        Also request the compressed map endpoint. Large binary/base64 content is
+        represented only by length and SHA-256 in the output.
+      default: true
+      selector:
+        boolean:
