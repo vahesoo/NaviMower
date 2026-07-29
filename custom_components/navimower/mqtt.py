@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 from typing import Any
+from datetime import datetime, timezone
+from copy import deepcopy
 from urllib.parse import urlparse
 
 from homeassistant.config_entries import ConfigEntry
@@ -50,6 +52,7 @@ class NavimowerMqttBridge:
         self._location_cache: dict[str, dict[str, Any]] = {}
         self._refresh_lock = asyncio.Lock()
         self._unloading = False
+        self._message_inventory: dict[str, dict[str, Any]] = {}
 
     async def async_start(self) -> bool:
         """Start the bridge. Return False when no OAuth source was configured."""
@@ -215,6 +218,7 @@ class NavimowerMqttBridge:
                     await self._async_refresh_credentials()
 
         async def _on_message(topic: str, payload: bytes, incoming_device_id: str) -> None:
+            self._record_message_inventory(topic, payload, incoming_device_id)
             if incoming_device_id == device_id and topic.endswith("/realtimeDate/location"):
                 try:
                     parsed = json.loads((payload or b"").decode("utf-8", errors="replace"))
@@ -235,6 +239,68 @@ class NavimowerMqttBridge:
         mqtt.on_message = _on_message
         if self.sdk.is_connected:
             self.hass.async_create_task(_on_connected())
+
+
+    def _record_message_inventory(
+        self, topic: str, payload: bytes, incoming_device_id: str
+    ) -> None:
+        """Keep a value-free inventory of MQTT topics and JSON key paths."""
+        safe_topic = str(topic)
+        if incoming_device_id:
+            safe_topic = safe_topic.replace(str(incoming_device_id), "<device>")
+        now = datetime.now(timezone.utc).isoformat()
+        item = self._message_inventory.setdefault(
+            safe_topic,
+            {
+                "count": 0,
+                "first_seen_utc": now,
+                "last_seen_utc": now,
+                "max_payload_bytes": 0,
+                "parsed_types": set(),
+                "top_level_keys": set(),
+                "key_paths": set(),
+                "observed_type_values": set(),
+            },
+        )
+        item["count"] += 1
+        item["last_seen_utc"] = now
+        item["max_payload_bytes"] = max(item["max_payload_bytes"], len(payload or b""))
+        try:
+            parsed = json.loads((payload or b"").decode("utf-8", errors="replace"))
+        except (TypeError, ValueError):
+            item["parsed_types"].add("non_json")
+            return
+
+        def walk(value: Any, path: str = "") -> None:
+            item["parsed_types"].add(type(value).__name__)
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    item["key_paths"].add(child_path)
+                    if not path:
+                        item["top_level_keys"].add(str(key))
+                    if str(key) in {"type", "action", "vehicleState", "eventCode"}:
+                        if isinstance(child, (str, int, float, bool)):
+                            item["observed_type_values"].add(f"{key}={child}")
+                    walk(child, child_path)
+            elif isinstance(value, list):
+                for child in value[:25]:
+                    walk(child, f"{path}[]" if path else "[]")
+
+        walk(parsed)
+
+    def diagnostic_inventory(self) -> dict[str, Any]:
+        """Return the passive MQTT topic/key inventory as JSON-safe data."""
+        out: dict[str, Any] = {}
+        for topic, item in deepcopy(self._message_inventory).items():
+            out[topic] = {
+                **item,
+                "parsed_types": sorted(item["parsed_types"]),
+                "top_level_keys": sorted(item["top_level_keys"]),
+                "key_paths": sorted(item["key_paths"]),
+                "observed_type_values": sorted(item["observed_type_values"]),
+            }
+        return out
 
     async def _async_refresh_credentials(self) -> None:
         """Refresh OAuth and MQTT credentials after a broker disconnect."""
