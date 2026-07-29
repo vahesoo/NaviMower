@@ -11,10 +11,15 @@ from and adapted from:
 That project is licensed under the MIT License. Its original copyright and
 license notice are preserved in this repository's `LICENSE` file.
 
-The official OAuth/MQTT live-position bridge, local channel/gate concept and
-related position parsing are adapted from the NavimowHA work maintained at:
+The official Smart Home OAuth/MQTT bridge, local channel/gate concept, live
+position parsing and persistent route-history work are adapted from and
+continued from:
 
 - https://github.com/vahesoo/NavimowHA
+
+The interactive dashboard map is maintained separately at:
+
+- https://github.com/vahesoo/navimower-map-card
 
 Navimower is not affiliated with, endorsed by, or supported by Segway,
 Ninebot, Navimow or Willand.

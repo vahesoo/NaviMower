@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.2.0 — standalone OAuth, exact history and map API v2
+
+- Added Navimower-owned Smart Home OAuth and official MQTT setup; the old
+  `navimow` integration is no longer required at runtime.
+- Added a dual-connection setup flow: private app-cloud login and mower
+  discovery first, followed by official browser OAuth for live MQTT data.
+- Restored cached map/session state before starting the private-cloud and
+  OAuth/MQTT branches in parallel, so either branch can remain useful during a
+  temporary outage of the other.
+- Refreshes OAuth first and then obtains new MQTT credentials after an MQTT
+  authentication disconnect, without reloading the entire config entry on
+  routine token refresh.
+- Added persistent Home Assistant-owned mowing sessions with timestamp, X/Y,
+  heading, activity, MQTT vehicle state and action for every received sample.
+- Added configurable trail retention: 3, 7, 14, 30 days or unlimited, with an
+  option to include the return-to-dock path.
+- Added authenticated session index/detail endpoints and map API
+  `schema_version: 2`.
+- Added global cutting height and effective per-zone cutting heights; vendor
+  `height_set=256` is decoded as inheriting the global value.
+- Added persistent per-zone mowing history from `get-path-info-time`, including
+  progress, finished area, last started/mowed/completed timestamps.
+- Decoded the packed `map_work_position` immediate target, action, sub-action
+  and progress so multi-zone gate intent is not confused with the full selected
+  zone list.
+- Added complete temporary doodle metadata, original vendor SVG and transform
+  data to the decoded map and map API, plus doodle rendering in the SVG camera.
+- Replaced gate/channel JSON editing with user-friendly Add/Edit/Delete option
+  flows. Gates use mapped-zone dropdowns, bidirectional mode by default and a
+  configurable 0/10/20/30 second close delay.
+- Added migration of v0.1.x gate/channel options and one-time copying of the old
+  NavimowHA OAuth token when that source entry is still present.
+- Removed the bundled `navimower-map-card.js`; the interactive map is now
+  installed separately from `vahesoo/navimower-map-card`.
+- Kept the bundled mow-now and scheduler cards, SVG camera, services and
+  sanitized raw diagnostics exporter.
+- Expanded diagnostics with private/OAuth/MQTT health, map API v2, doodles, zone
+  details and retained-session metadata.
+
+Map writes, boundary edits, edge-mowing changes and `clock_direction` writes are
+still intentionally excluded.
+
 ## 0.1.5 — zone-intent gates and trail reliability
 
 - Added bidirectional zone-pair gate configuration in the options flow.

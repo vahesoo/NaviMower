@@ -2,318 +2,353 @@
 
 Experimental Home Assistant integration for Segway Navimow robot mowers.
 
-Navimower combines two data paths:
+Navimower combines the rich private mobile-app cloud with the official Smart
+Home OAuth/MQTT connection in one standalone config entry:
 
-- the **private mobile-app cloud** for the decoded lawn map, zones, area,
-  obstacles, no-mow areas, tunnels, schedules, settings and stable mower state;
-- the existing **official Navimow OAuth/MQTT session** for dense live local
-  `X`, `Y` and heading updates.
+- **Private app cloud** — map geometry, real zone names and IDs, obstacles,
+  temporary doodles, tunnels, settings, schedules, commands, maintenance and
+  stable cloud state.
+- **Official Smart Home OAuth + MQTT** — dense local `X`, `Y`, heading and live
+  mower events used for exact route history, physical-zone detection and gate
+  automations.
 
-The project is intended for testing before any functionality is merged back
-into an established integration.
+Navimower does **not** require the older NavimowHA integration from v0.2.0
+onward.
 
 > [!WARNING]
 > Navimower uses an undocumented private cloud protocol. It is not affiliated
 > with or supported by Segway, Ninebot, Navimow or Willand. A mower is a moving
-> machine with a cutting blade; verify every command and automation safely.
+> machine with a cutting blade; verify commands and physical-gate automations in
+> a safe environment.
 
-## Important account requirement
+## Recommended account arrangement
 
-Use a **dedicated second Navimow account** and share the mower to it from the
-primary account.
-
-Do not sign in to the phone app with the dedicated Home Assistant account after
-Navimower has been configured. Live testing showed that a phone login can
-invalidate the Home Assistant private-cloud session and make its entities
-unavailable until the integration is reloaded.
-
-Recommended arrangement:
+Use a dedicated second Navimow account for the private app-cloud session and
+share the mower to it from the primary account:
 
 ```text
-Primary account  -> official phone app
+Primary account  -> official phone app and Smart Home OAuth
 Shared account   -> Navimower private-cloud login only
 ```
 
-The password is used only during setup or reauthentication. It is not stored;
-Home Assistant stores the resulting access/refresh tokens and private device id.
+Do not sign the dedicated shared account into the phone app after setup. Field
+testing showed that a phone login can invalidate the Home Assistant private
+session. The private-cloud password is used only during setup or reauthentication
+and is not stored.
 
-## Implemented in the first test release
+The Smart Home OAuth account may be different from the private-cloud account as
+long as both can access the same mower. Navimower matches the mower by its stored
+identity before starting MQTT.
 
-### Private-cloud map and sensors
+## Main features
 
-- decoded map geometry from the mower cloud;
+### Map and zones
+
+- decoded private-cloud map geometry;
 - real zone names, IDs and areas;
-- obstacles, no-mow / vision-off areas and tunnels;
-- charging-station coordinates;
-- zone coverage and mowing progress;
-- stable last-known values during short private-cloud failures;
-- separate private-cloud connectivity diagnostics.
+- boundaries and per-zone map settings;
+- obstacles and vision-off/no-mow areas;
+- mapped tunnels and charging station;
+- temporary app doodles with their original vendor SVG, center, direction,
+  scale, creation time and expiry time;
+- global cutting height and each zone's configured/effective cutting height;
+- zone progress, finished area, last mowing time and last completed time;
+- cached map data retained through temporary private-cloud outages.
 
-### MQTT live position
+### Exact persistent mowing history
 
-Navimower can select an existing `navimow` OAuth config entry and use it for:
+Navimower records live MQTT samples in Home Assistant, not in the browser or
+Recorder. Each retained sample includes:
 
-- live local `X` and `Y` coordinates;
-- live heading;
-- a denser mowing trail than private-cloud polling can provide;
-- MQTT connection, pose-valid and pose-age diagnostics.
+```text
+timestamp, X, Y, heading, activity, MQTT vehicle state, MQTT action
+```
 
-For live MQTT position, Navimower currently reuses an existing OAuth config
-entry created by [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA).
-Install and configure NavimowHA first so Home Assistant has a valid Navimow OAuth
-entry. During Navimower setup, select that OAuth entry as the MQTT source.
+A session starts when cutting begins, survives pause/transit and optionally the
+return-to-dock route, and ends when the mower is docked. Only an exactly repeated
+pose/context sample is discarded.
 
-After Navimower has been configured, the older NavimowHA integration may be
-**disabled** to avoid running two complete integrations at the same time. Do not
-delete its config entry, because Navimower still reads the stored OAuth session
-and tokens from it for MQTT access.
+Trail retention is configurable:
 
-Navimower also works without a NavimowHA OAuth source, but live MQTT `X`, `Y` and
-heading are then unavailable and position falls back to slower private-cloud
-polling.
+- 3 days;
+- 7 days (default);
+- 14 days;
+- 30 days;
+- unlimited.
 
-### Local channels and zone-pair gates
+`Unlimited` preserves every completed route and can grow both Home Assistant
+`.storage` usage and the current map payload substantially over time. The
+dedicated session APIs allow future card versions to load older routes on
+demand.
 
-Rectangular local-coordinate channels are retained for gate and location
-automations. A channel entity is available only while the MQTT pose is fresh;
-a stale position is not silently reported as `off`.
+Active history is checkpointed periodically and completed sessions are stored
+individually in Home Assistant `.storage`, so a restart does not intentionally
+erase the route.
 
-Navimower can also create a **bidirectional gate-required binary sensor** from
-two mapped zone IDs. It combines the live MQTT position, decoded zone polygons,
-the target partition and the mapped tunnel connection. This allows the gate to
-open from the mower's intention before it reaches the passage, without requiring
-a rectangular X/Y box over an area that may also be mowed normally.
+### Physical zones, tunnels, channels and gates
 
-Channels can still describe more than a narrow gate, for example `Front yard`,
-`Behind house` or any other rectangular area. Both approaches can be used at the
-same time.
+- current physical zone derived from live MQTT `X/Y` and decoded polygons;
+- target zone kept separate from the physical zone;
+- mapped tunnel detection;
+- zone-transition sensor;
+- existing rectangular local-coordinate channel sensors;
+- user-friendly zone-pair gate configuration;
+- bidirectional gates enabled by default;
+- optional one-way `Zone A -> Zone B` operation;
+- gate close delay of 0, 10, 20 or 30 seconds;
+- gate-required sensor remains latched through the configured arrival delay.
 
-### Map views
+The intention-based gate sensor can open a gate before the mower reaches it,
+without requiring an X/Y rectangle over a normally mowed area. Rectangular
+channels remain available as a precise physical fallback.
 
-Two map presentations are included:
+### Mower entities and controls
 
-- **Map camera entity** — app-style SVG snapshot, useful in ordinary picture
-  cards and notifications;
-- **`custom:navimower-map-card`** — private-cloud map geometry with MQTT mower
-  position, heading, current-session trail and configured local channels.
+Depending on mower model and firmware, Navimower provides:
 
-The integration also bundles `custom:navimower-mow-card` and
-`custom:navimower-scheduler-card`.
+- `lawn_mower` controls;
+- battery, state, progress, area, coverage and maintenance sensors;
+- global cutting height;
+- current physical zone, target zone and current tunnel sensors;
+- local X/Y, heading and MQTT pose-age sensors;
+- private-cloud, OAuth, MQTT and pose-valid diagnostics;
+- one binary sensor per configured channel and gate;
+- zone selector, calendar/scheduler and supported setting entities;
+- SVG map camera and a lightweight map-data sensor.
 
-## Installation for testing
+Firmware-dependent settings are created only when the corresponding value is
+reported by the mower.
+
+## Installation
 
 ### HACS custom repository
 
-1. In HACS, open **Integrations -> three-dot menu -> Custom repositories**.
+1. Open **HACS -> Integrations -> three-dot menu -> Custom repositories**.
 2. Add `https://github.com/vahesoo/Navimower` as category **Integration**.
 3. Install Navimower and restart Home Assistant.
 4. Open **Settings -> Devices & services -> Add integration -> Navimower**.
 
 Manual installation is also possible by copying
-`custom_components/navimower` into `/config/custom_components/` and restarting.
+`custom_components/navimower` into `/config/custom_components/` and restarting
+Home Assistant.
 
 ## Setup flow
 
-1. Enter the email and password of the dedicated shared account.
-2. If the shared mower is not listed, enter its serial number. The integration
-   validates it with a read-only live request.
-3. Select an existing Navimow OAuth config entry for MQTT, or choose
-   **Cloud map only**.
-4. After setup, avoid logging the shared account into the phone app.
+The initial setup deliberately creates both cloud branches before the config
+entry is completed:
 
-## Map card
+1. Enter the email and password of the dedicated private-cloud account.
+2. Select the mower, or enter its serial number when a shared mower is not
+   returned by the normal list endpoint.
+3. Continue to the official Smart Home OAuth browser authorization.
+4. Sign in with an account that can access the same mower.
+5. Home Assistant stores both token sets in one Navimower config entry.
 
-Navimower includes its own dashboard cards in
-`custom_components/navimower/www/`. During integration setup they are copied to
-`/config/www/navimower/` and registered automatically in the Home Assistant
-frontend.
+On every normal Home Assistant start, Navimower restores local map/session data
+first, then starts the private-cloud refresh and OAuth validation in parallel.
+MQTT starts only after the OAuth token is valid and fresh broker credentials have
+been obtained.
 
-The bundled **`custom:navimower-map-card`** is a new card designed for
-Navimower's private-cloud geometry, MQTT live position, heading, mowing trail
-and local channels. It does not depend on the separate
-[vahesoo/Navimow-map-card](https://github.com/vahesoo/Navimow-map-card)
-repository.
+The two branches degrade independently:
 
-The older `Navimow-map-card` can remain installed for an existing NavimowHA
-setup, but Navimower does not load or update it automatically and its entity
-configuration is different. For Navimower, use the bundled card below:
+- private cloud unavailable: cached map/entities and live MQTT history can remain
+  usable;
+- OAuth/MQTT unavailable: private-cloud map, settings and controls can remain
+  usable;
+- rejected credentials: the appropriate Navimower reauthentication flow is
+  started.
+
+OAuth token refreshes do not intentionally reload the full integration. After a
+token refresh or MQTT authentication disconnect, Navimower obtains fresh MQTT
+credentials before reconnecting.
+
+## Navimower Map Card
+
+The interactive map is now distributed separately:
+
+- [vahesoo/navimower-map-card](https://github.com/vahesoo/navimower-map-card)
+
+Install it through HACS as a **Dashboard** custom repository. A minimal card can
+normally be configured from only the mower entity because the card auto-detects
+Navimower's related sensors:
 
 ```yaml
 type: custom:navimower-map-card
-title: Tont map
-map_entity: sensor.tont_map_data
-x_entity: sensor.tont_position_x
-y_entity: sensor.tont_position_y
-heading_entity: sensor.tont_heading
-status_entity: lawn_mower.tont
-battery_entity: sensor.tont_battery
-zone_entity: sensor.tont_current_physical_zone
-show_channels: true
-show_tunnels: true
+entity: lawn_mower.tont
 ```
 
-The large static geometry is served by an authenticated local endpoint instead
-of being stored in Home Assistant state attributes and Recorder on every poll.
-The persisted mowing trail is loaded from the integration backend; fresh MQTT
-points are then appended in the browser. Session resets are controlled by the
-backend, so short frontend state changes do not erase the visible trail. The
-backend and card use the live MQTT mower state as a mowing fallback when the
-private-cloud state is delayed or temporarily unknown.
+The integration no longer bundles or registers `navimower-map-card.js`.
 
-## Channel configuration
+Navimower still includes:
 
-Open the Navimower integration's **Configure** dialog. Enter channels as a JSON
-list using the same local meter coordinates as the position sensors. Saving the
-options reloads Navimower and creates one binary sensor for each channel:
+- `custom:navimower-mow-card`;
+- `custom:navimower-scheduler-card`.
 
-```json
-[
-  {
-    "name": "Gate",
-    "x_min": 5.0,
-    "x_max": 8.0,
-    "y_min": -72.0,
-    "y_max": -60.0
-  },
-  {
-    "name": "Behind house",
-    "x_min": -20.0,
-    "x_max": 5.0,
-    "y_min": -40.0,
-    "y_max": -10.0
-  }
-]
+The SVG camera entity also remains available for picture cards, notifications
+and simple dashboards.
+
+## Authenticated map and session APIs
+
+Large geometry and retained route data are served through authenticated local
+Home Assistant endpoints rather than repeated state attributes:
+
+```text
+GET /api/navimower/map/<entry_id>
+GET /api/navimower/sessions/<entry_id>
+GET /api/navimower/session/<entry_id>/<session_id>
 ```
 
-Changing options reloads only Navimower. OAuth token writes do not register an
-integration update listener, so they do not intentionally trigger an hourly
-unload/reload cycle.
+The map payload uses `schema_version: 2` and contains:
 
-## Bidirectional gate configuration
+- map geometry, zones, obstacles, no-mow areas, tunnels and dock;
+- full doodle metadata and original SVG;
+- current coverage and zone details;
+- global/effective cutting heights;
+- active trail and every session retained by the selected history policy;
+- channels and gates;
+- links to the complete session index/detail APIs.
 
-In the same **Configure** dialog, enter gates as a JSON list. Each item connects
-exactly two Navimow zone IDs and works in both directions:
+The dedicated session detail endpoint returns the exact timestamped points for
+any retained session. For compatibility with the current standalone card, the
+main map response also includes the XY path for every retained session; future
+card versions can use the lighter list/detail endpoints for on-demand loading.
 
-```json
-[
-  {
-    "name": "Back yard gate",
-    "zones": [13, 24]
-  }
-]
-```
+## Options
 
-For a mower named `Tont`, Home Assistant will normally create an entity similar
-to:
+Open **Settings -> Devices & services -> Navimower -> Configure**.
+
+### General
+
+- trail retention;
+- include return-to-dock route;
+- standard or extended diagnostics detail.
+
+### Gates
+
+Use **Add gate**, **Edit gate** and **Delete gate**. Zone choices are populated
+from the decoded map; users do not need to know internal IDs.
+
+A gate has:
+
+- user-defined name;
+- Zone A and Zone B;
+- bidirectional switch (on by default);
+- close delay: immediately, 10, 20 or 30 seconds.
+
+For a mower named `Tont`, a configured `Back yard gate` normally creates an
+entity similar to:
 
 ```text
 binary_sensor.tont_back_yard_gate_required
 ```
 
-The sensor turns on when the mower is physically in one configured zone and its
-target is the other zone. It remains on while the mower is between zones or on
-the matching mapped tunnel, then turns off when the live position reaches the
-target-zone polygon. A small edge tolerance is used because boundary mowing can
-place the mower centre slightly outside the stored polygon.
-
-Useful companion entities are:
-
-- `sensor.<mower>_current_physical_zone`;
-- `sensor.<mower>_target_zone`;
-- `sensor.<mower>_current_tunnel`;
-- `binary_sensor.<mower>_zone_transition`.
-
-Example automation skeleton:
+Example automation:
 
 ```yaml
-- alias: Open mower gate when crossing is required
-  triggers:
-    - trigger: state
-      entity_id: binary_sensor.tont_back_yard_gate_required
-      to: "on"
-  actions:
-    - action: cover.open_cover
-      target:
-        entity_id: cover.back_yard_gate
-
-- alias: Close mower gate after arrival
-  triggers:
-    - trigger: state
-      entity_id: binary_sensor.tont_back_yard_gate_required
-      to: "off"
-      for: "00:00:15"
-  conditions:
-    - condition: state
-      entity_id: binary_sensor.tont_live_position_valid
-      state: "on"
-  actions:
-    - action: cover.close_cover
-      target:
-        entity_id: cover.back_yard_gate
+alias: Navimower gate
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.tont_back_yard_gate_required
+actions:
+  - choose:
+      - conditions:
+          - condition: state
+            entity_id: binary_sensor.tont_back_yard_gate_required
+            state: "on"
+        sequence:
+          - action: cover.open_cover
+            target:
+              entity_id: cover.back_yard_gate
+    default:
+      - action: cover.close_cover
+        target:
+          entity_id: cover.back_yard_gate
 ```
 
-Entity IDs for the gate and pose-valid sensor depend on the device name assigned
-by Home Assistant. For an all-zones task the cloud may not publish a single
-future target partition, so early intention-based opening is best when a
-specific zone is selected. The existing channel rectangle remains available as
-a precise physical fallback.
+The integration-level close delay keeps the binary sensor on after target-zone
+arrival. Physical gate controllers differ; users remain responsible for any
+additional safety logic or automatic-close behaviour.
 
-## Main entities
+### Channels
 
-Depending on mower firmware, Navimower creates:
+Channels are local-coordinate rectangles managed with Add/Edit/Delete steps.
+They can describe a gate passage, front yard, area behind the house or any other
+useful rectangle.
 
-- `lawn_mower` controls;
-- battery, state, progress, area, coverage and maintenance sensors;
-- current physical zone, target zone and current tunnel sensors;
-- local X/Y, heading and MQTT pose-age sensors;
-- private-cloud, MQTT and pose-valid binary sensors;
-- one binary sensor per configured channel and per configured bidirectional gate;
-- a zone-transition binary sensor;
-- zone selector, scheduler/calendar and supported setting entities;
-- map camera and map-data sensor.
+## Migration from v0.1.x
 
-Some private settings are firmware-dependent and are created only when the
-relevant value is discovered.
+Navimower v0.2.0 upgrades existing entries automatically:
+
+- legacy channel/gate JSON is normalized to structured options;
+- history retention defaults are added;
+- when the old `navimow` config entry still exists, its OAuth token is copied
+  once into Navimower;
+- runtime dependency on the old integration is removed.
+
+If the old OAuth entry is unavailable or its token cannot be used, Navimower
+starts its own Smart Home OAuth reauthentication flow. Keep a Home Assistant
+backup before installing a major alpha upgrade.
+
+Because a GitHub browser upload does not delete files that are absent from the
+new ZIP, repository maintainers upgrading from v0.1.x must manually delete:
+
+```text
+custom_components/navimower/www/navimower-map-card.js
+```
+
+Dashboard users should keep only the standalone HACS resource
+`/hacsfiles/navimower-map-card/navimower-map-card.js` and remove any old
+`/local/navimower/navimower-map-card.js` resource. A full Home Assistant restart
+clears the old runtime registration.
 
 ## Read-only diagnostics export
 
-For protocol research, run **Developer Tools -> Actions ->
-`navimower.export_diagnostics`**. The action queries every currently known
-read-only private-cloud endpoint and writes two files:
+Run **Developer Tools -> Actions -> `navimower.export_diagnostics`**:
+
+```yaml
+action: navimower.export_diagnostics
+data:
+  include_compressed_map: true
+```
+
+Files are written to:
 
 ```text
 /config/navimower_diagnostics/navimower_diagnostics_latest.json
 /config/navimower_diagnostics/navimower_diagnostics_YYYYMMDD_HHMMSS.json
 ```
 
-The export contains sanitized raw decoded responses, all nested key paths,
-keyword-focused indexes and a passive MQTT topic/key inventory accumulated since
-the integration started. Account tokens, login details, mower serials, network
-identifiers and physical GPS coordinates are removed. Local map X/Y coordinates
-are retained. Large compressed or Base64 resources are represented by their size
-and SHA-256 only.
+The v2 export includes:
 
-The action is operationally read-only: it sends no mower commands and performs no
-settings or map writes. The existing private-cloud client may automatically
-reauthenticate if its stored session has expired, just as during a normal refresh.
-Review the file before publishing it.
+- sanitized raw responses from known read-only private endpoints;
+- nested key inventory and focused map/camera/LiDAR/terrain indexes;
+- private/OAuth/MQTT health;
+- map API summary, zones and doodles;
+- session metadata and persistent zone history;
+- passive MQTT topic/key inventory.
+
+Tokens, password, email, UID, serial number, GPS coordinates, PIN, RTK anchor,
+ICCID, anti-theft point and network identifiers are removed. Local map X/Y and
+vendor doodle SVG remain because they are needed for geometry research. Review
+the file before publishing it.
+
+The action sends no mower commands and performs no settings or map writes. The
+normal private client may refresh its session if the stored token has expired.
 
 ## Current limitations
 
-- This is an **alpha test release** and has not been tested across all mower
-  models or regions.
-- The private endpoints are currently configured for the `fra` region.
-- A dedicated shared account is effectively required for reliable coexistence
-  with the phone app.
-- Live MQTT in this first version reuses a pre-existing `navimow` OAuth config
-  entry.
-- Map editing and `clock_direction` writes are deliberately not included yet.
-  Reading a map is low risk; writing the virtual safety boundary requires a
-  separate backup/restore and verification phase.
-- The exact swept-stripe endpoint is not used. The mowing trail is reconstructed
-  from live pose samples.
-- A zone-pair gate can pre-open only when a specific target zone or a return-to-dock
-  target can be derived. An all-zones task may not expose its next zone early.
+- This is an **alpha major release** and has not been tested across all mower
+  models, accounts or regions.
+- Current OAuth/private endpoints target the European/FRA service.
+- A dedicated private-cloud shared account is strongly recommended.
+- Exact state codes and some settings remain firmware-specific.
+- The swept-stripe endpoint is not used; exact history is reconstructed from
+  dense live MQTT pose samples.
+- The immediate target of multi-zone tasks is decoded from the packed
+  `map_work_position` value when the mower publishes it. Firmware that omits or
+  delays that value can still open an intention-based gate later than desired.
+- Map writes, boundary edits, edge-mowing changes and `clock_direction` writes
+  are deliberately not included.
 
 ## Credits and licence
 
@@ -322,8 +357,10 @@ Navimower is based substantially on
 private-cloud authentication, encrypted protocol, map decoder, coordinator,
 entities, scheduler and camera implementation.
 
-The official OAuth/MQTT bridge and local channel concept are adapted from
-[vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA).
+The standalone official OAuth/MQTT bridge, persistent live route history and
+local channel/gate work are adapted from
+[vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA) and continued in this
+repository.
 
 See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). The project is distributed
 under the MIT License.
