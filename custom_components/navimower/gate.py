@@ -1,10 +1,12 @@
-"""Bidirectional zone-pair gates used by mower transition automations."""
+"""Zone-pair gates used by mower transition automations."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
 import re
 from typing import Any
+
+from .const import GATE_CLOSE_DELAY_OPTIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +16,8 @@ class NavimowerGate:
     name: str
     zone_a: int
     zone_b: int
+    bidirectional: bool = True
+    close_delay: int = 20
 
     @property
     def slug(self) -> str:
@@ -31,6 +35,16 @@ class NavimowerGate:
             return False
         return value in self.zones
 
+    def allows_transition(self, from_zone: Any, to_zone: Any) -> bool:
+        try:
+            from_id = int(from_zone)
+            to_id = int(to_zone)
+        except (TypeError, ValueError):
+            return False
+        if self.bidirectional:
+            return {from_id, to_id} == {self.zone_a, self.zone_b}
+        return from_id == self.zone_a and to_id == self.zone_b
+
     def other_zone(self, zone_id: Any) -> int | None:
         try:
             value = int(zone_id)
@@ -47,19 +61,29 @@ class NavimowerGate:
             **asdict(self),
             "zones": [self.zone_a, self.zone_b],
             "slug": self.slug,
+            "direction": (
+                "both"
+                if self.bidirectional
+                else f"{self.zone_a}->{self.zone_b}"
+            ),
         }
 
 
 def parse_gates(raw: Any) -> list[NavimowerGate]:
-    """Parse a JSON list of bidirectional zone-pair gate definitions.
+    """Parse structured or legacy JSON gate definitions.
 
     Preferred format::
 
-        [{"name": "Back yard gate", "zones": [13, 24]}]
+        [{
+          "name": "Back yard gate",
+          "zone_a": 13,
+          "zone_b": 24,
+          "bidirectional": true,
+          "close_delay": 20
+        }]
 
-    ``zone_a``/``zone_b`` and ``from_zone``/``to_zone`` are accepted as
-    compatibility aliases. Zone order does not matter; each gate is always
-    bidirectional.
+    Legacy ``{"zones": [13, 24]}`` remains supported and defaults to a
+    bidirectional gate with a 20-second close delay.
     """
     if raw in (None, "", []):
         return []
@@ -94,7 +118,24 @@ def parse_gates(raw: Any) -> list[NavimowerGate]:
         if pair in seen_pairs:
             continue
         name = str(item.get("name") or f"Zone {zone_a} - Zone {zone_b} gate").strip()
-        gate = NavimowerGate(name=name or "Gate", zone_a=zone_a, zone_b=zone_b)
+        raw_bidirectional = item.get("bidirectional", True)
+        if isinstance(raw_bidirectional, str):
+            bidirectional = raw_bidirectional.strip().lower() not in {"0", "false", "off", "no"}
+        else:
+            bidirectional = bool(raw_bidirectional)
+        try:
+            close_delay = int(item.get("close_delay", item.get("close_delay_seconds", 20)))
+        except (TypeError, ValueError):
+            close_delay = 20
+        if close_delay not in GATE_CLOSE_DELAY_OPTIONS:
+            close_delay = min(GATE_CLOSE_DELAY_OPTIONS, key=lambda value: abs(value - close_delay))
+        gate = NavimowerGate(
+            name=name or "Gate",
+            zone_a=zone_a,
+            zone_b=zone_b,
+            bidirectional=bidirectional,
+            close_delay=close_delay,
+        )
         if gate.slug in seen_slugs:
             continue
         seen_pairs.add(pair)
@@ -104,7 +145,7 @@ def parse_gates(raw: Any) -> list[NavimowerGate]:
 
 
 def valid_gates_config(raw: Any) -> bool:
-    """Return whether every JSON item produces one unique valid gate."""
+    """Return whether every input item produces one unique valid gate."""
     if raw in (None, "", []):
         return True
     parsed_raw = raw
@@ -113,6 +154,6 @@ def valid_gates_config(raw: Any) -> bool:
             parsed_raw = json.loads(parsed_raw)
         except (TypeError, ValueError):
             return False
-    if not isinstance(parsed_raw, list) or not parsed_raw:
+    if not isinstance(parsed_raw, list):
         return False
     return len(parse_gates(parsed_raw)) == len(parsed_raw)

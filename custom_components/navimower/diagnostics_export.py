@@ -19,6 +19,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from homeassistant.core import HomeAssistant
 
+from .const import (
+    DEFAULT_DIAGNOSTICS_DETAIL,
+    MAP_API_SCHEMA_VERSION,
+    OPT_DIAGNOSTICS_DETAIL,
+)
+from .history import SESSION_DETAIL_POINT_FORMAT
+
 
 _KEYWORDS = (
     "angle",
@@ -27,6 +34,7 @@ _KEYWORDS = (
     "cbox",
     "clock",
     "direction",
+    "doodle",
     "edge",
     "height",
     "image",
@@ -35,12 +43,15 @@ _KEYWORDS = (
     "lidar",
     "map",
     "mow",
+    "oauth",
     "path",
     "resource",
     "scene",
+    "session",
     "sha",
     "snapshot",
     "terrain",
+    "trail",
     "url",
     "vision",
 )
@@ -76,6 +87,10 @@ _EXACT_SENSITIVE_KEYS = {
     "ip",
     "ip_address",
     "iccid",
+    "pin_code",
+    "pincode",
+    "rtk",
+    "anchor",
     "anti_theft_point",
     "antitheftpoint",
     "latitude",
@@ -334,42 +349,117 @@ async def async_export_diagnostics(
         mqtt_inventory = mqtt_bridge.diagnostic_inventory()
 
     now = datetime.now(timezone.utc)
+    data = coordinator.data or {}
+    map_data = data.get("map") or {}
+    diagnostics_detail = str(
+        coordinator.entry.options.get(
+            OPT_DIAGNOSTICS_DETAIL, DEFAULT_DIAGNOSTICS_DETAIL
+        )
+    )
+    active_history = coordinator.history.active_session
+    if isinstance(active_history, dict):
+        active_summary = {
+            key: active_history.get(key)
+            for key in (
+                "id",
+                "sequence",
+                "started_at",
+                "ended_at",
+                "active",
+                "mode",
+                "zone_ids",
+                "cutting_height_mm",
+                "completed",
+            )
+        }
+        active_summary["point_count"] = len(active_history.get("points") or [])
+        if diagnostics_detail == "extended":
+            active_summary["recent_points"] = sanitize(
+                deepcopy((active_history.get("points") or [])[-100:])
+            )
+    else:
+        active_summary = None
+
+    session_index = coordinator.history.sessions_index_payload()
+    session_summaries = session_index.get("sessions") or []
     document = {
-        "format": "navimower-diagnostics-v1",
+        "format": "navimower-diagnostics-v2",
+        "schema_version": 2,
+        "map_api_schema_version": MAP_API_SCHEMA_VERSION,
         "created_utc": now.isoformat(),
         "read_only": True,
-        "authentication": (
-            "existing client session; automatic reauthentication may occur if expired"
-        ),
+        "diagnostics_detail": diagnostics_detail,
+        "authentication": {
+            "private_cloud": (
+                "stored private app-cloud session; normal refresh may "
+                "reauthenticate if expired"
+            ),
+            "smart_home_oauth": (
+                "Home Assistant managed OAuth token; credentials are not exported"
+            ),
+        },
         "commands_sent": False,
         "map_writes_performed": False,
         "mower": {
             "serial": f"{sn[:3]}***{sn[-4:]}" if len(sn) >= 8 else "***",
             "vehicle_type": vehicle_type,
-            "state_code": (coordinator.data or {}).get("state_code"),
-            "private_cloud_connected": (coordinator.data or {}).get(
-                "private_cloud_connected"
+            "state_code": data.get("state_code"),
+            "activity": data.get("activity"),
+            "private_cloud_connected": data.get("private_cloud_connected"),
+            "private_cloud_error": data.get("private_cloud_error"),
+            "oauth_configured": data.get("oauth_configured"),
+            "oauth_connected": data.get("oauth_connected"),
+            "oauth_error": data.get("oauth_error"),
+            "mqtt_configured": data.get("mqtt_configured"),
+            "mqtt_connected": data.get("mqtt_connected"),
+            "mqtt_error": data.get("mqtt_error"),
+            "mqtt_vehicle_state": data.get("mqtt_vehicle_state"),
+            "mqtt_action": data.get("mqtt_action"),
+            "mqtt_pose_age": data.get("mqtt_pose_age"),
+            "trail_active": data.get("trail_active"),
+            "trail_points": len(data.get("trail") or []),
+            "current_physical_zone_id": data.get("current_physical_zone_id"),
+            "target_zone_ids": data.get("target_zone_ids"),
+            "current_tunnel_id": data.get("current_tunnel_id"),
+            "gate_states": sanitize(deepcopy(data.get("gate_states") or {})),
+        },
+        "map_api": {
+            "schema_version": MAP_API_SCHEMA_VERSION,
+            "map_loaded": bool(map_data),
+            "map_version": map_data.get("version"),
+            "map_modified_count": map_data.get("modified_count"),
+            "zone_count": len(map_data.get("zones") or []),
+            "obstacle_count": len(map_data.get("obstacles") or []),
+            "doodle_count": len(map_data.get("doodles") or []),
+            "tunnel_count": len(map_data.get("tunnels") or []),
+            "global_cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
+            "zone_details": sanitize(deepcopy(data.get("zone_details") or [])),
+            "doodles": sanitize(deepcopy(map_data.get("doodles") or [])),
+            "map_api_path": f"/api/navimower/map/{coordinator.entry.entry_id}",
+            "sessions_api_path": (
+                f"/api/navimower/sessions/{coordinator.entry.entry_id}"
             ),
-            "mqtt_connected": (coordinator.data or {}).get("mqtt_connected"),
-            "mqtt_vehicle_state": (coordinator.data or {}).get("mqtt_vehicle_state"),
-            "mqtt_action": (coordinator.data or {}).get("mqtt_action"),
-            "trail_active": (coordinator.data or {}).get("trail_active"),
-            "trail_points": len((coordinator.data or {}).get("trail") or []),
-            "current_physical_zone_id": (coordinator.data or {}).get(
-                "current_physical_zone_id"
+            "session_api_path_template": (
+                f"/api/navimower/session/{coordinator.entry.entry_id}/{{session_id}}"
             ),
-            "target_zone_ids": (coordinator.data or {}).get("target_zone_ids"),
-            "current_tunnel_id": (coordinator.data or {}).get("current_tunnel_id"),
-            "gate_states": sanitize(
-                deepcopy((coordinator.data or {}).get("gate_states") or {})
-            ),
+        },
+        "history": {
+            "retention_days": coordinator.history.retention_days,
+            "include_return_trail": coordinator.history.include_return_trail,
+            "active_session": sanitize(deepcopy(active_summary)),
+            "retained_session_count": len(session_summaries),
+            "sessions": sanitize(deepcopy(session_summaries)),
+            "zone_history": sanitize(coordinator.history.zone_history()),
+            "point_format": list(SESSION_DETAIL_POINT_FORMAT),
         },
         "endpoints": endpoints,
         "mqtt_inventory": sanitize(deepcopy(mqtt_inventory)),
         "notes": [
-            "Values that identify an account, mower, network or physical GPS location are redacted.",
+            "Account, mower, network and physical GPS identifiers are redacted.",
+            "PIN, RTK anchor, ICCID and anti-theft location fields are redacted.",
             "Large binary/base64 resources are represented by length and SHA-256 only.",
-            "Local map X/Y coordinates are retained for geometry analysis.",
+            "Local map X/Y coordinates and vendor doodle SVG are retained for geometry analysis.",
+            "Full retained routes remain in authenticated session APIs and HA storage.",
         ],
     }
 

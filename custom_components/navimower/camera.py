@@ -18,6 +18,7 @@ from __future__ import annotations
 import html
 import logging
 import math
+import re
 
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
@@ -51,6 +52,7 @@ _TRAIL_OPACITY = 0.40       # applied to the WHOLE trail group -> no compounding
 _MOWER_ORANGE = "#ff6d00"
 _OBSTACLE_FILL = "#616161"
 _NOMOW_FILL = "#bdbdbd"
+_DOODLE_FILL = "#6edccf"
 
 
 async def async_setup_entry(
@@ -87,6 +89,7 @@ class NavimowMapCamera(NavimowEntity, Camera):
         zones = mp.get("zones") or []
         obstacles = mp.get("obstacles") or []
         vision_off = mp.get("vision_off") or []
+        doodles = mp.get("doodles") or []
         station = mp.get("station") or None
 
         pos = data.get("position") or {}
@@ -101,7 +104,7 @@ class NavimowMapCamera(NavimowEntity, Camera):
             for z in cov.get("zones") or []
             if z.get("id") is not None
         }
-        trail = data.get("trail") or []
+        trail = data.get("trail") or self.coordinator.history.latest_trail_xy()
 
         # Bounding box: derive it from the STABLE geometry (zones/obstacles/
         # no-mow/dock) first, then include only the dynamic points (mower +
@@ -114,6 +117,20 @@ class NavimowMapCamera(NavimowEntity, Camera):
             stable.extend(ob)
         for vo in vision_off:
             stable.extend(vo)
+        for doodle in doodles:
+            center = doodle.get("center") if isinstance(doodle, dict) else None
+            if isinstance(center, (list, tuple)) and len(center) >= 2:
+                try:
+                    dx, dy = float(center[0]), float(center[1])
+                    radius = max(0.1, float(doodle.get("scale") or 1.0)) / 2.0
+                    stable.extend(
+                        [
+                            [dx - radius, dy - radius],
+                            [dx + radius, dy + radius],
+                        ]
+                    )
+                except (TypeError, ValueError):
+                    pass
         if station and station.get("x") is not None and station.get("y") is not None:
             stable.append([station["x"], station["y"]])
 
@@ -128,7 +145,10 @@ class NavimowMapCamera(NavimowEntity, Camera):
             margin = max(bxmax - bxmin, bymax - bymin) * 0.15 + 1.0
             pts = list(stable)
             for p in dynamic:
-                if bxmin - margin <= p[0] <= bxmax + margin and bymin - margin <= p[1] <= bymax + margin:
+                if (
+                    bxmin - margin <= p[0] <= bxmax + margin
+                    and bymin - margin <= p[1] <= bymax + margin
+                ):
                     pts.append(p)
         else:
             pts = dynamic  # no map geometry yet -> fall back to whatever we have
@@ -210,6 +230,27 @@ class NavimowMapCamera(NavimowEntity, Camera):
                 f'stroke-linejoin="round"/>'
             )
 
+        # Time-limited app doodles. The private cloud supplies the original SVG
+        # and a local-map centre/direction/scale transform. Render that SVG when
+        # possible and fall back to a compact marker if the vendor payload cannot
+        # be embedded defensively.
+        for doodle in doodles:
+            if not isinstance(doodle, dict):
+                continue
+            rendered = self._doodle_svg(doodle, sx, sy, scale)
+            if rendered:
+                parts.append(rendered)
+                continue
+            center = doodle.get("center")
+            if not isinstance(center, (list, tuple)) or len(center) < 2:
+                continue
+            try:
+                dcx, dcy = sx(float(center[0])), sy(float(center[1]))
+                degrees = -math.degrees(float(doodle.get("direction") or 0.0))
+            except (TypeError, ValueError):
+                continue
+            parts.append(self._doodle_marker(dcx, dcy, degrees))
+
         # Mowed trail: a single flat translucent green layer. Each pass is drawn
         # OPAQUE inside one <g opacity=...> group -> the group is flattened before
         # the opacity is applied, so overlapping passes never compound into darker
@@ -258,7 +299,11 @@ class NavimowMapCamera(NavimowEntity, Camera):
         # Legend + status line.
         parts.append(
             self._legend(
-                bool(obstacles), bool(vision_off), station is not None, len(trail) >= 2
+                bool(obstacles),
+                bool(vision_off),
+                bool(doodles),
+                station is not None,
+                len(trail) >= 2,
             )
         )
         cov_pct = cov.get("overall_pct")
@@ -379,6 +424,54 @@ class NavimowMapCamera(NavimowEntity, Camera):
         )
 
     @staticmethod
+    def _doodle_svg(doodle: dict, sx, sy, map_scale: float) -> str:
+        """Render one app doodle from its original SVG and local transform."""
+        center = doodle.get("center") or []
+        raw_svg = str(doodle.get("svg") or "")
+        if len(center) < 2 or not raw_svg:
+            return ""
+        try:
+            cx = sx(float(center[0]))
+            cy = sy(float(center[1]))
+            world_width = max(0.1, float(doodle.get("scale") or 1.0))
+            direction = float(doodle.get("direction") or 0.0)
+        except (TypeError, ValueError):
+            return ""
+        lowered = raw_svg.lower()
+        if any(marker in lowered for marker in ("<script", "<foreignobject", "javascript:")):
+            return ""
+        if re.search(r"\son[a-z]+\s*=", lowered):
+            return ""
+        match = re.search(r"<svg\b([^>]*)>(.*)</svg>\s*$", raw_svg, re.I | re.S)
+        if not match:
+            return ""
+        attrs, inner = match.groups()
+        width_match = re.search(r'\bwidth=["\']([0-9.]+)', attrs, re.I)
+        height_match = re.search(r'\bheight=["\']([0-9.]+)', attrs, re.I)
+        viewbox_match = re.search(r'\bviewBox=["\']([^"\']+)', attrs, re.I)
+        try:
+            source_width = float(width_match.group(1)) if width_match else 1.0
+            source_height = float(height_match.group(1)) if height_match else source_width
+        except (TypeError, ValueError):
+            source_width = source_height = 1.0
+        ratio = source_height / source_width if source_width > 0 else 1.0
+        screen_width = max(8.0, world_width * map_scale)
+        screen_height = max(8.0, screen_width * ratio)
+        viewbox = (
+            viewbox_match.group(1)
+            if viewbox_match
+            else f"0 0 {source_width:g} {source_height:g}"
+        )
+        degrees = -math.degrees(direction)
+        return (
+            f'<g transform="translate({cx:.1f},{cy:.1f}) rotate({degrees:.1f})" opacity="0.82">'
+            f'<svg x="{-screen_width / 2:.1f}" y="{-screen_height / 2:.1f}" '
+            f'width="{screen_width:.1f}" height="{screen_height:.1f}" '
+            f'viewBox="{html.escape(viewbox, quote=True)}" preserveAspectRatio="xMidYMid meet">'
+            f'{inner}</svg></g>'
+        )
+
+    @staticmethod
     def _mower(cx: float, cy: float, heading: float | None) -> str:
         """A little robot-mower icon, rotated to face its heading.
 
@@ -395,8 +488,21 @@ class NavimowMapCamera(NavimowEntity, Camera):
             f'<circle cx="-5" cy="-5.5" r="2.4" fill="#eceff1"/>'
             f'<circle cx="-5" cy="5.5" r="2.4" fill="#eceff1"/>'
             # orange front sensor = points in the heading direction
-            f'<circle cx="8.5" cy="0" r="5.5" fill="{_MOWER_ORANGE}" stroke="#ffffff" stroke-width="1.5"/>'
+            f'<circle cx="8.5" cy="0" r="5.5" fill="{_MOWER_ORANGE}" '
+            f'stroke="#ffffff" stroke-width="1.5"/>'
             f"</g>"
+        )
+
+    @staticmethod
+    def _doodle_marker(cx: float, cy: float, degrees: float) -> str:
+        """Render a compact marker for one time-limited vendor doodle."""
+        return (
+            f'<g transform="translate({cx:.1f},{cy:.1f}) rotate({degrees:.1f})">'
+            f'<rect x="-13" y="-8" width="26" height="16" rx="5" '
+            f'fill="{_DOODLE_FILL}" fill-opacity="0.72" stroke="#00695c" '
+            f'stroke-width="1.5" stroke-dasharray="4 2"/>'
+            f'<circle cx="0" cy="0" r="2.5" fill="#004d40"/>'
+            f'</g>'
         )
 
     @staticmethod
@@ -414,7 +520,12 @@ class NavimowMapCamera(NavimowEntity, Camera):
         )
 
     def _legend(
-        self, has_obstacle: bool, has_no_mow: bool, has_dock: bool, has_trail: bool
+        self,
+        has_obstacle: bool,
+        has_no_mow: bool,
+        has_doodle: bool,
+        has_dock: bool,
+        has_trail: bool,
     ) -> str:
         """Compact, discreet legend of marker meanings (top-left overlay)."""
         rows: list[tuple[str, str]] = [(_MOWER_ORANGE, "Mower")]
@@ -426,6 +537,8 @@ class NavimowMapCamera(NavimowEntity, Camera):
             rows.append((_OBSTACLE_FILL, "Obstacle"))
         if has_no_mow:
             rows.append((_NOMOW_FILL, "No-mow"))
+        if has_doodle:
+            rows.append((_DOODLE_FILL, "Temporary"))
         x0, y0, dy = 14, 22, 20
         h = dy * len(rows) + 8
         parts = [

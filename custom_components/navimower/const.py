@@ -5,31 +5,48 @@ from typing import Final
 
 DOMAIN: Final = "navimower"
 MANUFACTURER: Final = "Segway Navimow"
-OAUTH_SOURCE_DOMAIN: Final = "navimow"
 
-# --- Config entry / options keys -------------------------------------------
+# --- Config entry / connection keys ---------------------------------------
 CONF_EMAIL: Final = "email"
-CONF_PASSWORD: Final = "password"  # only used transiently during the config flow
-CONF_ACCESS_TOKEN: Final = "access_token"
-CONF_REFRESH_TOKEN: Final = "refresh_token"
-CONF_UID: Final = "uid"
-CONF_DEVICE_ID: Final = "device_id"
+CONF_PASSWORD: Final = "password"  # transient during config/reauth only
+CONF_ACCESS_TOKEN: Final = "access_token"  # private-cloud Passport token
+CONF_REFRESH_TOKEN: Final = "refresh_token"  # private-cloud Passport refresh token
+CONF_PASSPORT_UUID: Final = "passport_uuid"  # private Passport account UUID
+CONF_UID: Final = "uid"  # private mower-cloud uid
+CONF_DEVICE_ID: Final = "device_id"  # stable private-cloud app/device id
 CONF_REGION: Final = "region"
 CONF_LANGUAGE: Final = "language"
 CONF_VEHICLE_SN: Final = "vehicle_sn"
 CONF_VEHICLE_TYPE: Final = "vehicle_type"
 CONF_VEHICLE_NAME: Final = "vehicle_name"
 CONF_MODEL: Final = "model"
-CONF_MQTT_SOURCE_ENTRY_ID: Final = "mqtt_source_entry_id"
+CONF_OAUTH_DEVICE_ID: Final = "oauth_device_id"
+CONF_AUTH_IMPLEMENTATION: Final = "auth_implementation"
+CONF_OAUTH_TOKEN: Final = "token"
+CONF_API_BASE_URL: Final = "api_base_url"
 
-# Options-flow keys
-OPT_ZONES: Final = "zones"  # user-supplied "id:name,id:name" fallback list
-OPT_CHANNELS: Final = "channels"  # JSON list of channel rectangles
-OPT_GATES: Final = "gates"  # JSON list of bidirectional zone-pair gates
+# Legacy v0.1.x key/domain. Used only to copy the existing OAuth token into the
+# Navimower entry during config-entry migration; runtime no longer depends on it.
+CONF_MQTT_SOURCE_ENTRY_ID: Final = "mqtt_source_entry_id"
+LEGACY_OAUTH_SOURCE_DOMAIN: Final = "navimow"
+
+# --- Options ---------------------------------------------------------------
+OPT_ZONES: Final = "zones"  # legacy id:name fallback; preserved during migration
+OPT_CHANNELS: Final = "channels"  # list[dict] of local X/Y rectangles
+OPT_GATES: Final = "gates"  # list[dict] of zone-pair gates
+OPT_TRAIL_RETENTION_DAYS: Final = "trail_retention_days"
+OPT_INCLUDE_RETURN_TRAIL: Final = "include_return_trail"
+OPT_DIAGNOSTICS_DETAIL: Final = "diagnostics_detail"
+
+DEFAULT_TRAIL_RETENTION_DAYS: Final = 7
+TRAIL_RETENTION_OPTIONS: Final[tuple[int, ...]] = (3, 7, 14, 30, 0)  # 0 = unlimited
+GATE_CLOSE_DELAY_OPTIONS: Final[tuple[int, ...]] = (0, 10, 20, 30)
+DEFAULT_INCLUDE_RETURN_TRAIL: Final = True
+DEFAULT_DIAGNOSTICS_DETAIL: Final = "standard"
 
 DEFAULT_LANGUAGE: Final = "en"
 
-# --- Official OAuth / MQTT -------------------------------------------------
+# --- Official Smart Home OAuth / MQTT -------------------------------------
 OAUTH2_AUTHORIZE: Final = (
     "https://navimow-h5-fra.willand.com/smartHome/login?channel=homeassistant"
 )
@@ -42,25 +59,31 @@ MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 MQTT_POSE_STALE_SECONDS: Final = 20
-MQTT_TRAIL_SAVE_DELAY_SECONDS: Final = 30
+MQTT_HISTORY_SAVE_DELAY_SECONDS: Final = 30
+# Legacy name retained while migrating old code paths.
+MQTT_TRAIL_SAVE_DELAY_SECONDS: Final = MQTT_HISTORY_SAVE_DELAY_SECONDS
 TUNNEL_DETECTION_RADIUS_M: Final = 1.0
 ZONE_EDGE_TOLERANCE_M: Final = 0.35
 
 # --- Private-cloud polling -------------------------------------------------
 DEFAULT_SCAN_INTERVAL: Final = 30
 FAST_SCAN_INTERVAL: Final = 12
-# MQTT supplies the dense pose/trail. Private cloud is deliberately not polled
-# every 3 seconds while mowing; this keeps the app API load conservative.
+# MQTT supplies dense pose/trail. Private app-cloud polling stays conservative.
 MOW_SCAN_INTERVAL: Final = 12
 SLOW_REFRESH_EVERY: Final = 6
 
-# --- Coverage / mowed-trail overlay ----------------------------------------
-SWATH_WIDTH_M: Final = 0.25
-TRAIL_MAX_POINTS: Final = 10000
-TRAIL_MIN_STEP_M: Final = 0.12
-TRAIL_BREAK_M: Final = 5.0
+# --- Map/history API -------------------------------------------------------
+MAP_API_SCHEMA_VERSION: Final = 2
+SESSION_CACHE_LIMIT: Final = 64
 
-# --- vehicle_state (empirical hex from private index2/auth-list) ------------
+# --- Coverage / rendered trail --------------------------------------------
+SWATH_WIDTH_M: Final = 0.25
+TRAIL_BREAK_M: Final = 5.0
+# Legacy v0.1.x values retained only for importing old trail storage.
+TRAIL_MAX_POINTS: Final = 10000
+TRAIL_MIN_STEP_M: Final = 0.0
+
+# --- vehicle_state (empirical private-cloud hex) ---------------------------
 STATE_IDLE_DOCKED: Final = "0101"
 STATE_IDLE_DOCKED_POST: Final = "0102"
 STATE_MOWING: Final = "0210"
@@ -83,7 +106,7 @@ VEHICLE_STATE_TO_ACTIVITY: Final[dict[str, str]] = {
 
 VEHICLE_STATE_LABELS: Final[dict[str, str]] = {
     STATE_IDLE_DOCKED: "Docked",
-    STATE_IDLE_DOCKED_POST: "Docked (finished)",
+    STATE_IDLE_DOCKED_POST: "Charging",
     STATE_MOWING: "Mowing",
     STATE_PAUSED: "Paused",
     STATE_RETURNING: "Returning to dock",
@@ -102,7 +125,7 @@ MQTT_STATE_MAPPING: Final = 6
 MQTT_DOCKED_STATES: Final = {MQTT_STATE_DOCKED, MQTT_STATE_CHARGING}
 MQTT_CUTTING_ACTIONS: Final = {5, 8}  # normal mowing / boundary mowing
 
-# --- Mow options ------------------------------------------------------------
+# --- Mow options -----------------------------------------------------------
 MOW_SETUP_CONTINUE_AUTO: Final = 0x11
 MOW_SETUP_CONTINUE: Final = 0x12
 MOW_SETUP_RESTART_AUTO: Final = 0x21

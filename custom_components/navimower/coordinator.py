@@ -10,21 +10,26 @@ import base64
 import io
 import json
 import logging
-import threading
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .api import NavimowAuthError, NavimowCloudClient, NavimowError, Tokens
 from .channel import NavimowerChannel, parse_channels
 from .gate import NavimowerGate, parse_gates
+from .history import (
+    SESSION_CARD_POINT_FORMAT,
+    SESSION_DETAIL_POINT_FORMAT,
+    NavimowerHistory,
+)
+from .location import decode_map_work_position
 from .const import (
     ACTIVE_STATES,
     ACTIVITY_DOCKED,
@@ -34,6 +39,8 @@ from .const import (
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_ID,
     CONF_LANGUAGE,
+    CONF_OAUTH_TOKEN,
+    CONF_PASSPORT_UUID,
     CONF_REFRESH_TOKEN,
     CONF_REGION,
     CONF_UID,
@@ -50,15 +57,17 @@ from .const import (
     MQTT_STATE_MOWING,
     MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
-    MQTT_TRAIL_SAVE_DELAY_SECONDS,
+    MQTT_HISTORY_SAVE_DELAY_SECONDS,
     OPT_CHANNELS,
     OPT_GATES,
+    OPT_INCLUDE_RETURN_TRAIL,
+    OPT_TRAIL_RETENTION_DAYS,
     OPT_ZONES,
+    DEFAULT_TRAIL_RETENTION_DAYS,
+    MAP_API_SCHEMA_VERSION,
     SLOW_REFRESH_EVERY,
     STATE_MOWING,
     STATE_RETURNING,
-    TRAIL_MAX_POINTS,
-    TRAIL_MIN_STEP_M,
     TUNNEL_DETECTION_RADIUS_M,
     ZONE_EDGE_TOLERANCE_M,
     VEHICLE_STATE_LABELS,
@@ -72,20 +81,18 @@ _LOGGER = logging.getLogger(__name__)
 # Slow-changing endpoints refreshed only every SLOW_REFRESH_EVERY cycles.
 _SLOW_KEYS = ("set_list", "maintenance", "today_plan", "map_list")
 
-# Persist the reconstructed mowed trail so it survives HA restarts/updates.
-# The store is written at most once per _TRAIL_SAVE_DELAY seconds and only when
-# the trail actually changed (keeps SD-card writes low on HAOS).
-_TRAIL_STORE_VERSION = 1
-_TRAIL_SAVE_DELAY = MQTT_TRAIL_SAVE_DELAY_SECONDS
+# Persist the latest decoded map so MQTT/history remain useful during a
+# temporary private-cloud outage.  Trail sessions use separate Store files.
+_STATE_STORE_VERSION = 1
 
 
-def trail_store(hass: HomeAssistant, entry_id: str) -> Store:
-    """Per-entry Store that persists the reconstructed mowed trail.
-
-    Shared with ``async_remove_entry`` in ``__init__`` so the key/version stay in
-    sync (the store file must be deleted when the integration is removed).
-    """
-    return Store(hass, _TRAIL_STORE_VERSION, f"{DOMAIN}_trail_{entry_id}")
+def state_store(hass: HomeAssistant, entry_id: str) -> Store:
+    """Return the per-entry cached map/state Store."""
+    key = f"{DOMAIN}_state_{entry_id}"
+    try:
+        return Store(hass, _STATE_STORE_VERSION, key, serialize_in_event_loop=False)
+    except TypeError:
+        return Store(hass, _STATE_STORE_VERSION, key)
 
 
 def _find(obj: Any, *keys: str) -> Any:
@@ -117,6 +124,17 @@ def _as_float(value: Any) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _utc_iso_from_seconds(value: Any) -> str | None:
+    """Convert a vendor Unix-seconds value to UTC ISO without raising."""
+    parsed = _as_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(parsed, tz=UTC).isoformat()
+    except (OverflowError, OSError, ValueError):
         return None
 
 
@@ -356,9 +374,11 @@ def _boundary_points(points: Any) -> tuple[list[list[float]], list[int | None]]:
 
 
 def _extract_geometry(geom: dict) -> dict:
-    """Reduce the raw map object to stable geometry used by entities and UI."""
-    zones: list[dict] = []
-    station: dict | None = None
+    """Reduce raw map JSON to the versioned geometry consumed by HA/UI."""
+    zones: list[dict[str, Any]] = []
+    station: dict[str, Any] | None = None
+    doodle_zone: dict[int, int] = {}
+
     for sm in geom.get("sub_maps") or []:
         if not isinstance(sm, dict):
             continue
@@ -366,6 +386,15 @@ def _extract_geometry(geom: dict) -> dict:
         polygon: list[list[float]] = []
         boundary_flags: list[int | None] = []
         boundary_meta: dict[str, Any] = {}
+        doodle_ids = [
+            value
+            for item in sm.get("contain_doodles_id") or []
+            if (value := _as_int(item)) is not None
+        ]
+        if zid is not None:
+            for doodle_id in doodle_ids:
+                doodle_zone[doodle_id] = zid
+
         for el in sm.get("elements") or []:
             if not isinstance(el, dict):
                 continue
@@ -375,10 +404,17 @@ def _extract_geometry(geom: dict) -> dict:
                 boundary_meta = {
                     key: el.get(key)
                     for key in (
-                        "clock_direction", "boundary_type", "base_angle",
-                        "rec_base_angle", "mow_edge", "obstacle_mow_edge",
-                        "doodle_mow_edge", "edge_vf", "height_set",
-                        "avai_segs", "ts_switch",
+                        "clock_direction",
+                        "boundary_type",
+                        "base_angle",
+                        "rec_base_angle",
+                        "mow_edge",
+                        "obstacle_mow_edge",
+                        "doodle_mow_edge",
+                        "edge_vf",
+                        "height_set",
+                        "avai_segs",
+                        "ts_switch",
                     )
                     if key in el
                 }
@@ -389,38 +425,82 @@ def _extract_geometry(geom: dict) -> dict:
                         "x": pos[0][0],
                         "y": pos[0][1],
                         "direction": _as_float(el.get("direction")),
+                        "width": _as_float(el.get("width")),
+                        "length": _as_float(el.get("length")),
+                        "center_offset": _as_float(el.get("center_offset")),
+                        "nav_pos": (_points_xy([el.get("nav_pos")]) or [None])[0],
                     }
         if zid is None and not polygon:
             continue
-        zones.append({
-            "id": zid,
-            "name": str(sm.get("name") or (f"Zone {zid}" if zid is not None else "Zone")),
-            "area": _as_float(sm.get("area")),
-            "polygon": polygon,
-            "boundary_flags": boundary_flags,
-            "boundary": boundary_meta,
-        })
+        zones.append(
+            {
+                "id": zid,
+                "name": str(
+                    sm.get("name")
+                    or (f"Zone {zid}" if zid is not None else "Zone")
+                ),
+                "area": _as_float(sm.get("area")),
+                "polygon": polygon,
+                "boundary_flags": boundary_flags,
+                "boundary": boundary_meta,
+                "doodle_ids": doodle_ids,
+            }
+        )
 
     def polygons(key: str) -> list[list[list[float]]]:
         return [
-            pts
+            points
             for item in (geom.get(key) or [])
-            if isinstance(item, dict) and (pts := _points_xy(item.get("points")))
+            if isinstance(item, dict)
+            and (points := _points_xy(item.get("points")))
         ]
 
-    tunnels: list[dict] = []
+    tunnels: list[dict[str, Any]] = []
     for item in geom.get("tunnels") or []:
         if not isinstance(item, dict):
             continue
-        pts = _points_xy(item.get("points"))
-        if pts:
-            tunnels.append({
-                "id": _as_int(item.get("id")),
-                "name": str(item.get("name") or ""),
-                "points": pts,
-                "connection": item.get("connection"),
-                "tunnel_type": item.get("tunnel_type"),
-            })
+        points = _points_xy(item.get("points"))
+        if points:
+            tunnels.append(
+                {
+                    "id": _as_int(item.get("id")),
+                    "name": str(item.get("name") or ""),
+                    "points": points,
+                    "connection": [
+                        value
+                        for raw in item.get("connection") or []
+                        if (value := _as_int(raw)) is not None
+                    ],
+                    "tunnel_type": item.get("tunnel_type"),
+                }
+            )
+
+    # Time-limited obstacles (called "doodles" by the mobile app) carry the
+    # original SVG plus the transform needed to place it in local map space.
+    doodles: list[dict[str, Any]] = []
+    for item in geom.get("time_limit_obstacles") or []:
+        if not isinstance(item, dict):
+            continue
+        doodle_id = _as_int(item.get("id"))
+        center = _points_xy([item.get("center")])
+        if doodle_id is None or not center:
+            continue
+        doodles.append(
+            {
+                "id": doodle_id,
+                "zone_id": doodle_zone.get(doodle_id),
+                "name": str(item.get("name") or "doodle"),
+                "type": str(item.get("type") or "TIME_LIMIT_OBSTACLE"),
+                "center": center[0],
+                "direction": _as_float(item.get("direction")),
+                "scale": _as_float(item.get("scale")),
+                "create_ts": _as_int(item.get("create_ts")),
+                "expiration_ts": _as_int(item.get("expiration_ts")),
+                "created_at": _utc_iso_from_seconds(item.get("create_ts")),
+                "expires_at": _utc_iso_from_seconds(item.get("expiration_ts")),
+                "svg": str(item.get("svg") or ""),
+            }
+        )
 
     return {
         "id": _as_int(geom.get("id")),
@@ -431,12 +511,23 @@ def _extract_geometry(geom: dict) -> dict:
         "north_offset": _as_float(geom.get("map_north_offset")),
         "version": geom.get("version"),
         "modified_count": _as_int(geom.get("modifiedCount")),
+        "lidar_sha256": geom.get("lidar_sha256"),
         "zones": zones,
         "obstacles": polygons("obstacles"),
         "vision_off": polygons("vision_off_areas"),
         "tunnels": tunnels,
+        "doodles": doodles,
+        "terrain_sense": deepcopy_json(geom.get("terrain_sense") or []),
         "station": station,
     }
+
+
+def deepcopy_json(value: Any) -> Any:
+    """Return a JSON-safe deep copy without importing copy in hot parsing."""
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_map_detail(blob: Any) -> dict | None:
@@ -582,44 +673,48 @@ def _parse_schedule(set_list: Any, zone_names: dict) -> list[dict]:
 
 
 def _parse_coverage(raw_list: Any, zone_names: dict) -> dict | None:
-    """Per-zone mowing coverage from get-path-info-time.
-
-    Input: ``[{partitionId, area, finishedArea, partitionPercentage}, ...]``.
-    Output: ``{overall_pct, total_area, finished_area, zones:[{id,name,area,
-    finished,pct}]}`` or ``None`` when there is nothing to report.
-    """
+    """Normalize per-zone coverage and retain vendor timestamps."""
     if not isinstance(raw_list, list) or not raw_list:
         return None
-    zones: list[dict] = []
-    tot_area = 0.0
-    tot_fin = 0.0
-    for it in raw_list:
-        if not isinstance(it, dict):
+    zones: list[dict[str, Any]] = []
+    total_area = 0.0
+    total_finished = 0.0
+    for item in raw_list:
+        if not isinstance(item, dict):
             continue
-        zid = _as_int(it.get("partitionId"))
-        area = _as_float(it.get("area"))
-        fin = _as_float(it.get("finishedArea"))
-        pct = _as_int(it.get("partitionPercentage"))
+        zone_id = _as_int(item.get("partitionId"))
+        area = _as_float(item.get("area"))
+        finished = _as_float(item.get("finishedArea"))
+        percentage = _as_int(item.get("partitionPercentage"))
         if area is not None:
-            tot_area += area
-        if fin is not None:
-            tot_fin += fin
+            total_area += area
+        if finished is not None:
+            total_finished += finished
         zones.append(
             {
-                "id": zid,
-                "name": zone_names.get(zid, f"Zone {zid}") if zid is not None else "Zone",
+                "id": zone_id,
+                "name": (
+                    zone_names.get(zone_id, f"Zone {zone_id}")
+                    if zone_id is not None
+                    else "Zone"
+                ),
                 "area": area,
-                "finished": fin,
-                "pct": pct,
+                "finished": finished,
+                "pct": percentage,
+                "start_time": _as_int(item.get("startTime")),
+                "end_time": _as_int(item.get("endTime")),
+                "end_time_alias": _as_int(item.get("endTimeAlias")),
             }
         )
     if not zones:
         return None
-    overall = round(100.0 * tot_fin / tot_area) if tot_area > 0 else None
+    overall = (
+        round(100.0 * total_finished / total_area) if total_area > 0 else None
+    )
     return {
         "overall_pct": overall,
-        "total_area": round(tot_area, 2),
-        "finished_area": round(tot_fin, 2),
+        "total_area": round(total_area, 2),
+        "finished_area": round(total_finished, 2),
         "zones": zones,
     }
 
@@ -689,6 +784,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             tokens=Tokens(
                 access_token=data.get(CONF_ACCESS_TOKEN, ""),
                 refresh_token=data.get(CONF_REFRESH_TOKEN, ""),
+                uuid=data.get(CONF_PASSPORT_UUID, ""),
                 region=data.get(CONF_REGION, "fra"),
             ),
             uid=data.get(CONF_UID, ""),
@@ -699,108 +795,163 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self.vehicle_type: int = int(data.get(CONF_VEHICLE_TYPE, 0) or 0)
         self._cycle = 0
         self._raw_cache: dict[str, Any] = {}
-        # Parsed map geometry, cached across cycles (the map rarely changes).
-        self._map_geometry: dict | None = None
-        self._map_cache_key: tuple | None = None
-        # Mowed-trail reconstruction: accumulate the robot's position while it
-        # cuts (see SWATH/TRAIL constants). A new session (docked -> mowing
-        # transition) clears the trail. Mutated in the executor thread, so it is
-        # guarded by a lock against an overlapping command-triggered refresh.
-        self._trail: list[list[float]] = []
-        self._trail_lock = threading.Lock()
-        self._prev_state_code: str | None = None
-        self._trail_was_mowing = False
-        self._trail_docked_since_mow = False
-        # Persist the trail across restarts (loaded in async_load_trail, saved
-        # debounced from _async_update_data only when _trail_dirty is set).
-        self._trail_store: Store = trail_store(hass, entry.entry_id)
-        self._trail_dirty = False
-        # Monotonic session identifier used by the map card. It changes only
-        # when the backend observes a genuine new docked->mowing transition.
-        # This prevents transient frontend state changes from wiping the trail.
-        self._trail_session = 0
-        self._last_trail_save = 0.0  # time.monotonic() of the last real write
-        # User's pending zone choice for the native lawn_mower "mow" button.
-        # The zone select only STORES this (does not start); the mower's
-        # start_mowing reads it. Empty list = all zones. In-memory (resets on
-        # restart to "all").
+        self._map_geometry: dict[str, Any] | None = None
+        self._map_cache_key: tuple[str, str, str] | None = None
+        self._map_dirty = False
+        self._state_store = state_store(hass, entry.entry_id)
+        self.history = NavimowerHistory(
+            hass,
+            entry.entry_id,
+            self.sn,
+            retention_days=int(
+                entry.options.get(
+                    OPT_TRAIL_RETENTION_DAYS, DEFAULT_TRAIL_RETENTION_DAYS
+                )
+                or 0
+            ),
+            include_return_trail=bool(
+                entry.options.get(OPT_INCLUDE_RETURN_TRAIL, True)
+            ),
+        )
+        # Pending native mower-zone choice; empty means all zones.
         self.selected_zone_ids: list[int] = []
-        # Dense official MQTT pose is merged into the private-cloud snapshot.
+        # Dense official MQTT pose is merged into private-cloud state.
         self._mqtt_location: dict[str, Any] | None = None
         self._mqtt_last_update: float | None = None
         self._mqtt_connected = False
-        self._mqtt_configured = False
+        self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
+        self._oauth_connected = False
         self._private_cloud_connected = False
         self._last_private_error: str | None = None
+        self._last_oauth_error: str | None = None
+        self._last_mqtt_error: str | None = None
         self.channels: list[NavimowerChannel] = parse_channels(
             entry.options.get(OPT_CHANNELS)
         )
-        self.gates: list[NavimowerGate] = parse_gates(entry.options.get(OPT_GATES))
-        self._gate_latches: dict[str, dict[str, int]] = {}
+        self.gates: list[NavimowerGate] = parse_gates(
+            entry.options.get(OPT_GATES)
+        )
+        self._gate_latches: dict[str, dict[str, Any]] = {}
         self._last_target_zone_ids: list[int] = []
+        self._private_reauth_started = False
+        self._gate_release_tasks: dict[str, Any] = {}
+        self._shutdown_complete = False
 
-    async def async_load_trail(self) -> None:
-        """Restore the persisted mowed trail (call before the first refresh).
-
-        SN-guarded: ignore data saved for a different mower (e.g. after a backup
-        restore). Also restores ``_prev_state_code`` so the "a new mow resets the
-        trail" rule still holds across a restart (no spurious wipe of the
-        restored trail; a genuinely new docked->mowing transition still resets).
-        Never raises -- persistence must not block setup.
-
-        Known limitation: if HA is down across a full session boundary (mow A
-        ends and mow B starts while HA is off) and the robot is mowing again at
-        startup, the docked->mowing transition is never observed, so B's path is
-        appended to A's (the two mows merge on the map) until the next observed
-        transition resets it. This is the lesser evil of an unavoidable
-        ambiguity -- the alternative (reset on any mowing-at-startup) would wipe
-        a genuinely in-progress mow on every mid-mow restart, which is far more
-        common.
-        """
+    async def async_load_persistent_state(self) -> None:
+        """Restore retained sessions and the last decoded map."""
+        await self.history.async_load()
         try:
-            data = await self._trail_store.async_load()
-        except Exception:  # noqa: BLE001 - never block setup over persistence
-            _LOGGER.debug("trail: restore failed", exc_info=True)
-            return
-        if not isinstance(data, dict) or data.get("sn") != self.sn:
-            return
-        raw = data.get("trail")
-        if not isinstance(raw, list):
-            return
-        trail: list[list[float]] = []
-        for p in raw:
-            if isinstance(p, (list, tuple)) and len(p) >= 2:
-                try:
-                    trail.append([float(p[0]), float(p[1])])
-                except (TypeError, ValueError):
-                    continue
-        with self._trail_lock:
-            self._trail = trail[-TRAIL_MAX_POINTS:]
-            prev = data.get("prev_state_code")
-            self._prev_state_code = prev if isinstance(prev, str) else None
-            self._trail_was_mowing = bool(
-                data.get("trail_was_mowing", self._prev_state_code == STATE_MOWING)
-            )
-            self._trail_docked_since_mow = bool(
-                data.get("trail_docked_since_mow", self._prev_state_code in DOCKED_STATES)
-            )
-            try:
-                self._trail_session = max(0, int(data.get("trail_session", 0)))
-            except (TypeError, ValueError):
-                self._trail_session = 0
-        _LOGGER.debug("trail: restored %d points", len(trail))
+            cached = await self._state_store.async_load()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Map-state restore failed", exc_info=True)
+            cached = None
+        if isinstance(cached, dict) and cached.get("sn") in (None, self.sn):
+            geometry = cached.get("map_geometry")
+            if isinstance(geometry, dict):
+                self._map_geometry = geometry
+            key = cached.get("map_cache_key")
+            geometry_schema = _as_int(cached.get("geometry_schema"))
+            if (
+                geometry_schema == MAP_API_SCHEMA_VERSION
+                and isinstance(key, (list, tuple))
+                and len(key) == 3
+            ):
+                self._map_cache_key = tuple(str(value) for value in key)
+            else:
+                # v0.1.x cached reduced geometry did not contain doodles,
+                # effective heights or a frontend-visible map revision. Keep it
+                # for bootstrap display but force a one-time cloud re-decode.
+                self._map_cache_key = None
 
-    def _trail_store_data(self) -> dict:
-        """Snapshot of the trail for the persistent store (read at write time)."""
-        with self._trail_lock:
-            return {
-                "sn": self.sn,
-                "prev_state_code": self._prev_state_code,
-                "trail_was_mowing": self._trail_was_mowing,
-                "trail_docked_since_mow": self._trail_docked_since_mow,
-                "trail_session": self._trail_session,
-                "trail": list(self._trail),
+        # Always expose a bootstrap snapshot before the network branches start.
+        # Cached geometry/history is included when present; otherwise entities can
+        # still come up and independently report private/OAuth/MQTT health.
+        self.async_set_updated_data(self._bootstrap_snapshot())
+
+    def bootstrap_snapshot(self) -> dict[str, Any]:
+        """Return cached/local data suitable for partial offline setup."""
+        return self._bootstrap_snapshot()
+
+    def _bootstrap_snapshot(self) -> dict[str, Any]:
+        map_geometry = self._map_geometry or {}
+        zones = [
+            {
+                "id": zone.get("id"),
+                "name": zone.get("name"),
+                "area": zone.get("area"),
+                "partition_ids_hex": (
+                    encode_partition_ids([zone_id])
+                    if (zone_id := _as_int(zone.get("id"))) is not None
+                    else ""
+                ),
             }
+            for zone in map_geometry.get("zones") or []
+            if isinstance(zone, dict)
+        ]
+        map_payload = self._map_snapshot(map_geometry) if map_geometry else None
+        snapshot: dict[str, Any] = {
+            "vehicle_sn": self.sn,
+            "vehicle_type": self.vehicle_type,
+            "name": self.entry.title,
+            "model": self.entry.data.get("model", ""),
+            "state": "Unknown",
+            "state_code": "",
+            "activity": None,
+            "online": None,
+            "docked": None,
+            "error": False,
+            "zones": zones,
+            "current_zone": None,
+            "current_zone_ids": [],
+            "coverage": None,
+            "settings": {},
+            "maintenance": {},
+            "position": None,
+            "map": map_payload,
+            "zone_details": self._merge_zone_history(
+                self._build_zone_details(None, None)
+            ),
+            "trail": self.history.active_points_xy(),
+            "sessions": self.history.session_summaries(include_points=False),
+            "trail_active": self.history.active_session is not None,
+            "channels": [channel.as_dict() for channel in self.channels],
+            "gates": [gate.as_dict() for gate in self.gates],
+            "raw": {},
+        }
+        snapshot.update(self._connectivity_fields())
+        snapshot.update(self._navigation_fields(snapshot))
+        return snapshot
+
+    async def async_shutdown(self) -> None:
+        """Stop coordinator polling and flush history/cached geometry once."""
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+        for cancel in list(self._gate_release_tasks.values()):
+            try:
+                cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self._gate_release_tasks.clear()
+        try:
+            await self.history.async_flush()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("History checkpoint failed", exc_info=True)
+        try:
+            await self._state_store.async_save(self._state_store_data())
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Map-state checkpoint failed", exc_info=True)
+        await super().async_shutdown()
+
+    def _state_store_data(self) -> dict[str, Any]:
+        return {
+            "sn": self.sn,
+            "geometry_schema": MAP_API_SCHEMA_VERSION,
+            "map_geometry": self._map_geometry,
+            "map_cache_key": list(self._map_cache_key)
+            if self._map_cache_key
+            else None,
+        }
 
     # ------------------------------------------------------------------ poll
     async def _async_update_data(self) -> dict:
@@ -811,21 +962,35 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.update_interval = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
             self._private_cloud_connected = False
             self._last_private_error = str(err)
-            # A transient app-cloud/session failure must not blank every entity.
-            # Keep the last valid snapshot and expose connectivity separately.
-            if self.data:
-                snapshot = dict(self.data)
-                snapshot.update(self._connectivity_fields())
-                return snapshot
-            if isinstance(err, NavimowAuthError):
-                raise ConfigEntryAuthFailed(str(err)) from err
-            raise UpdateFailed(f"API error: {err}") from err
+            if isinstance(err, NavimowAuthError) and not self._private_reauth_started:
+                self._private_reauth_started = True
+                self.entry.async_start_reauth(
+                    self.hass, data={"reauth_type": "private"}
+                )
+            snapshot = dict(self.data or self._bootstrap_snapshot())
+            snapshot.update(self._connectivity_fields())
+            return snapshot
 
         self._private_cloud_connected = True
+        self._private_reauth_started = False
         self._last_private_error = None
         self._persist_session()
         snapshot = self._apply_mqtt_snapshot(snapshot)
-        await self._async_checkpoint_trail()
+        self.history.update_from_snapshot(snapshot)
+        snapshot["zone_details"] = self._merge_zone_history(
+            snapshot.get("zone_details") or []
+        )
+        snapshot["trail"] = self.history.active_points_xy()
+        snapshot["trail_session"] = self.history.active_session_no
+        snapshot["trail_started_at"] = self.history.active_started_at()
+        snapshot["sessions"] = self.history.session_summaries(include_points=False)
+
+        if self._map_dirty:
+            self._map_dirty = False
+            cached = self._state_store_data()
+            self._state_store.async_delay_save(
+                lambda: cached, MQTT_HISTORY_SAVE_DELAY_SECONDS
+            )
 
         code = snapshot.get("state_code")
         if code == STATE_MOWING:
@@ -838,22 +1003,103 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot.update(self._connectivity_fields())
         return snapshot
 
-    async def _async_checkpoint_trail(self) -> None:
-        """Persist a dirty trail at a bounded frequency."""
-        if not self._trail_dirty:
-            return
-        self._trail_dirty = False
-        try:
-            now = time.monotonic()
-            if now - self._last_trail_save >= _TRAIL_SAVE_DELAY:
-                self._last_trail_save = now
-                await self._trail_store.async_save(self._trail_store_data())
-            else:
-                self._trail_store.async_delay_save(
-                    self._trail_store_data, _TRAIL_SAVE_DELAY
-                )
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("trail: save failed", exc_info=True)
+    def _merge_zone_history(
+        self, zone_details: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        history = self.history.zone_history()
+        result: list[dict[str, Any]] = []
+        for detail in zone_details:
+            if not isinstance(detail, dict):
+                continue
+            zone_id = _as_int(detail.get("id"))
+            persisted = history.get(str(zone_id)) if zone_id is not None else None
+            # Live geometry/settings win when present; persistent timestamps fill
+            # gaps instead of being erased by a current incomplete/empty cloud row.
+            merged = dict(persisted or {})
+            for key, value in detail.items():
+                if value is not None or key not in merged:
+                    merged[key] = value
+            result.append(merged)
+        return result
+
+    def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
+        active = self.history.active_session
+        if not active:
+            return None
+        selected = {
+            parsed
+            for value in active.get("zone_ids") or []
+            if (parsed := _as_int(value)) is not None
+        }
+        percentages = {
+            _as_int(item.get("id")): _as_int(item.get("pct"))
+            for item in (snapshot.get("coverage") or {}).get("zones") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        relevant = (
+            [percentages.get(zone_id) for zone_id in selected]
+            if selected
+            else list(percentages.values())
+        )
+        known = [value for value in relevant if value is not None]
+        return all(value >= 100 for value in known) if known else None
+
+    def _active_cutting_height(self, snapshot: dict[str, Any]) -> int | None:
+        target_ids = (
+            snapshot.get("target_zone_ids")
+            or snapshot.get("current_zone_ids")
+            or []
+        )
+        details = {
+            _as_int(item.get("id")): item
+            for item in snapshot.get("zone_details") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        if len(target_ids) == 1:
+            detail = details.get(_as_int(target_ids[0])) or {}
+            height = _as_int(detail.get("cutting_height_mm"))
+            if height is not None:
+                return height
+        return _as_int((snapshot.get("settings") or {}).get("cut_height"))
+
+    def _update_history(
+        self,
+        snapshot: dict[str, Any],
+        position: dict[str, Any] | None,
+        mqtt_state: int | None,
+        mqtt_action: int | None,
+    ) -> None:
+        cutting = self._is_cutting(snapshot.get("state_code"), mqtt_state, mqtt_action)
+        docked = self._is_docked_state(snapshot.get("state_code"), mqtt_state)
+        returning = self._is_returning_state(
+            snapshot.get("state_code"), mqtt_state
+        )
+        zone_ids = [
+            parsed
+            for value in (
+                snapshot.get("target_zone_ids")
+                or snapshot.get("current_zone_ids")
+                or []
+            )
+            if (parsed := _as_int(value)) is not None
+        ]
+        active_height = self._active_cutting_height(snapshot)
+        snapshot["active_cutting_height_mm"] = active_height
+        self.history.observe(
+            position=position,
+            pose_time=snapshot.get("pose_time"),
+            heading=(position or {}).get("heading") if position else None,
+            activity=str(snapshot.get("activity") or "unknown"),
+            cutting=cutting,
+            docked=docked,
+            returning=returning,
+            zone_ids=zone_ids,
+            cutting_height_mm=active_height,
+            mode=str(snapshot.get("mow_mode") or "mowing"),
+            mqtt_vehicle_state=mqtt_state,
+            mqtt_action=mqtt_action,
+            completed=self._session_completed(snapshot) if docked else None,
+        )
 
     def _fetch_blocking(self) -> dict:
         """Runs in an executor thread. Fetches + parses one snapshot."""
@@ -945,6 +1191,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if geometry is None:
             return
 
+        geometry["map_id"] = str(map_id)
+        geometry["map_base_id"] = str(map_base_id)
+        geometry["edit_time"] = str(edit_time or "")
+        geometry["revision"] = "|".join(key)
+
         # Optional dock/approach path (a different, docking-local frame -> we do
         # NOT render it, but keep it available for debugging / future overlays).
         try:
@@ -960,6 +1211,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
         self._map_geometry = geometry
         self._map_cache_key = key
+        self._map_dirty = True
 
     # ------------------------------------------------------------- persist
     def _persist_session(self) -> None:
@@ -968,6 +1220,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             **self.entry.data,
             CONF_ACCESS_TOKEN: state["access_token"],
             CONF_REFRESH_TOKEN: state["refresh_token"],
+            CONF_PASSPORT_UUID: state["uuid"],
             CONF_UID: state["uid"],
             CONF_REGION: state["region"],
         }
@@ -999,7 +1252,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             zid = z.get("id")
             if zid is None:
                 continue
-            zones.append({"id": zid, "name": z.get("name") or f"Zone {zid}", "area": z.get("area")})
+            zones.append(
+                {
+                    "id": zid,
+                    "name": z.get("name") or f"Zone {zid}",
+                    "area": z.get("area"),
+                }
+            )
         # 2) Fallback: user-configured mapping via the Options flow.
         if not zones:
             zones = _parse_zone_options(self.entry.options.get(OPT_ZONES))
@@ -1012,6 +1271,101 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             z["partition_ids_hex"] = encode_partition_ids([z["id"]])
         return zones
 
+    @staticmethod
+    def _map_snapshot(map_geometry: dict[str, Any]) -> dict[str, Any]:
+        """Return the stable map object exposed to entities and HTTP API."""
+        return {
+            "id": map_geometry.get("id"),
+            "map_id": map_geometry.get("map_id"),
+            "map_base_id": map_geometry.get("map_base_id"),
+            "edit_time": map_geometry.get("edit_time"),
+            "revision": map_geometry.get("revision"),
+            "name": map_geometry.get("name"),
+            "area": map_geometry.get("area"),
+            "zones": map_geometry.get("zones") or [],
+            "obstacles": map_geometry.get("obstacles") or [],
+            "vision_off": map_geometry.get("vision_off") or [],
+            "tunnels": map_geometry.get("tunnels") or [],
+            "doodles": map_geometry.get("doodles") or [],
+            "terrain_sense": map_geometry.get("terrain_sense") or [],
+            "station": map_geometry.get("station"),
+            "station_map": map_geometry.get("station_map"),
+            "width": map_geometry.get("width"),
+            "height": map_geometry.get("height"),
+            "north_offset": map_geometry.get("north_offset"),
+            "version": map_geometry.get("version"),
+            "modified_count": map_geometry.get("modified_count"),
+            "lidar_sha256": map_geometry.get("lidar_sha256"),
+        }
+
+    def _build_zone_details(
+        self, coverage: dict[str, Any] | None, global_height: int | None
+    ) -> list[dict[str, Any]]:
+        """Return effective height, edge settings and current zone history."""
+        coverage_by_id = {
+            _as_int(item.get("id")): item
+            for item in (coverage or {}).get("zones") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        details: list[dict[str, Any]] = []
+        for zone in (self._map_geometry or {}).get("zones") or []:
+            if not isinstance(zone, dict):
+                continue
+            zone_id = _as_int(zone.get("id"))
+            if zone_id is None:
+                continue
+            boundary = zone.get("boundary") or {}
+            raw_height = _as_int(boundary.get("height_set"))
+            inherits = raw_height in (None, 0, 256)
+            effective_height = global_height if inherits else raw_height
+            row = coverage_by_id.get(zone_id) or {}
+            start_time = _as_int(row.get("start_time"))
+            end_time = _as_int(row.get("end_time"))
+            percentage = _as_int(row.get("pct"))
+            details.append(
+                {
+                    "id": zone_id,
+                    "name": zone.get("name") or f"Zone {zone_id}",
+                    "area_m2": _as_float(zone.get("area")),
+                    "percentage": percentage,
+                    "finished_area_m2": _as_float(row.get("finished")),
+                    "last_started_at": (
+                        dt_util.utc_from_timestamp(start_time).isoformat()
+                        if start_time
+                        else None
+                    ),
+                    "last_mowed_at": (
+                        dt_util.utc_from_timestamp(end_time or start_time).isoformat()
+                        if (end_time or start_time)
+                        else None
+                    ),
+                    "last_completed_at": (
+                        dt_util.utc_from_timestamp(end_time).isoformat()
+                        if end_time and (percentage or 0) >= 100
+                        else None
+                    ),
+                    "configured_height_raw": raw_height,
+                    "configured_height_mm": None if inherits else raw_height,
+                    "cutting_height_mm": effective_height,
+                    "inherits_global_height": inherits,
+                    "mow_edge": _as_bool(boundary.get("mow_edge")),
+                    "obstacle_mow_edge": _as_bool(
+                        boundary.get("obstacle_mow_edge")
+                    ),
+                    "doodle_mow_edge": _as_bool(
+                        boundary.get("doodle_mow_edge")
+                    ),
+                    "clock_direction": _as_int(
+                        boundary.get("clock_direction")
+                    ),
+                    "base_angle": _as_int(boundary.get("base_angle")),
+                    "recommended_base_angle": _as_int(
+                        boundary.get("rec_base_angle")
+                    ),
+                }
+            )
+        return details
+
     def _parse(self, raw: dict) -> dict:
         index2 = raw.get("index2") or {}
         auth = self._auth_item(raw.get("auth_list"))
@@ -1021,7 +1375,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         today_plan = raw.get("today_plan") or {}
 
         state_code = str(index2.get("vehicle_state") or auth.get("vehicle_state") or "")
-        battery = _as_int(index2.get("soc") if index2.get("soc") is not None else auth.get("soc"))
+        packed_work = decode_map_work_position(
+            _find(location, "map_work_position", "mapWorkPosition")
+            or _find(index2, "map_work_position", "mapWorkPosition")
+        )
+        battery = _as_int(
+            index2.get("soc") if index2.get("soc") is not None else auth.get("soc")
+        )
         network_status = _as_int(index2.get("network_status"))
         online = network_status == 1 if network_status is not None else None
 
@@ -1065,7 +1425,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             if mqtt_position is not None
             else None
         )
-        trail = self._update_trail(position, state_code, mqtt_vehicle_state, mqtt_action)
+        trail = self.history.active_points_xy()
 
         previous_activity = (self.data or {}).get("activity")
         activity = VEHICLE_STATE_TO_ACTIVITY.get(state_code)
@@ -1155,6 +1515,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "rain_delay_wire": rain_delay_wire,
         }
 
+        zone_details = self._build_zone_details(coverage, settings["cut_height"])
+
         # --- maintenance (blades / chassis) -- field names are firmware-specific
         maint = self._parse_maintenance(maintenance)
 
@@ -1167,7 +1529,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             # core state
             "battery": battery,
             "state_code": state_code,
-            "state": VEHICLE_STATE_LABELS.get(state_code, f"Unknown ({state_code})" if state_code else "Unknown"),
+            "state": VEHICLE_STATE_LABELS.get(
+                state_code,
+                f"Unknown ({state_code})" if state_code else "Unknown",
+            ),
             "activity": activity,
             "mqtt_vehicle_state": mqtt_vehicle_state,
             "mqtt_action": mqtt_action,
@@ -1177,7 +1542,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "error": has_error,
             "error_text": error_text,
             # progress / areas
-            "mowing_progress": _as_int(_find(location, "mowing_percentage", "mowingPercentage", "progress")),
+            "mowing_progress": _as_int(
+                _find(
+                    location,
+                    "mowing_percentage",
+                    "mowingPercentage",
+                    "progress",
+                )
+            ),
             "session_area": _as_float(location.get("subtotal_area")),
             "weekly_area": _as_float(location.get("mowing_week_area")),
             "total_area": (
@@ -1190,11 +1562,19 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "zones": zones,
             "current_zone": current_zone,
             "current_zone_ids": current_ids,
+            "work_target_zone": _as_int((packed_work or {}).get("target_zone")),
+            "work_action": _as_int((packed_work or {}).get("action")),
+            "work_sub_action": _as_int((packed_work or {}).get("sub_action")),
+            "work_mode": _as_int((packed_work or {}).get("mode")),
+            "work_progress": _as_int((packed_work or {}).get("progress")),
             # weekly mowing schedule (days -> periods -> zones)
             "schedule": _parse_schedule(set_list, zone_names),
             # connectivity
             "signal": _as_int(index2.get("network_signal") or auth.get("network_signal")),
-            "signal_wifi": _as_int(index2.get("network_signal_wifi") or auth.get("network_signal_wifi")),
+            "signal_wifi": _as_int(
+                index2.get("network_signal_wifi")
+                or auth.get("network_signal_wifi")
+            ),
             "signal_4g": _as_int(index2.get("network_signal_4G") or auth.get("network_signal_4G")),
             "network_type": _as_int(index2.get("networkType") or auth.get("networkType")),
             # location / map
@@ -1203,30 +1583,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "position": position,
             "cloud_position": cloud_position,
             "pose_source": "mqtt" if mqtt_position is not None else "private_cloud",
-            "pose_time": (self._mqtt_location or {}).get("pose_time") if mqtt_position is not None else _find(location, "report_time"),
+            "pose_time": (
+                (self._mqtt_location or {}).get("pose_time")
+                if mqtt_position is not None
+                else _find(location, "report_time")
+            ),
             "path": self._parse_path(location),
             # per-zone coverage (%) + reconstructed mowed trail ([[x,y],...])
             "coverage": coverage,
+            "zone_details": zone_details,
+            "cut_height": settings.get("cut_height"),
+            "cutting_height_mm": settings.get("cut_height"),
             "trail": trail,
             # decoded map geometry (None until the map is fetched/decoded)
-            "map": (
-                {
-                    "area": map_geom.get("area"),
-                    "zones": map_geom.get("zones") or [],
-                    "obstacles": map_geom.get("obstacles") or [],
-                    "vision_off": map_geom.get("vision_off") or [],
-                    "tunnels": map_geom.get("tunnels") or [],
-                    "station": map_geom.get("station"),
-                    "station_map": map_geom.get("station_map"),
-                    "width": map_geom.get("width"),
-                    "height": map_geom.get("height"),
-                    "north_offset": map_geom.get("north_offset"),
-                    "version": map_geom.get("version"),
-                    "modified_count": map_geom.get("modified_count"),
-                }
-                if map_geom
-                else None
-            ),
+            "map": self._map_snapshot(map_geom) if map_geom else None,
             # groups
             "settings": settings,
             "maintenance": maint,
@@ -1242,6 +1612,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "set_list": set_list,
                 "maintenance": maintenance,
                 "today_plan": today_plan,
+                "path_info_time": raw.get("path_info_time") or [],
+                "device_info": raw.get("device_info") or {},
             },
         }
         return snapshot
@@ -1262,16 +1634,68 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         mqtt_vehicle_state: int | None,
         mqtt_action: int | None = None,
     ) -> bool:
-        """Return whether private state or live MQTT says the blade is mowing."""
-        return (
-            str(state_code or "") == STATE_MOWING
-            or mqtt_vehicle_state == MQTT_STATE_MOWING
-            or mqtt_action in MQTT_CUTTING_ACTIONS
-        )
+        """Return whether the freshest available source says the blade is mowing.
+
+        ``action`` persists in the MQTT location cache between messages.  A
+        fresh non-mowing ``vehicleState`` must therefore override an earlier
+        action=5/8 value, otherwise a docked mower could keep an active session
+        open indefinitely.
+        """
+        if mqtt_vehicle_state is not None:
+            return mqtt_vehicle_state == MQTT_STATE_MOWING
+        if mqtt_action in MQTT_CUTTING_ACTIONS:
+            return True
+        return str(state_code or "") == STATE_MOWING
 
     @staticmethod
-    def _is_docked_state(state_code: str | None, mqtt_vehicle_state: int | None) -> bool:
-        return str(state_code or "") in DOCKED_STATES or mqtt_vehicle_state in MQTT_DOCKED_STATES
+    def _is_docked_state(
+        state_code: str | None,
+        mqtt_vehicle_state: int | None,
+    ) -> bool:
+        """Return docked state, preferring a fresh MQTT vehicle state."""
+        if mqtt_vehicle_state is not None:
+            return mqtt_vehicle_state in MQTT_DOCKED_STATES
+        return str(state_code or "") in DOCKED_STATES
+
+    @staticmethod
+    def _is_returning_state(
+        state_code: str | None,
+        mqtt_vehicle_state: int | None,
+    ) -> bool:
+        """Return returning state, preferring a fresh MQTT vehicle state."""
+        if mqtt_vehicle_state is not None:
+            return mqtt_vehicle_state == MQTT_STATE_RETURNING
+        return str(state_code or "") == STATE_RETURNING
+
+    def _cancel_gate_release(self, slug: str) -> None:
+        cancel = self._gate_release_tasks.pop(slug, None)
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _schedule_gate_release(self, slug: str, delay: int) -> None:
+        """Publish the delayed OFF state even if no further pose arrives."""
+        self._cancel_gate_release(slug)
+        if delay <= 0:
+            return
+
+        def _release(_now: Any) -> None:
+            self._gate_release_tasks.pop(slug, None)
+            latch = self._gate_latches.get(slug)
+            release_at = _as_float((latch or {}).get("release_at"))
+            if latch is None or release_at is None or time.monotonic() < release_at:
+                return
+            self._gate_latches.pop(slug, None)
+            if self.data:
+                updated = dict(self.data)
+                updated.update(self._navigation_fields(updated))
+                self.async_set_updated_data(updated)
+
+        self._gate_release_tasks[slug] = async_call_later(
+            self.hass, delay, _release
+        )
 
     def _navigation_fields(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         """Derive physical zone, target zone, tunnel and gate intent from live X/Y."""
@@ -1318,13 +1742,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             else None
         )
         is_docked = self._is_docked_state(state_code, mqtt_state)
-        is_returning = state_code == STATE_RETURNING or mqtt_state == MQTT_STATE_RETURNING
+        is_returning = self._is_returning_state(state_code, mqtt_state)
 
         target_ids: list[int] = []
         if is_docked:
             self._last_target_zone_ids = []
             self._gate_latches.clear()
+            for slug in list(self._gate_release_tasks):
+                self._cancel_gate_release(slug)
         else:
+            immediate_target = _as_int(
+                (self._mqtt_location or {}).get("work_target_zone")
+            )
+            if immediate_target is None:
+                immediate_target = _as_int(snapshot.get("work_target_zone"))
             mqtt_ids = (self._mqtt_location or {}).get("partition_ids")
             if isinstance(mqtt_ids, list):
                 target_ids = [
@@ -1339,6 +1770,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             ]
             if is_returning and dock_zone_id is not None:
                 target_ids = [dock_zone_id]
+            elif immediate_target is not None and immediate_target > 0:
+                # ``partitionIds`` can contain all zones selected for a task.
+                # The packed work-position target is the immediate destination
+                # and therefore the useful gate pre-open signal.
+                target_ids = [immediate_target]
             elif not target_ids:
                 target_ids = cloud_ids or list(self._last_target_zone_ids)
             if target_ids:
@@ -1384,59 +1820,111 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             transition = False
 
         gate_states: dict[str, dict[str, Any]] = {}
+        now_monotonic = time.monotonic()
         for gate in self.gates:
             pair = set(gate.zones)
             target_id = target_ids[0] if len(target_ids) == 1 else None
-            intent = (
-                physical_id in pair
-                and target_id in pair
-                and physical_id != target_id
+            intent = gate.allows_transition(physical_id, target_id)
+            tunnel_from_id = gate.other_zone(target_id) if target_id is not None else None
+            tunnel_direction_allowed = (
+                target_id is not None
+                and tunnel_from_id is not None
+                and gate.allows_transition(tunnel_from_id, target_id)
             )
             tunnel_matches = (
                 tunnel is not None
                 and set(tunnel_connection) == pair
-                and (target_id in pair or gate.slug in self._gate_latches)
+                and (
+                    gate.slug in self._gate_latches
+                    or tunnel_direction_allowed
+                )
             )
 
             if intent:
+                self._cancel_gate_release(gate.slug)
                 self._gate_latches[gate.slug] = {
                     "from_zone_id": int(physical_id),
                     "to_zone_id": int(target_id),
+                    "release_at": None,
                 }
+
             latch = self._gate_latches.get(gate.slug)
-            if (
-                latch
-                and tunnel is None
-                and (
-                    physical_id == latch.get("to_zone_id")
-                    or (target_id is not None and physical_id == target_id)
+            if latch:
+                from_id = _as_int(latch.get("from_zone_id"))
+                to_id = _as_int(latch.get("to_zone_id"))
+                arrived = (
+                    pose_valid
+                    and tunnel is None
+                    and to_id is not None
+                    and physical_id == to_id
                 )
-            ):
-                self._gate_latches.pop(gate.slug, None)
-                latch = None
-            elif physical_id is not None and physical_id not in pair:
-                self._gate_latches.pop(gate.slug, None)
-                latch = None
-            elif target_id is not None and target_id not in pair and not tunnel_matches:
-                self._gate_latches.pop(gate.slug, None)
-                latch = None
+                if arrived:
+                    release_at = _as_float(latch.get("release_at"))
+                    if release_at is None:
+                        release_at = now_monotonic + gate.close_delay
+                        latch["release_at"] = release_at
+                        self._schedule_gate_release(gate.slug, gate.close_delay)
+                    if now_monotonic >= release_at:
+                        self._gate_latches.pop(gate.slug, None)
+                        self._cancel_gate_release(gate.slug)
+                        latch = None
+                elif physical_id is not None and physical_id not in pair:
+                    self._gate_latches.pop(gate.slug, None)
+                    self._cancel_gate_release(gate.slug)
+                    latch = None
+                elif (
+                    target_id is not None
+                    and target_id not in pair
+                    and not tunnel_matches
+                ):
+                    self._gate_latches.pop(gate.slug, None)
+                    self._cancel_gate_release(gate.slug)
+                    latch = None
+                elif from_id is not None and to_id is not None:
+                    # Cancel one-way latches if the reported transition reverses.
+                    if not gate.allows_transition(from_id, to_id):
+                        self._gate_latches.pop(gate.slug, None)
+                        self._cancel_gate_release(gate.slug)
+                        latch = None
 
             if not pose_valid:
-                required = None
+                # Never emit a false close signal just because the MQTT pose is
+                # stale while a gate transition is already latched.
+                required = True if latch else None
             else:
                 required = bool(intent or tunnel_matches or latch)
 
-            from_id = (latch or {}).get("from_zone_id")
-            to_id = (latch or {}).get("to_zone_id")
+            from_id = _as_int((latch or {}).get("from_zone_id"))
+            to_id = _as_int((latch or {}).get("to_zone_id"))
+            release_at = _as_float((latch or {}).get("release_at"))
+            close_delay_remaining = (
+                max(0, round(release_at - now_monotonic, 1))
+                if release_at is not None
+                else None
+            )
             gate_states[gate.slug] = {
                 "required": required,
                 "name": gate.name,
                 "zones": list(gate.zones),
-                "zone_names": [zone_names.get(z, f"Zone {z}") for z in gate.zones],
+                "zone_names": [
+                    zone_names.get(zone_id, f"Zone {zone_id}")
+                    for zone_id in gate.zones
+                ],
+                "bidirectional": gate.bidirectional,
+                "close_delay": gate.close_delay,
+                "close_delay_remaining": close_delay_remaining,
                 "from_zone_id": from_id,
-                "from_zone_name": zone_names.get(from_id, f"Zone {from_id}") if from_id is not None else None,
+                "from_zone_name": (
+                    zone_names.get(from_id, f"Zone {from_id}")
+                    if from_id is not None
+                    else None
+                ),
                 "to_zone_id": to_id,
-                "to_zone_name": zone_names.get(to_id, f"Zone {to_id}") if to_id is not None else None,
+                "to_zone_name": (
+                    zone_names.get(to_id, f"Zone {to_id}")
+                    if to_id is not None
+                    else None
+                ),
                 "current_zone_id": physical_id,
                 "target_zone_id": target_id,
                 "current_tunnel_id": _as_int((tunnel or {}).get("id")),
@@ -1452,7 +1940,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return {
             "current_physical_zone": physical_state,
             "current_physical_zone_id": physical_id,
-            "current_physical_zone_source": (physical or {}).get("source", "map_polygon") if physical else None,
+            "current_physical_zone_source": (
+                (physical or {}).get("source", "map_polygon")
+                if physical
+                else None
+            ),
             "target_zone": target_state,
             "target_zone_ids": target_ids,
             "current_tunnel": tunnel_state,
@@ -1477,8 +1969,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
     @property
     def trail_session(self) -> int:
-        """Identifier of the current persisted mowing-trail session."""
-        return self._trail_session
+        """Monotonic identifier of the current/recent trail session."""
+        return self.history.active_session_no
 
     def pose_age(self) -> float | None:
         """Age in seconds of the latest MQTT pose."""
@@ -1490,11 +1982,46 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return {
             "private_cloud_connected": self._private_cloud_connected,
             "private_cloud_error": self._last_private_error,
+            "oauth_configured": bool(self.entry.data.get(CONF_OAUTH_TOKEN)),
+            "oauth_connected": self._oauth_connected,
+            "oauth_error": self._last_oauth_error,
             "mqtt_configured": self._mqtt_configured,
             "mqtt_connected": self._mqtt_connected,
+            "mqtt_error": self._last_mqtt_error,
             "mqtt_pose_age": self.pose_age(),
             "mqtt_pose_valid": self._fresh_mqtt_position() is not None,
         }
+
+    def set_private_cloud_error(self, error: str | None) -> None:
+        """Publish a private-cloud startup error while keeping cached data."""
+        self._private_cloud_connected = False
+        self._last_private_error = error
+        if self.data:
+            snapshot = dict(self.data)
+            snapshot.update(self._connectivity_fields())
+            self.async_set_updated_data(snapshot)
+
+    def set_private_cloud_connected(
+        self, connected: bool, error: str | None = None
+    ) -> None:
+        """Update private-cloud health without blanking cached/live data."""
+        self._private_cloud_connected = bool(connected)
+        self._last_private_error = error
+        if self.data:
+            snapshot = dict(self.data)
+            snapshot.update(self._connectivity_fields())
+            self.async_set_updated_data(snapshot)
+
+    def set_oauth_connected(
+        self, connected: bool, error: str | None = None
+    ) -> None:
+        """Update official OAuth/API health without blanking private data."""
+        self._oauth_connected = bool(connected)
+        self._last_oauth_error = error
+        if self.data:
+            snapshot = dict(self.data)
+            snapshot.update(self._connectivity_fields())
+            self.async_set_updated_data(snapshot)
 
     def _apply_mqtt_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         position = self._fresh_mqtt_position()
@@ -1512,16 +2039,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["position"] = position
             snapshot["pose_source"] = "mqtt"
             snapshot["pose_time"] = (self._mqtt_location or {}).get("pose_time")
-
-        # Run even without a fresh MQTT pose so a private-cloud docked state can
-        # arm the next genuine session reset. No point is appended when position
-        # is None.
-        self._update_trail(
-            position, str(snapshot.get("state_code") or ""), mqtt_state, mqtt_action
-        )
-        with self._trail_lock:
-            snapshot["trail"] = list(self._trail)
-
         snapshot["mqtt_vehicle_state"] = mqtt_state
         snapshot["mqtt_action"] = mqtt_action
         snapshot["trail_active"] = self._is_cutting(
@@ -1529,38 +2046,58 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
+        # MQTT ingestion owns every live route point. A private refresh may
+        # still start/finish/update the session while MQTT is fresh, but only
+        # contributes a lower-frequency point when no fresh MQTT pose exists.
+        history_position = None if position is not None else snapshot.get("position")
+        self._update_history(snapshot, history_position, mqtt_state, mqtt_action)
+        snapshot["trail"] = self.history.active_points_xy()
+        snapshot["trail_session"] = self.history.active_session_no
+        snapshot["trail_started_at"] = self.history.active_started_at()
+        snapshot["sessions"] = self.history.session_summaries(include_points=False)
         return snapshot
 
-    def set_mqtt_connected(self, connected: bool, *, configured: bool = True) -> None:
-        """Update MQTT health without disturbing the private-cloud snapshot."""
+    def set_mqtt_connected(
+        self,
+        connected: bool,
+        *,
+        configured: bool = True,
+        error: str | None = None,
+    ) -> None:
+        """Update official OAuth/MQTT health without blanking private data."""
         self._mqtt_configured = configured
         self._mqtt_connected = bool(connected)
+        if connected:
+            self._oauth_connected = True
+            self._last_oauth_error = None
+            self._last_mqtt_error = None
+        elif error:
+            self._last_mqtt_error = error
         if self.data:
             snapshot = dict(self.data)
             snapshot.update(self._connectivity_fields())
             self.async_set_updated_data(snapshot)
 
     def ingest_mqtt_location(self, location: dict[str, Any]) -> None:
-        """Merge a parsed official MQTT pose and build the dense mowing trail."""
+        """Merge one official MQTT pose and persist the full session path."""
         if not isinstance(location, dict):
             return
         self._mqtt_location = dict(location)
-        self._mqtt_last_update = time.monotonic()
+        pose_updated = bool(location.get("_pose_updated")) or (
+            self._mqtt_last_update is None
+            and _as_float(location.get("x")) is not None
+            and _as_float(location.get("y")) is not None
+        )
+        if pose_updated:
+            # Progress/zone/state packets carry cached X/Y as context. They must
+            # not refresh pose age or make a stalled location stream look live.
+            self._mqtt_last_update = time.monotonic()
         self._mqtt_connected = True
         position = self._fresh_mqtt_position()
-        state_code = str((self.data or {}).get("state_code") or "")
         mqtt_state = _as_int(location.get("vehicle_state"))
         mqtt_action = _as_int(location.get("action"))
-        if position is not None:
-            self._update_trail(position, state_code, mqtt_state, mqtt_action)
-        if self._trail_dirty:
-            try:
-                self._trail_store.async_delay_save(
-                    self._trail_store_data, _TRAIL_SAVE_DELAY
-                )
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug("trail: delayed MQTT save failed", exc_info=True)
-        snapshot = dict(self.data or {})
+        snapshot = dict(self.data or self._bootstrap_snapshot())
+        state_code = str(snapshot.get("state_code") or "")
         if position is not None:
             snapshot["position"] = position
             snapshot["pose_source"] = "mqtt"
@@ -1568,7 +2105,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["mqtt_location"] = dict(location)
         snapshot["mqtt_vehicle_state"] = mqtt_state
         snapshot["mqtt_action"] = mqtt_action
-        snapshot["trail_active"] = self._is_cutting(state_code, mqtt_state, mqtt_action)
+        cutting = self._is_cutting(state_code, mqtt_state, mqtt_action)
+        snapshot["trail_active"] = cutting
+        if cutting:
+            snapshot["activity"] = ACTIVITY_MOWING
+        elif mqtt_state == MQTT_STATE_RETURNING:
+            snapshot["activity"] = ACTIVITY_RETURNING
+        elif mqtt_state in MQTT_DOCKED_STATES:
+            snapshot["activity"] = ACTIVITY_DOCKED
         snapshot["mow_route_progress"] = (
             _as_float(location.get("mow_progress")) / 100.0
             if location.get("mow_progress") is not None
@@ -1576,8 +2120,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
-        with self._trail_lock:
-            snapshot["trail"] = list(self._trail)
+        # Only a new pose packet contributes a route point. Progress, target-
+        # zone and delay packets still update the session state, but their
+        # cached X/Y must not create a false sample with an old pose timestamp.
+        self._update_history(
+            snapshot, position if pose_updated else None, mqtt_state, mqtt_action
+        )
+        snapshot["trail"] = self.history.active_points_xy()
+        snapshot["trail_session"] = self.history.active_session_no
+        snapshot["trail_started_at"] = self.history.active_started_at()
+        snapshot["sessions"] = self.history.session_summaries(include_points=False)
         self.async_set_updated_data(snapshot)
 
     def channel_state(self, channel: NavimowerChannel) -> bool | None:
@@ -1587,20 +2139,55 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return None
         return channel.contains(position.get("x"), position.get("y"))
 
-    def map_payload(self) -> dict[str, Any]:
-        """Static map payload consumed by the custom map card HTTP endpoint."""
-        data = self.data or {}
+    def _map_payload_with_sessions(
+        self, sessions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Build the versioned payload consumed by Navimower Map Card."""
+        data = self.data or self._bootstrap_snapshot()
+        entry_id = self.entry.entry_id
+        map_data = data.get("map") or self._map_snapshot(self._map_geometry or {})
+        active = self.history.active_session
+        active_meta = None
+        if active is not None:
+            active_meta = {
+                key: active.get(key)
+                for key in (
+                    "id",
+                    "sequence",
+                    "started_at",
+                    "ended_at",
+                    "active",
+                    "mode",
+                    "zone_ids",
+                    "cutting_height_mm",
+                    "completed",
+                )
+            }
+            active_meta["point_count"] = len(active.get("points") or [])
         return {
-            "entry_id": self.entry.entry_id,
-            "vehicle_sn_masked": f"{self.sn[:3]}***{self.sn[-4:]}" if len(self.sn) >= 8 else "***",
-            "map": data.get("map"),
+            "schema_version": MAP_API_SCHEMA_VERSION,
+            "entry_id": entry_id,
+            "vehicle_sn_masked": (
+                f"{self.sn[:3]}***{self.sn[-4:]}" if len(self.sn) >= 8 else "***"
+            ),
+            "map": map_data,
             "coverage": data.get("coverage"),
-            # Seed the custom card with the persisted session trail. The card
-            # then appends fresh MQTT X/Y points locally without re-fetching the
-            # full map on every pose update.
-            "trail": data.get("trail") or [],
-            "trail_session": self._trail_session,
+            "zone_details": data.get("zone_details") or [],
+            "cut_height": (data.get("settings") or {}).get("cut_height"),
+            "cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
+            "doodles": (map_data or {}).get("doodles") or [],
+            "trail": self.history.active_trail_xy(),
+            "trail_session": self.history.active_session_no,
+            "trail_started_at": self.history.active_started_at(),
             "trail_active": bool(data.get("trail_active")),
+            "active_session": active_meta,
+            "sessions": sessions,
+            "session_xy_point_format": list(SESSION_CARD_POINT_FORMAT),
+            "session_detail_point_format": list(SESSION_DETAIL_POINT_FORMAT),
+            "sessions_api_path": f"/api/navimower/sessions/{entry_id}",
+            "session_api_path_template": (
+                f"/api/navimower/session/{entry_id}/{{session_id}}"
+            ),
             "activity": data.get("activity"),
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
@@ -1608,6 +2195,32 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "channels": [channel.as_dict() for channel in self.channels],
             "gates": [gate.as_dict() for gate in self.gates],
         }
+
+    def map_payload(self) -> dict[str, Any]:
+        """Return a synchronous payload using currently cached session data."""
+        return self._map_payload_with_sessions(
+            self.history.session_summaries(include_points=True)
+        )
+
+    async def async_map_payload(self) -> dict[str, Any]:
+        """Return the live map plus every session retained by the user policy."""
+        sessions = await self.history.async_card_sessions()
+        return self._map_payload_with_sessions(sessions)
+
+    def sessions_payload(self) -> dict[str, Any]:
+        """Return lightweight retained-session metadata."""
+        return self.history.sessions_index_payload()
+
+    async def async_session_payload(
+        self, session_id: str
+    ) -> dict[str, Any] | None:
+        """Return one full timestamped session without account identifiers."""
+        payload = await self.history.async_session_payload(session_id)
+        if payload is None:
+            return None
+        payload.pop("sn", None)
+        payload["point_format"] = list(SESSION_DETAIL_POINT_FORMAT)
+        return payload
 
     @staticmethod
     def _parse_maintenance(maintenance: Any) -> dict:
@@ -1653,59 +2266,21 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         return result
 
-    def _update_trail(
-        self,
-        position: dict | None,
-        state_code: str,
-        mqtt_vehicle_state: int | None = None,
-        mqtt_action: int | None = None,
-    ) -> list[list[float]]:
-        """Accumulate a mowing path from private state and live MQTT state.
-
-        The private app cloud occasionally lags or reports an intermediate code
-        while the official MQTT location stream already reports vehicleState=4
-        (mowing). Either source can therefore keep trail collection active. A
-        trail is reset only when a new mowing transition follows an observed
-        docked/charging state; pause/resume and gate waits do not clear it.
-        """
-        is_mowing = self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action)
-        is_docked = self._is_docked_state(state_code, mqtt_vehicle_state)
-        with self._trail_lock:
-            if is_docked:
-                self._trail_docked_since_mow = True
-
-            if is_mowing and not self._trail_was_mowing and self._trail_docked_since_mow:
-                self._trail_session += 1
-                if self._trail:
-                    self._trail = []
-                self._trail_dirty = True
-                self._trail_docked_since_mow = False
-
-            self._prev_state_code = state_code
-            self._trail_was_mowing = is_mowing
-
-            if is_mowing and position:
-                x, y = _as_float(position.get("x")), _as_float(position.get("y"))
-                if x is not None and y is not None:
-                    if not self._trail:
-                        self._trail.append([x, y])
-                        self._trail_dirty = True
-                    else:
-                        lx, ly = self._trail[-1]
-                        if (x - lx) ** 2 + (y - ly) ** 2 >= TRAIL_MIN_STEP_M ** 2:
-                            self._trail.append([x, y])
-                            if len(self._trail) > TRAIL_MAX_POINTS:
-                                del self._trail[: len(self._trail) - TRAIL_MAX_POINTS]
-                            self._trail_dirty = True
-            return list(self._trail)
-
     @staticmethod
     def _parse_position(location: Any) -> dict | None:
         x = _as_float(_find(location, "posture_x", "postureX", "last_posture_x", "x"))
         y = _as_float(_find(location, "posture_y", "postureY", "last_posture_y", "y"))
         # posture_theta is the real heading field (radians); keep older guesses.
         heading = _as_float(
-            _find(location, "posture_theta", "last_posture_theta", "posture_yaw", "yaw", "heading", "angle")
+            _find(
+                location,
+                "posture_theta",
+                "last_posture_theta",
+                "posture_yaw",
+                "yaw",
+                "heading",
+                "angle",
+            )
         )
         if x is None and y is None:
             return None

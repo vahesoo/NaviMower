@@ -13,11 +13,17 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfArea, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfArea,
+    UnitOfLength,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, MAP_API_SCHEMA_VERSION
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
 
@@ -70,6 +76,18 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         value_fn=lambda d: d.get("mowing_progress"),
     ),
     NavimowSensorDescription(
+        key="cutting_height",
+        translation_key="cutting_height",
+        icon="mdi:arrow-expand-vertical",
+        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: (d.get("settings") or {}).get("cut_height"),
+        attrs_fn=lambda d: {
+            "active_cutting_height_mm": d.get("active_cutting_height_mm"),
+            "zone_detail_count": len(d.get("zone_details") or []),
+        },
+    ),
+    NavimowSensorDescription(
         key="position_x",
         name="Position X",
         icon="mdi:axis-x-arrow",
@@ -107,7 +125,11 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: round(d.get("mqtt_pose_age"), 1) if d.get("mqtt_pose_age") is not None else None,
+        value_fn=lambda d: (
+            round(d.get("mqtt_pose_age"), 1)
+            if d.get("mqtt_pose_age") is not None
+            else None
+        ),
     ),
     NavimowSensorDescription(
         key="mow_route_progress",
@@ -324,17 +346,41 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         map_data = self.data.get("map") or {}
+        active = self.coordinator.history.active_session
         return {
+            "schema_version": MAP_API_SCHEMA_VERSION,
             "api_path": f"/api/navimower/map/{self._entry_id}",
+            "sessions_api_path": f"/api/navimower/sessions/{self._entry_id}",
+            "session_api_path_template": (
+                f"/api/navimower/session/{self._entry_id}/{{session_id}}"
+            ),
             "entry_id": self._entry_id,
             "area": map_data.get("area"),
             "zone_count": len(map_data.get("zones") or []),
+            "doodle_count": len(map_data.get("doodles") or []),
             "channel_count": len(self.coordinator.channels),
-            "map_version": map_data.get("version"),
+            "gate_count": len(self.coordinator.gates),
+            "map_version": map_data.get("revision") or map_data.get("version"),
+            "map_revision": map_data.get("revision"),
+            "map_edit_time": map_data.get("edit_time"),
             "map_modified_count": map_data.get("modified_count"),
+            "cut_height": (self.data.get("settings") or {}).get("cut_height"),
+            "zone_detail_count": len(self.data.get("zone_details") or []),
             "trail_session": self.coordinator.trail_session,
+            "trail_started_at": self.coordinator.history.active_started_at(),
             "trail_points": len(self.data.get("trail") or []),
             "trail_active": bool(self.data.get("trail_active")),
+            "active_session_id": (active or {}).get("id"),
+            "retained_session_count": len(
+                self.coordinator.history.session_summaries(include_points=False)
+            ),
+            "trail_retention_days": self.coordinator.history.retention_days,
+            "include_return_trail": self.coordinator.history.include_return_trail,
+            "private_cloud_connected": self.data.get("private_cloud_connected"),
+            "oauth_configured": self.data.get("oauth_configured"),
+            "oauth_connected": self.data.get("oauth_connected"),
+            "mqtt_connected": self.data.get("mqtt_connected"),
+            "mqtt_pose_valid": self.data.get("mqtt_pose_valid"),
             "activity": self.data.get("activity"),
             "current_physical_zone": self.data.get("current_physical_zone"),
             "target_zone": self.data.get("target_zone"),

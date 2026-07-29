@@ -94,7 +94,16 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     def _resolve_coordinator(call: ServiceCall):
         store = hass.data.get(DOMAIN) or {}
-        coords = list(store.values())
+        # ``hass.data[DOMAIN]`` also contains private helper state such as the
+        # options snapshot. Only config-entry coordinators are valid service
+        # targets.
+        coords = [
+            value
+            for key, value in store.items()
+            if not str(key).startswith("_")
+            and hasattr(value, "entry")
+            and hasattr(value, "client")
+        ]
         device_id = call.data.get("device_id")
         if device_id:
             device = dr.async_get(hass).async_get(device_id)
@@ -139,7 +148,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
                     f"Schedule end must be after start ({p['start']}–{p['end']})"
                 )
             zone_ids = list(p.get("zones") or [])
-            unknown = [zone_id for zone_id in zone_ids if known_zone_ids and zone_id not in known_zone_ids]
+            unknown = [
+                zone_id
+                for zone_id in zone_ids
+                if known_zone_ids and zone_id not in known_zone_ids
+            ]
             if unknown:
                 raise ServiceValidationError(
                     f"Unknown zone id(s): {', '.join(str(value) for value in unknown)}"

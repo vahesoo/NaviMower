@@ -2,13 +2,16 @@
   "domain": "navimower",
   "name": "Navimower",
   "after_dependencies": [
-    "frontend",
-    "http"
+    "frontend"
   ],
   "codeowners": [
     "@vahesoo"
   ],
   "config_flow": true,
+  "dependencies": [
+    "auth",
+    "http"
+  ],
   "documentation": "https://github.com/vahesoo/Navimower",
   "integration_type": "device",
   "iot_class": "cloud_polling",
@@ -16,5 +19,5 @@
   "requirements": [
     "navimow-sdk>=0.1.2"
   ],
-  "version": "0.1.5"
+  "version": "0.2.0"
 }

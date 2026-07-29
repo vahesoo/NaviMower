@@ -27,6 +27,38 @@ def location_topic(device_id: str) -> str:
     return f"/downlink/vehicle/{device_id}/realtimeDate/location"
 
 
+def decode_map_work_position(value: Any) -> dict[str, int] | None:
+    """Decode observed 32-bit big-endian map-work-position words.
+
+    The fourth word tracks the mower's immediate target partition even when
+    ``partitionIds`` contains every zone selected for a multi-zone task.  The
+    first two words mirror the current action/sub-action; the fifth is an
+    observed work-progress counter. Unknown trailing words are intentionally
+    ignored.
+    """
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if len(raw) < 40 or len(raw) % 8:
+        return None
+    try:
+        words = [
+            int.from_bytes(bytes.fromhex(raw[index : index + 8]), "big", signed=True)
+            for index in range(0, min(len(raw), 40), 8)
+        ]
+    except ValueError:
+        return None
+    if len(words) < 5:
+        return None
+    return {
+        "action": words[0],
+        "sub_action": words[1],
+        "mode": words[2],
+        "target_zone": words[3],
+        "progress": words[4],
+    }
+
+
 # Mower status values during which the pose is the dock position. "idle" is
 # deliberately excluded: the mower can sit idle mid-lawn after a manual stop.
 DOCKED_STATES = frozenset({"docked", "charging"})
@@ -67,6 +99,10 @@ def parse_location_payload(
         return None
     loc = dict(cache.get(device_id) or {})
     loc["device_id"] = device_id
+    # This flag is per MQTT message, not persistent cache state. Progress/zone
+    # messages may carry the last cached X/Y but must not make an old pose look
+    # fresh to gate logic or pose-age diagnostics.
+    loc["_pose_updated"] = False
     changed = False
     for item in data:
         if not isinstance(item, dict):
@@ -83,6 +119,7 @@ def parse_location_payload(
                 loc["vehicle_state"] = item["vehicleState"]
             if "time" in item:
                 loc["pose_time"] = item["time"]
+            loc["_pose_updated"] = True
             changed = True
         elif t == 2:
             # Live physical-mowing progress. currentMowBoundary is the
@@ -99,6 +136,20 @@ def parse_location_payload(
                 loc["sub_action"] = item.get("subAction")
             if "mapWorkPosition" in item:
                 loc["map_work_position"] = item.get("mapWorkPosition")
+                decoded = decode_map_work_position(item.get("mapWorkPosition"))
+                if decoded is not None:
+                    loc["work_action"] = decoded["action"]
+                    loc["work_sub_action"] = decoded["sub_action"]
+                    loc["work_mode"] = decoded["mode"]
+                    loc["work_target_zone"] = decoded["target_zone"]
+                    loc["work_progress"] = decoded["progress"]
+                    # Prefer explicit fields from this message; otherwise the
+                    # packed words must replace a stale cached action during
+                    # transit between selected zones.
+                    if "action" not in item:
+                        loc["action"] = decoded["action"]
+                    if "subAction" not in item:
+                        loc["sub_action"] = decoded["sub_action"]
             if "mowStartType" in item:
                 loc["mow_start_type"] = item.get("mowStartType")
             if "mowingPercentage" in item:
