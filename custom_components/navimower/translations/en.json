@@ -2,72 +2,192 @@
   "config": {
     "step": {
       "user": {
-        "title": "Navimower login",
-        "description": "Enter the email and password of the Segway/Navimow account that owns (or was shared) the mower. Tip: use a dedicated account that the mower is shared with, so your primary phone session is not disturbed.",
+        "title": "Navimower private-cloud login",
+        "description": "Enter the email and password for the Navimow account used by Home Assistant. A dedicated shared account is recommended because signing into the mobile app with the same account can invalidate the private-cloud session. The password is used only for login and is not stored.",
         "data": {
           "email": "Email",
           "password": "Password"
+        },
+        "data_description": {
+          "email": "Private Navimow app-cloud account email.",
+          "password": "Used once to create or renew the private-cloud session."
         }
       },
       "select_vehicle": {
         "title": "Choose a mower",
-        "description": "More than one mower was found on this account.",
+        "description": "More than one mower was found on this private-cloud account.",
         "data": {
           "vehicle_sn": "Mower"
         }
       },
       "manual": {
-        "title": "Enter your mower's serial",
-        "description": "No mower is listed on this account (this is normal for a shared account). Enter the mower serial number (found in the Navimow app under device info, e.g. S4THAxxxxxxxxxx). It will be validated with a live read.",
+        "title": "Enter the shared mower serial",
+        "description": "No mower was listed on this account. This is normal for some shared accounts. Enter the serial number shown in the Navimow app; Navimower validates it with a read-only cloud request.",
         "data": {
           "vehicle_sn": "Serial number",
-          "vehicle_name": "Name (optional)"
+          "vehicle_name": "Name"
         }
       },
-      "reauth_confirm": {
-        "title": "Re-authenticate Navimow",
-        "description": "The stored session expired. Enter the account password again.",
+      "link_oauth": {
+        "title": "Connect official live data",
+        "description": "Continue to the official Navimow Smart Home authorization page. This second connection supplies live MQTT X, Y and heading and is stored in the same standalone Navimower entry. The OAuth account must be able to access the same mower.",
+        "data": {}
+      },
+      "reauth_select": {
+        "title": "Repair Navimower authentication",
+        "description": "Choose which independent connection should be renewed.",
+        "data": {
+          "reauth_mode": "Connection to renew"
+        }
+      },
+      "reauth_private": {
+        "title": "Renew private-cloud login",
+        "description": "Enter the private-cloud account password again. The password is not stored.",
         "data": {
           "email": "Email",
           "password": "Password"
-        }
-      },
-      "mqtt_source": {
-        "title": "Live MQTT position (optional)",
-        "description": "Select an existing Navimow OAuth config entry to use live X/Y/heading from MQTT. To avoid two simultaneous MQTT connections, the old Navimow integration can be disabled after Navimower is created. Leave this empty for private-cloud map and sensors only.",
-        "data": {
-          "mqtt_source_entry_id": "Navimow OAuth config entry"
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
       "cannot_connect": "Could not reach the Navimow cloud. Try again.",
-      "no_vehicles": "No mower is associated with this account.",
-      "vehicle_not_found": "That serial could not be read on this account. Check the serial and that the mower is shared with this account.",
-      "unknown": "Unexpected error. Check the logs.",
-      "mqtt_source_missing": "The selected Navimow OAuth config entry no longer exists."
+      "vehicle_not_found": "That mower could not be read on this account. Check the serial and sharing permissions.",
+      "oauth_cannot_connect": "The official Smart Home mower list could not be read.",
+      "oauth_mower_not_found": "The OAuth account could not be matched to the selected private-cloud mower.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
     },
     "abort": {
       "already_configured": "This mower is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Navimower authentication was renewed.",
+      "reconfigure_successful": "Navimower authentication was updated.",
+      "oauth_cannot_connect": "The official Smart Home mower list could not be read.",
+      "oauth_mower_not_found": "The OAuth account could not be matched to the selected private-cloud mower.",
+      "unknown": "The setup flow could not be completed."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Navimower options",
-        "description": "Zones are normally discovered from the decoded map. The zones field is only an id:name fallback. Channels are local X/Y rectangles supplied as JSON. Gates are bidirectional links between two zone IDs, also supplied as JSON. See the README for the required formats and examples.",
+        "description": "Configure retained trail history, zone-pair gates and optional local X/Y channels."
+      },
+      "general": {
+        "title": "General and trail history",
+        "description": "Choose how long exact MQTT mowing sessions are retained in Home Assistant. Unlimited keeps every completed session until it is manually removed with the integration.",
         "data": {
-          "zones": "Zones (id:name,...)",
-          "channels": "Channels JSON",
-          "gates": "Bidirectional gates JSON"
+          "trail_retention_days": "Trail history retention",
+          "include_return_trail": "Include the return-to-dock path",
+          "diagnostics_detail": "Diagnostics detail"
+        },
+        "data_description": {
+          "include_return_trail": "Keep the mower route after cutting ends while it travels back to the dock.",
+          "diagnostics_detail": "Extended keeps additional integration context in manual exports; tokens and account identifiers remain redacted."
+        }
+      },
+      "gates": {
+        "title": "Gates",
+        "description": "Add, edit or delete physical gates between mapped zones."
+      },
+      "gate_add": {
+        "title": "Add a gate",
+        "description": "Select the two mapped zones connected by this physical gate. With bidirectional enabled, either transition can request the gate. When disabled, the direction is Zone A to Zone B.",
+        "data": {
+          "name": "Gate name",
+          "zone_a": "Zone A",
+          "zone_b": "Zone B",
+          "bidirectional": "Bidirectional",
+          "close_delay": "Keep required after arrival"
+        }
+      },
+      "gate_edit_select": {
+        "title": "Choose a gate to edit",
+        "data": {
+          "gate": "Gate"
+        }
+      },
+      "gate_edit": {
+        "title": "Edit gate",
+        "description": "When bidirectional is disabled, the allowed direction is Zone A to Zone B.",
+        "data": {
+          "name": "Gate name",
+          "zone_a": "Zone A",
+          "zone_b": "Zone B",
+          "bidirectional": "Bidirectional",
+          "close_delay": "Keep required after arrival"
+        }
+      },
+      "gate_delete": {
+        "title": "Delete a gate",
+        "data": {
+          "gate": "Gate"
+        }
+      },
+      "channels": {
+        "title": "Local channels",
+        "description": "Add, edit or delete optional local-coordinate rectangles."
+      },
+      "channel_add": {
+        "title": "Add a local channel",
+        "description": "Channels are optional rectangular areas in the mower local X and Y coordinate system. They remain available alongside intention-based zone-pair gates.",
+        "data": {
+          "name": "Channel name",
+          "x_min": "Minimum X",
+          "x_max": "Maximum X",
+          "y_min": "Minimum Y",
+          "y_max": "Maximum Y"
+        }
+      },
+      "channel_edit_select": {
+        "title": "Choose a channel to edit",
+        "data": {
+          "channel": "Channel"
+        }
+      },
+      "channel_edit": {
+        "title": "Edit local channel",
+        "data": {
+          "name": "Channel name",
+          "x_min": "Minimum X",
+          "x_max": "Maximum X",
+          "y_min": "Minimum Y",
+          "y_max": "Maximum Y"
+        }
+      },
+      "channel_delete": {
+        "title": "Delete a channel",
+        "data": {
+          "channel": "Channel"
         }
       }
     },
+    "menu": {
+      "init": {
+        "general": "General and trail history",
+        "gates": "Gates",
+        "channels": "Local channels"
+      },
+      "gates": {
+        "gate_add": "Add gate",
+        "gate_edit_select": "Edit gate",
+        "gate_delete": "Delete gate"
+      },
+      "channels": {
+        "channel_add": "Add channel",
+        "channel_edit_select": "Edit channel",
+        "channel_delete": "Delete channel"
+      }
+    },
     "error": {
-      "invalid_channels": "Channels must be a valid JSON list containing name, x_min, x_max, y_min and y_max.",
-      "invalid_gates": "Gates must be a valid JSON list containing a name and exactly two different zone IDs."
+      "same_zone": "Zone A and Zone B must be different.",
+      "duplicate_gate": "A gate with the same name or zone pair already exists.",
+      "duplicate_channel": "A channel with the same name already exists."
+    },
+    "abort": {
+      "options_saved": "Navimower options were saved and the integration is reloading.",
+      "zones_not_available": "At least two mapped zones must be loaded before a gate can be configured.",
+      "no_gates": "No gates are configured.",
+      "no_channels": "No local channels are configured."
     }
   },
   "entity": {
@@ -130,6 +250,9 @@
       },
       "current_tunnel": {
         "name": "Current tunnel"
+      },
+      "cutting_height": {
+        "name": "Global cutting height"
       }
     },
     "calendar": {
@@ -149,6 +272,18 @@
       },
       "zone_transition": {
         "name": "Zone transition"
+      },
+      "private_cloud_connected": {
+        "name": "Private cloud connected"
+      },
+      "oauth_connected": {
+        "name": "Smart Home OAuth connected"
+      },
+      "mqtt_connected": {
+        "name": "MQTT connected"
+      },
+      "pose_valid": {
+        "name": "Live position valid"
       }
     },
     "switch": {
