@@ -117,6 +117,8 @@ def _post(path: str, params: dict, timeout: int = 20) -> dict:
             return json.loads(err.read())
         except Exception as inner:  # pragma: no cover - defensive
             raise PassportError(err.code, "HTTP error") from inner
+    except urllib.error.URLError as err:
+        raise PassportError("network", str(err.reason)) from err
 
 
 def _extract_tokens(data: dict) -> Tokens:

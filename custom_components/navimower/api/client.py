@@ -23,7 +23,7 @@ import urllib.request
 from typing import Any
 
 from . import crypto, passport
-from .passport import PassportAuthError, PassportError, Tokens
+from .passport import PassportError, Tokens
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ class NavimowCloudClient:
         return {
             "access_token": self._tokens.access_token,
             "refresh_token": self._tokens.refresh_token,
+            "uuid": self._tokens.uuid,
             "uid": self._uid,
             "region": self._region,
         }
