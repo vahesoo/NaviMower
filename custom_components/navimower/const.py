@@ -25,6 +25,7 @@ CONF_MQTT_SOURCE_ENTRY_ID: Final = "mqtt_source_entry_id"
 # Options-flow keys
 OPT_ZONES: Final = "zones"  # user-supplied "id:name,id:name" fallback list
 OPT_CHANNELS: Final = "channels"  # JSON list of channel rectangles
+OPT_GATES: Final = "gates"  # JSON list of bidirectional zone-pair gates
 
 DEFAULT_LANGUAGE: Final = "en"
 
@@ -42,6 +43,8 @@ MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 MQTT_POSE_STALE_SECONDS: Final = 20
 MQTT_TRAIL_SAVE_DELAY_SECONDS: Final = 30
+TUNNEL_DETECTION_RADIUS_M: Final = 1.0
+ZONE_EDGE_TOLERANCE_M: Final = 0.35
 
 # --- Private-cloud polling -------------------------------------------------
 DEFAULT_SCAN_INTERVAL: Final = 30
@@ -88,6 +91,16 @@ VEHICLE_STATE_LABELS: Final[dict[str, str]] = {
 
 DOCKED_STATES: Final = {STATE_IDLE_DOCKED, STATE_IDLE_DOCKED_POST}
 ACTIVE_STATES: Final = {STATE_MOWING, STATE_RETURNING}
+
+# Observed official MQTT location payload vehicleState values.
+MQTT_STATE_IDLE: Final = 1
+MQTT_STATE_DOCKED: Final = 2
+MQTT_STATE_CHARGING: Final = 3
+MQTT_STATE_MOWING: Final = 4
+MQTT_STATE_RETURNING: Final = 5
+MQTT_STATE_MAPPING: Final = 6
+MQTT_DOCKED_STATES: Final = {MQTT_STATE_DOCKED, MQTT_STATE_CHARGING}
+MQTT_CUTTING_ACTIONS: Final = {5, 8}  # normal mowing / boundary mowing
 
 # --- Mow options ------------------------------------------------------------
 MOW_SETUP_CONTINUE_AUTO: Final = 0x11

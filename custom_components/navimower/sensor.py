@@ -122,6 +122,42 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         translation_key="current_zone",
         icon="mdi:select-marker",
         value_fn=lambda d: d.get("current_zone"),
+        attrs_fn=lambda d: {
+            "zone_ids": d.get("current_zone_ids"),
+            "meaning": "private_cloud_partition_selection",
+        },
+    ),
+    NavimowSensorDescription(
+        key="current_physical_zone",
+        translation_key="current_physical_zone",
+        icon="mdi:map-marker-radius",
+        value_fn=lambda d: d.get("current_physical_zone"),
+        attrs_fn=lambda d: {
+            "zone_id": d.get("current_physical_zone_id"),
+            "source": d.get("current_physical_zone_source"),
+            "pose_age": d.get("mqtt_pose_age"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="target_zone",
+        translation_key="target_zone",
+        icon="mdi:map-marker-path",
+        value_fn=lambda d: d.get("target_zone"),
+        attrs_fn=lambda d: {
+            "zone_ids": d.get("target_zone_ids"),
+            "dock_zone_id": d.get("dock_zone_id"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="current_tunnel",
+        translation_key="current_tunnel",
+        icon="mdi:tunnel",
+        value_fn=lambda d: d.get("current_tunnel"),
+        attrs_fn=lambda d: {
+            "tunnel_id": d.get("current_tunnel_id"),
+            "connection": d.get("current_tunnel_connection"),
+            "distance_m": d.get("current_tunnel_distance"),
+        },
     ),
     NavimowSensorDescription(
         key="coverage",
@@ -298,4 +334,9 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "map_modified_count": map_data.get("modified_count"),
             "trail_session": self.coordinator.trail_session,
             "trail_points": len(self.data.get("trail") or []),
+            "trail_active": bool(self.data.get("trail_active")),
+            "activity": self.data.get("activity"),
+            "current_physical_zone": self.data.get("current_physical_zone"),
+            "target_zone": self.data.get("target_zone"),
+            "current_tunnel": self.data.get("current_tunnel"),
         }

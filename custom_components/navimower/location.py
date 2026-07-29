@@ -93,6 +93,20 @@ def parse_location_payload(
                 loc["mow_boundary"] = item.get("currentMowBoundary")
             if "currentMowProgress" in item:
                 loc["mow_progress"] = item.get("currentMowProgress")
+            if "action" in item:
+                loc["action"] = item.get("action")
+            if "subAction" in item:
+                loc["sub_action"] = item.get("subAction")
+            if "mapWorkPosition" in item:
+                loc["map_work_position"] = item.get("mapWorkPosition")
+            if "mowStartType" in item:
+                loc["mow_start_type"] = item.get("mowStartType")
+            if "mowingPercentage" in item:
+                loc["mowing_percentage"] = item.get("mowingPercentage")
+            if "subtotalArea" in item:
+                loc["subtotal_area"] = item.get("subtotalArea")
+            if "mowingWeekArea" in item:
+                loc["mowing_week_area"] = item.get("mowingWeekArea")
             changed = True
         elif t == 3:
             pids = item.get("partitionIds")
@@ -101,6 +115,10 @@ def parse_location_payload(
             changed = True
         elif t == 4:
             loc["task_delay"] = item.get("taskDelay")
+            if "vehicleState" in item:
+                loc["vehicle_state"] = item.get("vehicleState")
+            if "time" in item:
+                loc["state_time"] = item.get("time")
             changed = True
     if not changed:
         return None

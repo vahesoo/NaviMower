@@ -34,6 +34,7 @@ from homeassistant.helpers.selector import (
 
 from .api import NavimowCloudClient, NavimowError, PassportAuthError, PassportError
 from .channel import parse_channels
+from .gate import valid_gates_config
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_ID,
@@ -50,6 +51,7 @@ from .const import (
     DOMAIN,
     OAUTH_SOURCE_DOMAIN,
     OPT_CHANNELS,
+    OPT_GATES,
     OPT_ZONES,
 )
 
@@ -360,7 +362,7 @@ class NavimowConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class NavimowOptionsFlow(OptionsFlowWithReload):
-    """Configure fallback zones and local channel rectangles."""
+    """Configure fallback zones, local rectangles and bidirectional gates."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -368,24 +370,32 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
         errors: dict[str, str] = {}
         if user_input is not None:
             raw_channels = str(user_input.get(OPT_CHANNELS, "") or "").strip()
+            raw_gates = str(user_input.get(OPT_GATES, "") or "").strip()
             if raw_channels and not parse_channels(raw_channels):
                 errors[OPT_CHANNELS] = "invalid_channels"
-            else:
+            if raw_gates and not valid_gates_config(raw_gates):
+                errors[OPT_GATES] = "invalid_gates"
+            if not errors:
                 return self.async_create_entry(
                     data={
                         OPT_ZONES: user_input.get(OPT_ZONES, ""),
                         OPT_CHANNELS: raw_channels,
+                        OPT_GATES: raw_gates,
                     }
                 )
 
         current_zones = self.config_entry.options.get(OPT_ZONES, "")
         current_channels = self.config_entry.options.get(OPT_CHANNELS, "")
+        current_gates = self.config_entry.options.get(OPT_GATES, "")
         schema = vol.Schema(
             {
                 vol.Optional(OPT_ZONES, default=current_zones): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
                 vol.Optional(OPT_CHANNELS, default=current_channels): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
+                ),
+                vol.Optional(OPT_GATES, default=current_gates): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
                 ),
             }

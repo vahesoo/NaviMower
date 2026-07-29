@@ -24,10 +24,13 @@ from homeassistant.util import dt as dt_util
 
 from .api import NavimowAuthError, NavimowCloudClient, NavimowError, Tokens
 from .channel import NavimowerChannel, parse_channels
+from .gate import NavimowerGate, parse_gates
 from .const import (
     ACTIVE_STATES,
     ACTIVITY_DOCKED,
     ACTIVITY_ERROR,
+    ACTIVITY_MOWING,
+    ACTIVITY_RETURNING,
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_ID,
     CONF_LANGUAGE,
@@ -42,14 +45,22 @@ from .const import (
     DOMAIN,
     FAST_SCAN_INTERVAL,
     MOW_SCAN_INTERVAL,
+    MQTT_CUTTING_ACTIONS,
+    MQTT_DOCKED_STATES,
+    MQTT_STATE_MOWING,
+    MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
     MQTT_TRAIL_SAVE_DELAY_SECONDS,
     OPT_CHANNELS,
+    OPT_GATES,
     OPT_ZONES,
     SLOW_REFRESH_EVERY,
     STATE_MOWING,
+    STATE_RETURNING,
     TRAIL_MAX_POINTS,
     TRAIL_MIN_STEP_M,
+    TUNNEL_DETECTION_RADIUS_M,
+    ZONE_EDGE_TOLERANCE_M,
     VEHICLE_STATE_LABELS,
     VEHICLE_STATE_TO_ACTIVITY,
     decode_partition_id_list,
@@ -143,6 +154,128 @@ def _parse_zone_options(raw: str | None) -> list[dict]:
             continue
         zones.append({"id": rid, "name": name.strip() or f"Zone {rid}"})
     return zones
+
+
+def _point_in_polygon(x: float, y: float, polygon: Any) -> bool:
+    """Return whether a local X/Y point is inside or on a zone polygon."""
+    if not isinstance(polygon, list) or len(polygon) < 3:
+        return False
+    inside = False
+    count = len(polygon)
+    for index in range(count):
+        p1 = polygon[index]
+        p2 = polygon[(index + 1) % count]
+        if not (isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple))):
+            continue
+        if len(p1) < 2 or len(p2) < 2:
+            continue
+        x1, y1 = _as_float(p1[0]), _as_float(p1[1])
+        x2, y2 = _as_float(p2[0]), _as_float(p2[1])
+        if None in (x1, y1, x2, y2):
+            continue
+        # Treat points on an edge as inside.
+        dx, dy = x2 - x1, y2 - y1
+        cross = (x - x1) * dy - (y - y1) * dx
+        if abs(cross) <= 1e-7:
+            dot = (x - x1) * (x - x2) + (y - y1) * (y - y2)
+            if dot <= 1e-7:
+                return True
+        if (y1 > y) != (y2 > y):
+            at_x = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x <= at_x:
+                inside = not inside
+    return inside
+
+
+def _zone_at_position(position: dict | None, zones: Any) -> dict | None:
+    """Find the mapped zone containing or immediately bordering a live pose."""
+    if not position or not isinstance(zones, list):
+        return None
+    x, y = _as_float(position.get("x")), _as_float(position.get("y"))
+    if x is None or y is None:
+        return None
+    for zone in zones:
+        if isinstance(zone, dict) and _point_in_polygon(x, y, zone.get("polygon")):
+            return zone
+    # Boundary mowing can place the robot centre a few centimetres outside the
+    # stored polygon. Treat the nearest edge within a small mower-scale tolerance
+    # as that zone so an arrival does not leave a gate open indefinitely.
+    nearest: tuple[float, dict] | None = None
+    for zone in zones:
+        if not isinstance(zone, dict):
+            continue
+        distance = _polygon_edge_distance(x, y, zone.get("polygon"))
+        if distance is not None and distance <= ZONE_EDGE_TOLERANCE_M:
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, zone)
+    return ({**nearest[1], "source": "map_polygon_edge_tolerance"} if nearest else None)
+
+
+def _distance_to_segment(
+    x: float, y: float, x1: float, y1: float, x2: float, y2: float
+) -> float:
+    """Shortest distance from a point to one local-coordinate line segment."""
+    dx, dy = x2 - x1, y2 - y1
+    denom = dx * dx + dy * dy
+    if denom <= 1e-12:
+        return ((x - x1) ** 2 + (y - y1) ** 2) ** 0.5
+    t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / denom))
+    px, py = x1 + t * dx, y1 + t * dy
+    return ((x - px) ** 2 + (y - py) ** 2) ** 0.5
+
+
+def _polygon_edge_distance(x: float, y: float, polygon: Any) -> float | None:
+    """Return shortest distance from a point to a polygon perimeter."""
+    if not isinstance(polygon, list) or len(polygon) < 2:
+        return None
+    best = float("inf")
+    count = len(polygon)
+    for index in range(count):
+        a = polygon[index]
+        b = polygon[(index + 1) % count]
+        if not (isinstance(a, (list, tuple)) and isinstance(b, (list, tuple))):
+            continue
+        if len(a) < 2 or len(b) < 2:
+            continue
+        values = (_as_float(a[0]), _as_float(a[1]), _as_float(b[0]), _as_float(b[1]))
+        if any(value is None for value in values):
+            continue
+        best = min(best, _distance_to_segment(x, y, *values))
+    return best if best != float("inf") else None
+
+
+def _tunnel_at_position(
+    position: dict | None, tunnels: Any, radius: float = TUNNEL_DETECTION_RADIUS_M
+) -> dict | None:
+    """Return the nearest mapped tunnel when the mower is close to its path."""
+    if not position or not isinstance(tunnels, list):
+        return None
+    x, y = _as_float(position.get("x")), _as_float(position.get("y"))
+    if x is None or y is None:
+        return None
+    nearest: tuple[float, dict] | None = None
+    for tunnel in tunnels:
+        if not isinstance(tunnel, dict):
+            continue
+        points = tunnel.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            continue
+        best = float("inf")
+        for index in range(len(points) - 1):
+            a, b = points[index], points[index + 1]
+            if not (isinstance(a, (list, tuple)) and isinstance(b, (list, tuple))):
+                continue
+            if len(a) < 2 or len(b) < 2:
+                continue
+            values = (_as_float(a[0]), _as_float(a[1]), _as_float(b[0]), _as_float(b[1]))
+            if any(value is None for value in values):
+                continue
+            best = min(best, _distance_to_segment(x, y, *values))
+        if best <= radius and (nearest is None or best < nearest[0]):
+            nearest = (best, tunnel)
+    if nearest is None:
+        return None
+    return {**nearest[1], "distance": nearest[0]}
 
 
 # --------------------------------------------------------------------- map
@@ -576,6 +709,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._trail: list[list[float]] = []
         self._trail_lock = threading.Lock()
         self._prev_state_code: str | None = None
+        self._trail_was_mowing = False
+        self._trail_docked_since_mow = False
         # Persist the trail across restarts (loaded in async_load_trail, saved
         # debounced from _async_update_data only when _trail_dirty is set).
         self._trail_store: Store = trail_store(hass, entry.entry_id)
@@ -600,6 +735,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self.channels: list[NavimowerChannel] = parse_channels(
             entry.options.get(OPT_CHANNELS)
         )
+        self.gates: list[NavimowerGate] = parse_gates(entry.options.get(OPT_GATES))
+        self._gate_latches: dict[str, dict[str, int]] = {}
+        self._last_target_zone_ids: list[int] = []
 
     async def async_load_trail(self) -> None:
         """Restore the persisted mowed trail (call before the first refresh).
@@ -640,6 +778,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._trail = trail[-TRAIL_MAX_POINTS:]
             prev = data.get("prev_state_code")
             self._prev_state_code = prev if isinstance(prev, str) else None
+            self._trail_was_mowing = bool(
+                data.get("trail_was_mowing", self._prev_state_code == STATE_MOWING)
+            )
+            self._trail_docked_since_mow = bool(
+                data.get("trail_docked_since_mow", self._prev_state_code in DOCKED_STATES)
+            )
             try:
                 self._trail_session = max(0, int(data.get("trail_session", 0)))
             except (TypeError, ValueError):
@@ -652,6 +796,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return {
                 "sn": self.sn,
                 "prev_state_code": self._prev_state_code,
+                "trail_was_mowing": self._trail_was_mowing,
+                "trail_docked_since_mow": self._trail_docked_since_mow,
                 "trail_session": self._trail_session,
                 "trail": list(self._trail),
             }
@@ -909,15 +1055,27 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         coverage = _parse_coverage(raw.get("path_info_time"), zone_names)
         mqtt_position = self._fresh_mqtt_position()
         position = mqtt_position or cloud_position
-        if mqtt_position is None:
-            trail = self._update_trail(cloud_position, state_code)
-        else:
-            with self._trail_lock:
-                trail = list(self._trail)
+        mqtt_vehicle_state = (
+            _as_int((self._mqtt_location or {}).get("vehicle_state"))
+            if mqtt_position is not None
+            else None
+        )
+        mqtt_action = (
+            _as_int((self._mqtt_location or {}).get("action"))
+            if mqtt_position is not None
+            else None
+        )
+        trail = self._update_trail(position, state_code, mqtt_vehicle_state, mqtt_action)
 
         previous_activity = (self.data or {}).get("activity")
         activity = VEHICLE_STATE_TO_ACTIVITY.get(state_code)
-        if activity is None:
+        if self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action):
+            activity = ACTIVITY_MOWING
+        elif mqtt_vehicle_state == MQTT_STATE_RETURNING:
+            activity = ACTIVITY_RETURNING
+        elif mqtt_vehicle_state in MQTT_DOCKED_STATES:
+            activity = ACTIVITY_DOCKED
+        elif activity is None:
             # Preserve the last trustworthy activity for short-lived unknown
             # cloud state codes instead of falsely reporting the mower docked.
             activity = previous_activity or ACTIVITY_DOCKED
@@ -1011,8 +1169,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "state_code": state_code,
             "state": VEHICLE_STATE_LABELS.get(state_code, f"Unknown ({state_code})" if state_code else "Unknown"),
             "activity": activity,
+            "mqtt_vehicle_state": mqtt_vehicle_state,
+            "mqtt_action": mqtt_action,
+            "trail_active": self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action),
             "online": online,
-            "docked": state_code in DOCKED_STATES,
+            "docked": self._is_docked_state(state_code, mqtt_vehicle_state),
             "error": has_error,
             "error_text": error_text,
             # progress / areas
@@ -1072,6 +1233,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             # source health / local channels
             **self._connectivity_fields(),
             "channels": [channel.as_dict() for channel in self.channels],
+            "gates": [gate.as_dict() for gate in self.gates],
             # raw (for entity extra attributes / debugging)
             "raw": {
                 "index2": index2,
@@ -1093,6 +1255,225 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if x is None or y is None:
             return None
         return {"x": x, "y": y, "heading": _as_float(self._mqtt_location.get("theta"))}
+
+    @staticmethod
+    def _is_cutting(
+        state_code: str | None,
+        mqtt_vehicle_state: int | None,
+        mqtt_action: int | None = None,
+    ) -> bool:
+        """Return whether private state or live MQTT says the blade is mowing."""
+        return (
+            str(state_code or "") == STATE_MOWING
+            or mqtt_vehicle_state == MQTT_STATE_MOWING
+            or mqtt_action in MQTT_CUTTING_ACTIONS
+        )
+
+    @staticmethod
+    def _is_docked_state(state_code: str | None, mqtt_vehicle_state: int | None) -> bool:
+        return str(state_code or "") in DOCKED_STATES or mqtt_vehicle_state in MQTT_DOCKED_STATES
+
+    def _navigation_fields(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Derive physical zone, target zone, tunnel and gate intent from live X/Y."""
+        position = self._fresh_mqtt_position()
+        pose_valid = position is not None
+        map_data = snapshot.get("map") or {}
+        zones = map_data.get("zones") or snapshot.get("zones") or []
+        tunnels = map_data.get("tunnels") or []
+        zone_names: dict[int, str] = {}
+        for zone in zones:
+            if not isinstance(zone, dict):
+                continue
+            zone_id = _as_int(zone.get("id"))
+            if zone_id is not None:
+                zone_names[zone_id] = str(zone.get("name") or f"Zone {zone_id}")
+
+        physical = _zone_at_position(position, zones) if pose_valid else None
+        # When decoded geometry is unavailable, currentMowBoundary is the best
+        # live fallback. Do not use it while geometry exists because it can stay
+        # on the previous zone while the mower is physically in a tunnel.
+        if physical is None and pose_valid and not zones:
+            fallback_id = _as_int((self._mqtt_location or {}).get("mow_boundary"))
+            if fallback_id is not None:
+                physical = {
+                    "id": fallback_id,
+                    "name": zone_names.get(fallback_id, f"Zone {fallback_id}"),
+                    "source": "mqtt_current_mow_boundary",
+                }
+
+        tunnel = None
+        if pose_valid and physical is None:
+            tunnel = _tunnel_at_position(position, tunnels)
+
+        station = map_data.get("station") or {}
+        dock_zone = _zone_at_position(
+            {"x": station.get("x"), "y": station.get("y")}, zones
+        ) if station else None
+        dock_zone_id = _as_int((dock_zone or {}).get("id"))
+
+        state_code = str(snapshot.get("state_code") or "")
+        mqtt_state = (
+            _as_int((self._mqtt_location or {}).get("vehicle_state"))
+            if pose_valid
+            else None
+        )
+        is_docked = self._is_docked_state(state_code, mqtt_state)
+        is_returning = state_code == STATE_RETURNING or mqtt_state == MQTT_STATE_RETURNING
+
+        target_ids: list[int] = []
+        if is_docked:
+            self._last_target_zone_ids = []
+            self._gate_latches.clear()
+        else:
+            mqtt_ids = (self._mqtt_location or {}).get("partition_ids")
+            if isinstance(mqtt_ids, list):
+                target_ids = [
+                    value
+                    for item in mqtt_ids
+                    if (value := _as_int(item)) is not None
+                ]
+            cloud_ids = [
+                value
+                for item in (snapshot.get("current_zone_ids") or [])
+                if (value := _as_int(item)) is not None
+            ]
+            if is_returning and dock_zone_id is not None:
+                target_ids = [dock_zone_id]
+            elif not target_ids:
+                target_ids = cloud_ids or list(self._last_target_zone_ids)
+            if target_ids:
+                self._last_target_zone_ids = list(dict.fromkeys(target_ids))
+                target_ids = list(self._last_target_zone_ids)
+
+        target_names = [zone_names.get(zone_id, f"Zone {zone_id}") for zone_id in target_ids]
+        physical_id = _as_int((physical or {}).get("id"))
+        physical_name = (physical or {}).get("name")
+        tunnel_connection = [
+            value
+            for item in ((tunnel or {}).get("connection") or [])
+            if (value := _as_int(item)) is not None
+        ]
+
+        if not pose_valid:
+            physical_state = None
+        elif physical_name:
+            physical_state = str(physical_name)
+        elif tunnel is not None:
+            physical_state = "Between zones"
+        else:
+            physical_state = "Outside mapped zones"
+
+        target_state = ", ".join(target_names) if target_names else None
+        tunnel_state = None
+        if tunnel is not None:
+            tunnel_state = str(
+                tunnel.get("name")
+                or (f"Tunnel {tunnel.get('id')}" if tunnel.get("id") is not None else "Tunnel")
+            )
+
+        transition: bool | None
+        if not pose_valid:
+            transition = None
+        elif len(target_ids) == 1:
+            target_id = target_ids[0]
+            transition = (
+                (physical_id is not None and physical_id != target_id)
+                or (tunnel is not None and target_id in tunnel_connection)
+            )
+        else:
+            transition = False
+
+        gate_states: dict[str, dict[str, Any]] = {}
+        for gate in self.gates:
+            pair = set(gate.zones)
+            target_id = target_ids[0] if len(target_ids) == 1 else None
+            intent = (
+                physical_id in pair
+                and target_id in pair
+                and physical_id != target_id
+            )
+            tunnel_matches = (
+                tunnel is not None
+                and set(tunnel_connection) == pair
+                and (target_id in pair or gate.slug in self._gate_latches)
+            )
+
+            if intent:
+                self._gate_latches[gate.slug] = {
+                    "from_zone_id": int(physical_id),
+                    "to_zone_id": int(target_id),
+                }
+            latch = self._gate_latches.get(gate.slug)
+            if (
+                latch
+                and tunnel is None
+                and (
+                    physical_id == latch.get("to_zone_id")
+                    or (target_id is not None and physical_id == target_id)
+                )
+            ):
+                self._gate_latches.pop(gate.slug, None)
+                latch = None
+            elif physical_id is not None and physical_id not in pair:
+                self._gate_latches.pop(gate.slug, None)
+                latch = None
+            elif target_id is not None and target_id not in pair and not tunnel_matches:
+                self._gate_latches.pop(gate.slug, None)
+                latch = None
+
+            if not pose_valid:
+                required = None
+            else:
+                required = bool(intent or tunnel_matches or latch)
+
+            from_id = (latch or {}).get("from_zone_id")
+            to_id = (latch or {}).get("to_zone_id")
+            gate_states[gate.slug] = {
+                "required": required,
+                "name": gate.name,
+                "zones": list(gate.zones),
+                "zone_names": [zone_names.get(z, f"Zone {z}") for z in gate.zones],
+                "from_zone_id": from_id,
+                "from_zone_name": zone_names.get(from_id, f"Zone {from_id}") if from_id is not None else None,
+                "to_zone_id": to_id,
+                "to_zone_name": zone_names.get(to_id, f"Zone {to_id}") if to_id is not None else None,
+                "current_zone_id": physical_id,
+                "target_zone_id": target_id,
+                "current_tunnel_id": _as_int((tunnel or {}).get("id")),
+                "current_tunnel_name": tunnel_state,
+                "pose_age": self.pose_age(),
+            }
+
+        if transition is False and any(
+            state.get("required") is True for state in gate_states.values()
+        ):
+            transition = True
+
+        return {
+            "current_physical_zone": physical_state,
+            "current_physical_zone_id": physical_id,
+            "current_physical_zone_source": (physical or {}).get("source", "map_polygon") if physical else None,
+            "target_zone": target_state,
+            "target_zone_ids": target_ids,
+            "current_tunnel": tunnel_state,
+            "current_tunnel_id": _as_int((tunnel or {}).get("id")),
+            "current_tunnel_connection": tunnel_connection,
+            "current_tunnel_distance": (tunnel or {}).get("distance"),
+            "dock_zone_id": dock_zone_id,
+            "zone_transition": transition,
+            "gate_states": gate_states,
+        }
+
+    def gate_state(self, gate: NavimowerGate) -> bool | None:
+        """Return whether a configured zone-pair gate is currently required."""
+        state = ((self.data or {}).get("gate_states") or {}).get(gate.slug) or {}
+        value = state.get("required")
+        return value if isinstance(value, bool) else None
+
+    def gate_attributes(self, gate: NavimowerGate) -> dict[str, Any]:
+        """Return current navigation context for a configured gate entity."""
+        state = ((self.data or {}).get("gate_states") or {}).get(gate.slug) or {}
+        return {**gate.as_dict(), **state}
 
     @property
     def trail_session(self) -> int:
@@ -1117,13 +1498,37 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
     def _apply_mqtt_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         position = self._fresh_mqtt_position()
+        mqtt_state = (
+            _as_int((self._mqtt_location or {}).get("vehicle_state"))
+            if position is not None
+            else None
+        )
+        mqtt_action = (
+            _as_int((self._mqtt_location or {}).get("action"))
+            if position is not None
+            else None
+        )
         if position is not None:
             snapshot["position"] = position
             snapshot["pose_source"] = "mqtt"
             snapshot["pose_time"] = (self._mqtt_location or {}).get("pose_time")
-            with self._trail_lock:
-                snapshot["trail"] = list(self._trail)
+
+        # Run even without a fresh MQTT pose so a private-cloud docked state can
+        # arm the next genuine session reset. No point is appended when position
+        # is None.
+        self._update_trail(
+            position, str(snapshot.get("state_code") or ""), mqtt_state, mqtt_action
+        )
+        with self._trail_lock:
+            snapshot["trail"] = list(self._trail)
+
+        snapshot["mqtt_vehicle_state"] = mqtt_state
+        snapshot["mqtt_action"] = mqtt_action
+        snapshot["trail_active"] = self._is_cutting(
+            snapshot.get("state_code"), mqtt_state, mqtt_action
+        )
         snapshot.update(self._connectivity_fields())
+        snapshot.update(self._navigation_fields(snapshot))
         return snapshot
 
     def set_mqtt_connected(self, connected: bool, *, configured: bool = True) -> None:
@@ -1144,8 +1549,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_connected = True
         position = self._fresh_mqtt_position()
         state_code = str((self.data or {}).get("state_code") or "")
+        mqtt_state = _as_int(location.get("vehicle_state"))
+        mqtt_action = _as_int(location.get("action"))
         if position is not None:
-            self._update_trail(position, state_code)
+            self._update_trail(position, state_code, mqtt_state, mqtt_action)
         if self._trail_dirty:
             try:
                 self._trail_store.async_delay_save(
@@ -1159,12 +1566,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["pose_source"] = "mqtt"
             snapshot["pose_time"] = location.get("pose_time")
         snapshot["mqtt_location"] = dict(location)
+        snapshot["mqtt_vehicle_state"] = mqtt_state
+        snapshot["mqtt_action"] = mqtt_action
+        snapshot["trail_active"] = self._is_cutting(state_code, mqtt_state, mqtt_action)
         snapshot["mow_route_progress"] = (
             _as_float(location.get("mow_progress")) / 100.0
             if location.get("mow_progress") is not None
             else snapshot.get("mow_route_progress")
         )
         snapshot.update(self._connectivity_fields())
+        snapshot.update(self._navigation_fields(snapshot))
         with self._trail_lock:
             snapshot["trail"] = list(self._trail)
         self.async_set_updated_data(snapshot)
@@ -1189,7 +1600,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             # full map on every pose update.
             "trail": data.get("trail") or [],
             "trail_session": self._trail_session,
+            "trail_active": bool(data.get("trail_active")),
+            "activity": data.get("activity"),
+            "current_physical_zone": data.get("current_physical_zone"),
+            "target_zone": data.get("target_zone"),
+            "current_tunnel": data.get("current_tunnel"),
             "channels": [channel.as_dict() for channel in self.channels],
+            "gates": [gate.as_dict() for gate in self.gates],
         }
 
     @staticmethod
@@ -1237,28 +1654,38 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return result
 
     def _update_trail(
-        self, position: dict | None, state_code: str
+        self,
+        position: dict | None,
+        state_code: str,
+        mqtt_vehicle_state: int | None = None,
+        mqtt_action: int | None = None,
     ) -> list[list[float]]:
-        """Accumulate the mowed path from position samples (see SWATH constants).
+        """Accumulate a mowing path from private state and live MQTT state.
 
-        A new mowing session -- entering STATE_MOWING from a docked/idle state --
-        clears the trail (deterministic, independent of cloud coverage timing).
-        Pause/resume does NOT reset (paused is not a docked state). While cutting,
-        the current position is appended if it moved at least TRAIL_MIN_STEP_M
-        (drops jitter). The trail persists after docking so the finished pattern
-        stays visible until the next mow. Guarded by a lock because it runs in an
-        executor thread and a command-triggered refresh may overlap the poll.
+        The private app cloud occasionally lags or reports an intermediate code
+        while the official MQTT location stream already reports vehicleState=4
+        (mowing). Either source can therefore keep trail collection active. A
+        trail is reset only when a new mowing transition follows an observed
+        docked/charging state; pause/resume and gate waits do not clear it.
         """
+        is_mowing = self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action)
+        is_docked = self._is_docked_state(state_code, mqtt_vehicle_state)
         with self._trail_lock:
-            if state_code == STATE_MOWING and self._prev_state_code in DOCKED_STATES:
+            if is_docked:
+                self._trail_docked_since_mow = True
+
+            if is_mowing and not self._trail_was_mowing and self._trail_docked_since_mow:
                 self._trail_session += 1
                 if self._trail:
-                    self._trail = []  # fresh mow (left the dock) -> new trail
+                    self._trail = []
                 self._trail_dirty = True
-            self._prev_state_code = state_code
+                self._trail_docked_since_mow = False
 
-            if state_code == STATE_MOWING and position:
-                x, y = position.get("x"), position.get("y")
+            self._prev_state_code = state_code
+            self._trail_was_mowing = is_mowing
+
+            if is_mowing and position:
+                x, y = _as_float(position.get("x")), _as_float(position.get("y"))
                 if x is not None and y is not None:
                     if not self._trail:
                         self._trail.append([x, y])

@@ -75,6 +75,9 @@ _EXACT_SENSITIVE_KEYS = {
     "mac",
     "ip",
     "ip_address",
+    "iccid",
+    "anti_theft_point",
+    "antitheftpoint",
     "latitude",
     "longitude",
     "last_latitude",
@@ -348,6 +351,18 @@ async def async_export_diagnostics(
                 "private_cloud_connected"
             ),
             "mqtt_connected": (coordinator.data or {}).get("mqtt_connected"),
+            "mqtt_vehicle_state": (coordinator.data or {}).get("mqtt_vehicle_state"),
+            "mqtt_action": (coordinator.data or {}).get("mqtt_action"),
+            "trail_active": (coordinator.data or {}).get("trail_active"),
+            "trail_points": len((coordinator.data or {}).get("trail") or []),
+            "current_physical_zone_id": (coordinator.data or {}).get(
+                "current_physical_zone_id"
+            ),
+            "target_zone_ids": (coordinator.data or {}).get("target_zone_ids"),
+            "current_tunnel_id": (coordinator.data or {}).get("current_tunnel_id"),
+            "gate_states": sanitize(
+                deepcopy((coordinator.data or {}).get("gate_states") or {})
+            ),
         },
         "endpoints": endpoints,
         "mqtt_inventory": sanitize(deepcopy(mqtt_inventory)),

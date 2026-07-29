@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .channel import NavimowerChannel
+from .gate import NavimowerGate
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
@@ -68,6 +69,13 @@ BINARY_SENSORS: tuple[NavimowBinaryDescription, ...] = (
         icon="mdi:home-import-outline",
         value_fn=lambda d: d.get("docked"),
     ),
+    NavimowBinaryDescription(
+        key="zone_transition",
+        translation_key="zone_transition",
+        device_class=BinarySensorDeviceClass.MOVING,
+        icon="mdi:map-marker-path",
+        value_fn=lambda d: d.get("zone_transition"),
+    ),
 )
 
 
@@ -81,6 +89,10 @@ async def async_setup_entry(
     entities.extend(
         NavimowerChannelBinarySensor(coordinator, channel)
         for channel in coordinator.channels
+    )
+    entities.extend(
+        NavimowerGateRequiredBinarySensor(coordinator, gate)
+        for gate in coordinator.gates
     )
     async_add_entities(entities)
 
@@ -125,3 +137,27 @@ class NavimowerChannelBinarySensor(NavimowEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return self.channel.as_dict()
+
+
+class NavimowerGateRequiredBinarySensor(NavimowEntity, BinarySensorEntity):
+    """On while the mower intends to cross a configured zone-pair gate."""
+
+    _attr_icon = "mdi:gate-alert"
+
+    def __init__(self, coordinator: NavimowCoordinator, gate: NavimowerGate) -> None:
+        super().__init__(coordinator, f"gate_{gate.slug}_required")
+        self.gate = gate
+        self._attr_name = f"{gate.name} required"
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.coordinator.gate_state(self.gate)
+
+    @property
+    def available(self) -> bool:
+        # A stale/missing pose is not a safe implicit OFF for a physical gate.
+        return super().available and self.coordinator.gate_state(self.gate) is not None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return self.coordinator.gate_attributes(self.gate)
