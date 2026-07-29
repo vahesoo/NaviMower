@@ -196,6 +196,29 @@ Depending on mower firmware, Navimower creates:
 Some private settings are firmware-dependent and are created only when the
 relevant value is discovered.
 
+## Read-only diagnostics export
+
+For protocol research, run **Developer Tools -> Actions ->
+`navimower.export_diagnostics`**. The action queries every currently known
+read-only private-cloud endpoint and writes two files:
+
+```text
+/config/navimower_diagnostics/navimower_diagnostics_latest.json
+/config/navimower_diagnostics/navimower_diagnostics_YYYYMMDD_HHMMSS.json
+```
+
+The export contains sanitized raw decoded responses, all nested key paths,
+keyword-focused indexes and a passive MQTT topic/key inventory accumulated since
+the integration started. Account tokens, login details, mower serials, network
+identifiers and physical GPS coordinates are removed. Local map X/Y coordinates
+are retained. Large compressed or Base64 resources are represented by their size
+and SHA-256 only.
+
+The action is operationally read-only: it sends no mower commands and performs no
+settings or map writes. The existing private-cloud client may automatically
+reauthenticate if its stored session has expired, just as during a normal refresh.
+Review the file before publishing it.
+
 ## Current limitations
 
 - This is an **alpha test release** and has not been tested across all mower
