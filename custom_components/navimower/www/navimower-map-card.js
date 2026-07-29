@@ -13,7 +13,7 @@
  *   heading_entity: sensor.tont_heading
  *   status_entity: lawn_mower.tont
  *   battery_entity: sensor.tont_battery
- *   zone_entity: sensor.tont_current_zone
+ *   zone_entity: sensor.tont_current_physical_zone
  */
 class NavimowerMapCard extends HTMLElement {
   setConfig(config) {
@@ -79,7 +79,7 @@ class NavimowerMapCard extends HTMLElement {
       heading_entity: "sensor.navimower_heading",
       status_entity: "lawn_mower.navimower",
       battery_entity: "sensor.navimower_battery",
-      zone_entity: "sensor.navimower_current_zone",
+      zone_entity: "sensor.navimower_current_physical_zone",
     };
   }
 
@@ -163,8 +163,14 @@ class NavimowerMapCard extends HTMLElement {
     const x = this._number(this._config.x_entity);
     const y = this._number(this._config.y_entity);
     const status = this._text(this._config.status_entity, "unknown");
+    const mapEntity = this._state(this._config.map_entity);
+    const mapAttrs = mapEntity?.attributes || {};
+    const normalizedStatus = String(status || "").toLowerCase();
+    const trailActive = mapAttrs.trail_active === true
+      || normalizedStatus === "mowing"
+      || normalizedStatus.includes("edge mow");
 
-    if (status === "mowing" && x !== null && y !== null) {
+    if (trailActive && x !== null && y !== null) {
       const key = `${x.toFixed(3)},${y.toFixed(3)}`;
       if (key !== this._lastPointKey) {
         const previous = this._trail[this._trail.length - 1];
@@ -204,8 +210,16 @@ class NavimowerMapCard extends HTMLElement {
     if (!title || !svg || !footer) return;
     title.textContent = this._config.title;
 
-    const status = this._text(this._config.status_entity);
-    const zone = this._text(this._config.zone_entity);
+    const mapEntity = this._state(this._config.map_entity);
+    const mapAttrs = mapEntity?.attributes || {};
+    const status = this._text(
+      this._config.status_entity,
+      mapAttrs.activity || "—"
+    );
+    const zone = this._text(
+      this._config.zone_entity,
+      mapAttrs.current_physical_zone || "—"
+    );
     const battery = this._number(this._config.battery_entity);
     const x = this._number(this._config.x_entity);
     const y = this._number(this._config.y_entity);
