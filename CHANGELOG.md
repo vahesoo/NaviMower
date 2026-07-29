@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.5 — zone-intent gates and trail reliability
+
+- Added bidirectional zone-pair gate configuration in the options flow.
+- Added one `gate required` binary sensor per configured zone pair.
+- Added current physical zone, target zone and current tunnel sensors.
+- Added a general zone-transition binary sensor.
+- Derived physical zone from live MQTT X/Y and decoded polygons, with mapped-tunnel detection and a small boundary-mowing tolerance.
+- Added return-to-dock target inference from the dock's mapped zone when available.
+- Kept existing rectangular channel sensors unchanged.
+- Fixed missing mowing trails by accepting live MQTT `vehicleState=4` and observed mowing actions as active-mowing sources when the private-cloud state is delayed or unknown.
+- Updated the map card to use backend `trail_active` metadata instead of depending only on the configured lawn-mower entity state.
+- Kept the read-only raw diagnostics export and added derived gate/zone/trail context to it.
+- Added ICCID and anti-theft-point redaction to diagnostics privacy filtering.
+- Bumped the integration and bundled map-card cache version to 0.1.5.
+
+## 0.1.4 — diagnostics test release
+
+- Republished the extended read-only diagnostics build for field testing.
+- The repository release tag was updated, while the integration manifest still reported 0.1.3.
+
 ## 0.1.3 — read-only raw diagnostics export
 
 - Added `navimower.export_diagnostics` for sanitized raw exports from every known read-only private-cloud endpoint.

@@ -72,14 +72,21 @@ Navimower also works without a NavimowHA OAuth source, but live MQTT `X`, `Y` an
 heading are then unavailable and position falls back to slower private-cloud
 polling.
 
-### Local channels
+### Local channels and zone-pair gates
 
 Rectangular local-coordinate channels are retained for gate and location
 automations. A channel entity is available only while the MQTT pose is fresh;
 a stale position is not silently reported as `off`.
 
-Channels can describe more than a narrow gate, for example `Front yard`,
-`Behind house` or any other rectangular area.
+Navimower can also create a **bidirectional gate-required binary sensor** from
+two mapped zone IDs. It combines the live MQTT position, decoded zone polygons,
+the target partition and the mapped tunnel connection. This allows the gate to
+open from the mower's intention before it reaches the passage, without requiring
+a rectangular X/Y box over an area that may also be mowed normally.
+
+Channels can still describe more than a narrow gate, for example `Front yard`,
+`Behind house` or any other rectangular area. Both approaches can be used at the
+same time.
 
 ### Map views
 
@@ -140,7 +147,7 @@ y_entity: sensor.tont_position_y
 heading_entity: sensor.tont_heading
 status_entity: lawn_mower.tont
 battery_entity: sensor.tont_battery
-zone_entity: sensor.tont_current_zone
+zone_entity: sensor.tont_current_physical_zone
 show_channels: true
 show_tunnels: true
 ```
@@ -149,7 +156,9 @@ The large static geometry is served by an authenticated local endpoint instead
 of being stored in Home Assistant state attributes and Recorder on every poll.
 The persisted mowing trail is loaded from the integration backend; fresh MQTT
 points are then appended in the browser. Session resets are controlled by the
-backend, so short frontend state changes do not erase the visible trail.
+backend, so short frontend state changes do not erase the visible trail. The
+backend and card use the live MQTT mower state as a mowing fallback when the
+private-cloud state is delayed or temporarily unknown.
 
 ## Channel configuration
 
@@ -180,16 +189,86 @@ Changing options reloads only Navimower. OAuth token writes do not register an
 integration update listener, so they do not intentionally trigger an hourly
 unload/reload cycle.
 
+## Bidirectional gate configuration
+
+In the same **Configure** dialog, enter gates as a JSON list. Each item connects
+exactly two Navimow zone IDs and works in both directions:
+
+```json
+[
+  {
+    "name": "Back yard gate",
+    "zones": [13, 24]
+  }
+]
+```
+
+For a mower named `Tont`, Home Assistant will normally create an entity similar
+to:
+
+```text
+binary_sensor.tont_back_yard_gate_required
+```
+
+The sensor turns on when the mower is physically in one configured zone and its
+target is the other zone. It remains on while the mower is between zones or on
+the matching mapped tunnel, then turns off when the live position reaches the
+target-zone polygon. A small edge tolerance is used because boundary mowing can
+place the mower centre slightly outside the stored polygon.
+
+Useful companion entities are:
+
+- `sensor.<mower>_current_physical_zone`;
+- `sensor.<mower>_target_zone`;
+- `sensor.<mower>_current_tunnel`;
+- `binary_sensor.<mower>_zone_transition`.
+
+Example automation skeleton:
+
+```yaml
+- alias: Open mower gate when crossing is required
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.tont_back_yard_gate_required
+      to: "on"
+  actions:
+    - action: cover.open_cover
+      target:
+        entity_id: cover.back_yard_gate
+
+- alias: Close mower gate after arrival
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.tont_back_yard_gate_required
+      to: "off"
+      for: "00:00:15"
+  conditions:
+    - condition: state
+      entity_id: binary_sensor.tont_live_position_valid
+      state: "on"
+  actions:
+    - action: cover.close_cover
+      target:
+        entity_id: cover.back_yard_gate
+```
+
+Entity IDs for the gate and pose-valid sensor depend on the device name assigned
+by Home Assistant. For an all-zones task the cloud may not publish a single
+future target partition, so early intention-based opening is best when a
+specific zone is selected. The existing channel rectangle remains available as
+a precise physical fallback.
+
 ## Main entities
 
 Depending on mower firmware, Navimower creates:
 
 - `lawn_mower` controls;
-- battery, state, progress, area, coverage, current-zone and maintenance
-  sensors;
+- battery, state, progress, area, coverage and maintenance sensors;
+- current physical zone, target zone and current tunnel sensors;
 - local X/Y, heading and MQTT pose-age sensors;
 - private-cloud, MQTT and pose-valid binary sensors;
-- one binary sensor per configured channel;
+- one binary sensor per configured channel and per configured bidirectional gate;
+- a zone-transition binary sensor;
 - zone selector, scheduler/calendar and supported setting entities;
 - map camera and map-data sensor.
 
@@ -233,6 +312,8 @@ Review the file before publishing it.
   separate backup/restore and verification phase.
 - The exact swept-stripe endpoint is not used. The mowing trail is reconstructed
   from live pose samples.
+- A zone-pair gate can pre-open only when a specific target zone or a return-to-dock
+  target can be derived. An all-zones task may not expose its next zone early.
 
 ## Credits and licence
 
