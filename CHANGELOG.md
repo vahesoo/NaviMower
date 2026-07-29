@@ -38,6 +38,8 @@
   sanitized raw diagnostics exporter.
 - Expanded diagnostics with private/OAuth/MQTT health, map API v2, doodles, zone
   details and retained-session metadata.
+- Fixed Home Assistant options-flow menu translations by placing each menu
+  label map under its corresponding step's `menu_options` key.
 
 Map writes, boundary edits, edge-mowing changes and `clock_direction` writes are
 still intentionally excluded.
