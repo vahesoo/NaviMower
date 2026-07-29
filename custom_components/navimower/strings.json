@@ -70,7 +70,12 @@
     "step": {
       "init": {
         "title": "Navimower options",
-        "description": "Configure retained trail history, zone-pair gates and optional local X/Y channels."
+        "description": "Configure retained trail history, zone-pair gates and optional local X/Y channels.",
+        "menu_options": {
+          "general": "General and trail history",
+          "gates": "Gates",
+          "channels": "Local channels"
+        }
       },
       "general": {
         "title": "General and trail history",
@@ -87,7 +92,12 @@
       },
       "gates": {
         "title": "Gates",
-        "description": "Add, edit or delete physical gates between mapped zones."
+        "description": "Add, edit or delete physical gates between mapped zones.",
+        "menu_options": {
+          "gate_add": "Add gate",
+          "gate_edit_select": "Edit gate",
+          "gate_delete": "Delete gate"
+        }
       },
       "gate_add": {
         "title": "Add a gate",
@@ -125,7 +135,12 @@
       },
       "channels": {
         "title": "Local channels",
-        "description": "Add, edit or delete optional local-coordinate rectangles."
+        "description": "Add, edit or delete optional local-coordinate rectangles.",
+        "menu_options": {
+          "channel_add": "Add channel",
+          "channel_edit_select": "Edit channel",
+          "channel_delete": "Delete channel"
+        }
       },
       "channel_add": {
         "title": "Add a local channel",
@@ -159,23 +174,6 @@
         "data": {
           "channel": "Channel"
         }
-      }
-    },
-    "menu": {
-      "init": {
-        "general": "General and trail history",
-        "gates": "Gates",
-        "channels": "Local channels"
-      },
-      "gates": {
-        "gate_add": "Add gate",
-        "gate_edit_select": "Edit gate",
-        "gate_delete": "Delete gate"
-      },
-      "channels": {
-        "channel_add": "Add channel",
-        "channel_edit_select": "Edit channel",
-        "channel_delete": "Delete channel"
       }
     },
     "error": {
