@@ -14,10 +14,13 @@ These back the graphical cards (and automations).
 from __future__ import annotations
 
 import voluptuous as vol
+from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+
+from .diagnostics_export import async_export_diagnostics
 
 from .const import (
     DOMAIN,
@@ -27,6 +30,7 @@ from .const import (
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
+SERVICE_EXPORT_DIAGNOSTICS = "export_diagnostics"
 
 # Navimow weekday numbering is 1=Sun .. 7=Sat.
 _WEEKDAY_TO_NUM = {
@@ -63,6 +67,13 @@ MOW_SCHEMA = vol.Schema(
         vol.Optional("zones", default=list): vol.All(cv.ensure_list, [vol.Coerce(int)]),
         # True = riparti da zero (clear progress); False = continua.
         vol.Optional("reset", default=True): cv.boolean,
+    }
+)
+
+EXPORT_DIAGNOSTICS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Optional("include_compressed_map", default=True): cv.boolean,
     }
 )
 
@@ -156,6 +167,27 @@ def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
             raise HomeAssistantError(f"Navimow set_schedule failed: {err}") from err
 
+    async def _export_diagnostics(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            path = await async_export_diagnostics(
+                hass,
+                coordinator,
+                include_compressed_map=call.data["include_compressed_map"],
+            )
+        except Exception as err:  # noqa: BLE001
+            raise HomeAssistantError(f"Navimower diagnostics export failed: {err}") from err
+        persistent_notification.async_create(
+            hass,
+            (
+                "Read-only Navimower diagnostics export completed.\n\n"
+                f"File: `{path}`\n\n"
+                "The export is sanitized, but review it before publishing."
+            ),
+            title="Navimower diagnostics export",
+            notification_id="navimower_diagnostics_export",
+        )
+
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         zones = [int(z) for z in call.data.get("zones") or []]
@@ -190,3 +222,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_SET_SCHEDULE, _set_schedule, schema=SET_SCHEDULE_SCHEMA
     )
     hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_DIAGNOSTICS,
+        _export_diagnostics,
+        schema=EXPORT_DIAGNOSTICS_SCHEMA,
+    )
