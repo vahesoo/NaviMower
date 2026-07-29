@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 — read-only raw diagnostics export
+
+- Added `navimower.export_diagnostics` for sanitized raw exports from every known read-only private-cloud endpoint.
+- Added a recursive inventory of all nested key paths and focused indexes for map, edge, direction, height, camera, LiDAR, terrain, image and resource fields.
+- Added a passive MQTT topic/key inventory without storing full MQTT payload values.
+- Large compressed/base64 resources are recorded by length and SHA-256 instead of being copied into the export.
+- The diagnostics action sends no mower commands and performs no settings or map writes; the normal client may reauthenticate if its session has expired.
+
 ## 0.1.2 — validation and translation fixes
 
 - Added the Home Assistant config-entry-only `CONFIG_SCHEMA` required by hassfest.
