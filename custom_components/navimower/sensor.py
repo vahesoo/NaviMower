@@ -217,14 +217,14 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         },
     ),
     NavimowSensorDescription(
-        key="current_tunnel",
-        translation_key="current_tunnel",
+        key="current_channel",
+        translation_key="current_channel",
         icon="mdi:tunnel",
-        value_fn=lambda d: d.get("current_tunnel"),
+        value_fn=lambda d: d.get("current_channel"),
         attrs_fn=lambda d: {
-            "tunnel_id": d.get("current_tunnel_id"),
-            "connection": d.get("current_tunnel_connection"),
-            "distance_m": d.get("current_tunnel_distance"),
+            "tunnel_id": d.get("current_channel_id"),
+            "connection": d.get("current_channel_connection"),
+            "distance_m": d.get("current_channel_distance"),
         },
     ),
     NavimowSensorDescription(
@@ -435,5 +435,5 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "activity": self.data.get("activity"),
             "current_physical_zone": self.data.get("current_physical_zone"),
             "target_zone": self.data.get("target_zone"),
-            "current_tunnel": self.data.get("current_tunnel"),
+            "current_channel": self.data.get("current_channel"),
         }

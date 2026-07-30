@@ -514,9 +514,9 @@ def _extract_geometry(geom: dict) -> dict:
         "modified_count": _as_int(geom.get("modifiedCount")),
         "lidar_sha256": geom.get("lidar_sha256"),
         "zones": zones,
-        "obstacles": polygons("obstacles"),
-        "vision_off": polygons("vision_off_areas"),
-        "tunnels": tunnels,
+        "off_limit_areas": polygons("obstacles"),
+        "vf_off_areas": polygons("vision_off_areas"),
+        "channels": tunnels,
         "doodles": doodles,
         "terrain_sense": deepcopy_json(geom.get("terrain_sense") or []),
         "station": station,
@@ -922,7 +922,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "trail": self.history.active_points_xy(),
             "sessions": self.history.session_summaries(include_points=False),
             "trail_active": self.history.active_session is not None,
-            "channels": [channel.as_dict() for channel in self.channels],
+            "gate_areas": [channel.as_dict() for channel in self.channels],
             "gates": [gate.as_dict() for gate in self.gates],
             "raw": {},
         }
@@ -1497,9 +1497,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "name": map_geometry.get("name"),
             "area": map_geometry.get("area"),
             "zones": map_geometry.get("zones") or [],
-            "obstacles": map_geometry.get("obstacles") or [],
-            "vision_off": map_geometry.get("vision_off") or [],
-            "tunnels": map_geometry.get("tunnels") or [],
+            "off_limit_areas": map_geometry.get("off_limit_areas") or [],
+            "vf_off_areas": map_geometry.get("vf_off_areas") or [],
+            "channels": map_geometry.get("channels") or [],
             "doodles": map_geometry.get("doodles") or [],
             "terrain_sense": map_geometry.get("terrain_sense") or [],
             "station": map_geometry.get("station"),
@@ -1816,7 +1816,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "maintenance": maint,
             # source health / local channels
             **self._connectivity_fields(),
-            "channels": [channel.as_dict() for channel in self.channels],
+            "gate_areas": [channel.as_dict() for channel in self.channels],
             "gates": [gate.as_dict() for gate in self.gates],
             # raw (for entity extra attributes / debugging)
             "raw": {
@@ -1917,7 +1917,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         pose_valid = position is not None
         map_data = snapshot.get("map") or {}
         zones = map_data.get("zones") or snapshot.get("zones") or []
-        tunnels = map_data.get("tunnels") or []
+        channels = map_data.get("channels") or []
         zone_names: dict[int, str] = {}
         for zone in zones:
             if not isinstance(zone, dict):
@@ -1941,7 +1941,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
         tunnel = None
         if pose_valid and physical is None:
-            tunnel = _tunnel_at_position(position, tunnels)
+            tunnel = _tunnel_at_position(position, channels)
 
         station = map_data.get("station") or {}
         dock_zone = _zone_at_position(
@@ -2141,8 +2141,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 ),
                 "current_zone_id": physical_id,
                 "target_zone_id": target_id,
-                "current_tunnel_id": _as_int((tunnel or {}).get("id")),
-                "current_tunnel_name": tunnel_state,
+                "current_channel_id": _as_int((tunnel or {}).get("id")),
+                "current_channel_name": tunnel_state,
                 "pose_age": self.pose_age(),
             }
 
@@ -2161,10 +2161,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             ),
             "target_zone": target_state,
             "target_zone_ids": target_ids,
-            "current_tunnel": tunnel_state,
-            "current_tunnel_id": _as_int((tunnel or {}).get("id")),
-            "current_tunnel_connection": tunnel_connection,
-            "current_tunnel_distance": (tunnel or {}).get("distance"),
+            "current_channel": tunnel_state,
+            "current_channel_id": _as_int((tunnel or {}).get("id")),
+            "current_channel_connection": tunnel_connection,
+            "current_channel_distance": (tunnel or {}).get("distance"),
             "dock_zone_id": dock_zone_id,
             "zone_transition": transition,
             "gate_states": gate_states,
@@ -2491,8 +2491,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "activity": data.get("activity"),
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
-            "current_tunnel": data.get("current_tunnel"),
-            "channels": [channel.as_dict() for channel in self.channels],
+            "current_channel": data.get("current_channel"),
+            "gate_areas": [channel.as_dict() for channel in self.channels],
             "gates": [gate.as_dict() for gate in self.gates],
         }
 

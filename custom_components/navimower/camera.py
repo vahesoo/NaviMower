@@ -87,8 +87,8 @@ class NavimowMapCamera(NavimowEntity, Camera):
         data = self.data
         mp = data.get("map") or {}
         zones = mp.get("zones") or []
-        obstacles = mp.get("obstacles") or []
-        vision_off = mp.get("vision_off") or []
+        obstacles = mp.get("off_limit_areas") or []
+        vision_off = mp.get("vf_off_areas") or []
         doodles = mp.get("doodles") or []
         station = mp.get("station") or None
 
@@ -209,7 +209,7 @@ class NavimowMapCamera(NavimowEntity, Camera):
             if zlabel:
                 zone_labels.append((cx, cy, zlabel))
 
-        # Obstacles (dark gray fill).
+        # Off-limits (dark gray fill).
         for ob in obstacles:
             if len(ob) < 3:
                 continue
@@ -534,9 +534,9 @@ class NavimowMapCamera(NavimowEntity, Camera):
         if has_dock:
             rows.append(("#455a64", "Dock"))
         if has_obstacle:
-            rows.append((_OBSTACLE_FILL, "Obstacle"))
+            rows.append((_OBSTACLE_FILL, "Off-limit"))
         if has_no_mow:
-            rows.append((_NOMOW_FILL, "No-mow"))
+            rows.append((_NOMOW_FILL, "VF-off"))
         if has_doodle:
             rows.append((_DOODLE_FILL, "Temporary"))
         x0, y0, dy = 14, 22, 20
