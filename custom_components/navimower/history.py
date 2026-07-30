@@ -24,6 +24,7 @@ from .const import (
     DOMAIN,
     MQTT_HISTORY_SAVE_DELAY_SECONDS,
     SESSION_CACHE_LIMIT,
+    SESSION_MERGE_GAP_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,6 +81,18 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+
+def _unique_ints(*groups: Any) -> list[int]:
+    """Return unique integer values while preserving their first-seen order."""
+    values: list[int] = []
+    for group in groups:
+        for raw in group or []:
+            parsed = _as_int(raw)
+            if parsed is not None and parsed not in values:
+                values.append(parsed)
+    return values
+
+
 def _timestamp_ms(value: Any = None) -> int:
     """Normalize seconds/milliseconds to Unix milliseconds."""
     parsed = _as_int(value)
@@ -114,6 +127,7 @@ def _metadata(session: dict[str, Any]) -> dict[str, Any]:
         "zone_ids": list(session.get("zone_ids") or []),
         "cutting_height_mm": session.get("cutting_height_mm"),
         "completed": session.get("completed"),
+        "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
         "point_count": (
             len(session.get("points") or [])
             if isinstance(session.get("points"), list)
@@ -136,6 +150,116 @@ def _card_session(session: dict[str, Any], *, include_points: bool) -> dict[str,
     if include_points:
         row["points"] = _card_points(session)
     return row
+
+
+_SESSION_MERGE_GAP_MS = SESSION_MERGE_GAP_SECONDS * 1000
+_SESSION_CLOCK_SKEW_MS = 30_000
+
+
+def _session_end_ms(session: dict[str, Any]) -> int | None:
+    """Return a reliable logical end timestamp for merge decisions."""
+    ended = _as_int(session.get("ended_at_ms"))
+    if ended is not None:
+        return ended
+    points = session.get("points")
+    if isinstance(points, list) and points:
+        last = points[-1]
+        if isinstance(last, list) and last:
+            stamp = _as_int(last[0])
+            if stamp is not None:
+                return stamp
+    return _as_int(session.get("started_at_ms"))
+
+
+def _sessions_can_merge(
+    previous: dict[str, Any],
+    continuation: dict[str, Any],
+) -> bool:
+    """Return whether two fragments belong to one logical mowing session."""
+    if previous.get("legacy") or continuation.get("legacy"):
+        return False
+    previous_end = _session_end_ms(previous)
+    continuation_start = _as_int(continuation.get("started_at_ms"))
+    if previous_end is None or continuation_start is None:
+        return False
+    gap_ms = continuation_start - previous_end
+    return -_SESSION_CLOCK_SKEW_MS <= gap_ms <= _SESSION_MERGE_GAP_MS
+
+
+def _merge_session_records(
+    previous: dict[str, Any],
+    continuation: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge a later fragment into the earlier persistent session record."""
+    merged = deepcopy(previous)
+    merged["sn"] = previous.get("sn") or continuation.get("sn")
+    merged["id"] = previous.get("id")
+    merged["sequence"] = previous.get("sequence")
+    continuation_active = bool(continuation.get("active"))
+    continuation_end_ms = _session_end_ms(continuation)
+    merged["active"] = continuation_active
+    merged["ended_at_ms"] = None if continuation_active else continuation_end_ms
+    merged["ended_at"] = (
+        None
+        if continuation_active
+        else continuation.get("ended_at") or _iso(continuation_end_ms)
+    )
+    merged["approximate_timestamps"] = bool(
+        previous.get("approximate_timestamps")
+        or continuation.get("approximate_timestamps")
+    )
+    merged["mode"] = previous.get("mode") or continuation.get("mode") or "mowing"
+    merged["zone_ids"] = _unique_ints(
+        previous.get("zone_ids"), continuation.get("zone_ids")
+    )
+    merged["cutting_height_mm"] = (
+        previous.get("cutting_height_mm")
+        if previous.get("cutting_height_mm") is not None
+        else continuation.get("cutting_height_mm")
+    )
+    merged["completed"] = (
+        None
+        if continuation_active
+        else (
+            continuation.get("completed")
+            if continuation.get("completed") is not None
+            else previous.get("completed")
+        )
+    )
+
+    points = [
+        list(point)
+        for point in [
+            *(previous.get("points") or []),
+            *(continuation.get("points") or []),
+        ]
+        if isinstance(point, list)
+    ]
+    points.sort(key=lambda point: _as_int(point[0]) or 0 if point else 0)
+    deduplicated: list[list[Any]] = []
+    for point in points:
+        if not deduplicated or point != deduplicated[-1]:
+            deduplicated.append(point)
+    merged["points"] = deduplicated
+
+    segment_starts = [
+        *(
+            previous.get("segment_starts_ms")
+            or [previous.get("started_at_ms")]
+        ),
+        *(
+            continuation.get("segment_starts_ms")
+            or [continuation.get("started_at_ms")]
+        ),
+    ]
+    merged["segment_starts_ms"] = sorted(
+        dict.fromkeys(
+            stamp
+            for stamp in (_as_int(value) for value in segment_starts)
+            if stamp is not None
+        )
+    )
+    return merged
 
 
 class NavimowerHistory:
@@ -220,6 +344,7 @@ class NavimowerHistory:
                 )
                 await self._index_store.async_save(self._index_data())
 
+        await self._async_merge_adjacent_sessions()
         await self._async_migrate_legacy_store()
         _LOGGER.debug(
             "Loaded %d Navimower session records (%d cached), active=%s",
@@ -244,6 +369,80 @@ class NavimowerHistory:
         if not isinstance(session, dict) or session.get("sn") not in (None, self.sn):
             return None
         return session
+
+    async def _async_merge_adjacent_sessions(self) -> None:
+        """Repair persisted session fragments separated by at most five minutes."""
+        changed = False
+        index = 0
+        while index < len(self._sessions) - 1:
+            previous_meta = self._sessions[index]
+            continuation_meta = self._sessions[index + 1]
+            if not _sessions_can_merge(previous_meta, continuation_meta):
+                index += 1
+                continue
+
+            previous_id = str(previous_meta.get("id") or "")
+            continuation_id = str(continuation_meta.get("id") or "")
+            if not previous_id or not continuation_id:
+                index += 1
+                continue
+
+            previous = self._cache.get(previous_id)
+            if previous is None:
+                previous = await self._async_load_session_file(previous_id)
+            continuation = self._cache.get(continuation_id)
+            if continuation is None:
+                continuation = await self._async_load_session_file(continuation_id)
+            if previous is None or continuation is None:
+                index += 1
+                continue
+
+            merged = _merge_session_records(previous, continuation)
+            try:
+                await self._session_store_for(previous_id).async_save(merged)
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Could not persist merged Navimower session %s",
+                    previous_id,
+                    exc_info=True,
+                )
+                index += 1
+                continue
+
+            with self._lock:
+                self._cache[previous_id] = merged
+                self._cache.pop(continuation_id, None)
+                self._sessions[index] = _metadata(merged)
+                self._sessions.pop(index + 1)
+                if self._active_id == continuation_id:
+                    self._active_id = previous_id
+
+            try:
+                await self._session_store_for(continuation_id).async_remove()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Could not remove merged session fragment %s",
+                    continuation_id,
+                    exc_info=True,
+                )
+            self._session_stores.pop(continuation_id, None)
+            changed = True
+            _LOGGER.info(
+                "Merged Navimower session fragment %s into %s",
+                continuation_id,
+                previous_id,
+            )
+            # Keep the same index: the merged record may also join the next part.
+
+        if changed:
+            self._trim_cache_locked()
+            try:
+                await self._index_store.async_save(self._index_data())
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Could not persist the merged Navimower session index",
+                    exc_info=True,
+                )
 
     async def _async_migrate_legacy_store(self) -> None:
         if self._sessions or self._active_id:
@@ -300,6 +499,7 @@ class NavimowerHistory:
             "zone_ids": [],
             "cutting_height_mm": None,
             "completed": None,
+            "segment_starts_ms": [points[0][0]],
             "points": points,
         }
         self._cache[session_id] = session
@@ -428,6 +628,13 @@ class NavimowerHistory:
         mode: str | None,
     ) -> None:
         start_ms = _timestamp_ms(pose_time)
+        if self._resume_recent_session_locked(
+            start_ms=start_ms,
+            zone_ids=zone_ids,
+            cutting_height_mm=cutting_height_mm,
+            mode=mode,
+        ):
+            return
         self._sequence += 1
         session_id = f"{start_ms}-{self._sequence}"
         session = {
@@ -445,6 +652,7 @@ class NavimowerHistory:
             "zone_ids": list(dict.fromkeys(int(value) for value in zone_ids)),
             "cutting_height_mm": cutting_height_mm,
             "completed": None,
+            "segment_starts_ms": [start_ms],
             "points": [],
         }
         self._active_id = session_id
@@ -453,6 +661,57 @@ class NavimowerHistory:
         self._trim_cache_locked()
         self._schedule_index_save()
         _LOGGER.debug("Started Navimower session %s", session_id)
+
+    def _resume_recent_session_locked(
+        self,
+        *,
+        start_ms: int,
+        zone_ids: list[int],
+        cutting_height_mm: int | None,
+        mode: str | None,
+    ) -> bool:
+        """Reopen the latest session after a short stop/reload/restart gap."""
+        if not self._sessions:
+            return False
+        previous_meta = self._sessions[-1]
+        candidate = {
+            "started_at_ms": start_ms,
+            "legacy": False,
+        }
+        if not _sessions_can_merge(previous_meta, candidate):
+            return False
+        session_id = str(previous_meta.get("id") or "")
+        previous = self._cache.get(session_id)
+        if not session_id or previous is None or previous.get("active"):
+            return False
+
+        previous["active"] = True
+        previous["ended_at_ms"] = None
+        previous["ended_at"] = None
+        previous["completed"] = None
+        previous["zone_ids"] = _unique_ints(
+            previous.get("zone_ids"), zone_ids
+        )
+        if previous.get("cutting_height_mm") is None:
+            previous["cutting_height_mm"] = cutting_height_mm
+        if not previous.get("mode"):
+            previous["mode"] = mode or "mowing"
+        segment_starts = previous.setdefault(
+            "segment_starts_ms",
+            [previous.get("started_at_ms")],
+        )
+        if start_ms not in segment_starts:
+            segment_starts.append(start_ms)
+
+        self._active_id = session_id
+        self._update_active_metadata_locked(previous)
+        self._schedule_active_save()
+        self._schedule_index_save()
+        _LOGGER.info(
+            "Resumed Navimower session %s after a short interruption",
+            session_id,
+        )
+        return True
 
     @staticmethod
     def _append_point_locked(
@@ -531,7 +790,24 @@ class NavimowerHistory:
         self, session_id: str, session: dict[str, Any]
     ) -> None:
         try:
-            await self._session_store_for(session_id).async_save(session)
+            # A new cutting update may have reopened this session before the
+            # asynchronous finalizer runs. Always persist the newest cache
+            # snapshot so a stale completed copy cannot overwrite the resume.
+            with self._lock:
+                current = deepcopy(self._cache.get(session_id))
+            snapshot = current or session
+            store = self._session_store_for(session_id)
+            await store.async_save(snapshot)
+
+            # The session can resume while Store.async_save is awaiting I/O. If
+            # that happened, immediately replace the stale finalized snapshot
+            # with the newest active state instead of waiting for the delayed
+            # checkpoint.
+            with self._lock:
+                latest = deepcopy(self._cache.get(session_id))
+            if latest is not None and latest != snapshot:
+                await store.async_save(latest)
+
             await self._async_prune(save=False)
             await self._index_store.async_save(self._index_data())
         except Exception:  # noqa: BLE001

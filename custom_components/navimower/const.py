@@ -113,7 +113,13 @@ PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
 
 # --- Map/history API -------------------------------------------------------
 MAP_API_SCHEMA_VERSION: Final = 2
+# Cached reduced map geometry has its own version. Bump this whenever the
+# persisted geometry keys or semantics change without changing the public API.
+MAP_GEOMETRY_SCHEMA_VERSION: Final = 3
 SESSION_CACHE_LIMIT: Final = 64
+# Short operator stops, integration reloads and Home Assistant restarts are one
+# logical mowing session when cutting resumes within this window.
+SESSION_MERGE_GAP_SECONDS: Final = 300
 
 # --- Coverage / rendered trail --------------------------------------------
 SWATH_WIDTH_M: Final = 0.25

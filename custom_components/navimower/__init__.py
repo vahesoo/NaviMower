@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import shutil
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -52,54 +50,8 @@ PLATFORMS: list[Platform] = [
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-# The standalone map card is distributed from its own HACS dashboard repository.
-# Mow-now and scheduler remain bundled until their UI is folded into that card.
-_CARDS = (
-    "navimower-mow-card.js",
-    "navimower-scheduler-card.js",
-)
-_CARD_VERSION = "0.2.1"
-_FRONTEND_KEY = f"{DOMAIN}_frontend_registered"
-
-
-async def _async_register_frontend(hass: HomeAssistant) -> None:
-    """Copy/register only the still-bundled mow-now and scheduler cards."""
-    if hass.data.get(_FRONTEND_KEY):
-        return
-
-    here = os.path.dirname(__file__)
-    registered = False
-    for filename in _CARDS:
-        source = os.path.join(here, "www", filename)
-        if not os.path.isfile(source):
-            _LOGGER.warning("Navimower card asset is missing: %s", source)
-            continue
-
-        target_dir = hass.config.path("www", DOMAIN)
-        target = os.path.join(target_dir, filename)
-
-        def _copy_asset() -> None:
-            os.makedirs(target_dir, exist_ok=True)
-            shutil.copyfile(source, target)
-
-        try:
-            await hass.async_add_executor_job(_copy_asset)
-            from homeassistant.components.frontend import add_extra_js_url
-
-            add_extra_js_url(
-                hass,
-                f"/local/{DOMAIN}/{filename}?v={_CARD_VERSION}",
-            )
-            registered = True
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning(
-                "Could not register Navimower card %s",
-                filename,
-                exc_info=True,
-            )
-
-    if registered:
-        hass.data[_FRONTEND_KEY] = True
+# The standalone map card, Mow Now dialog and schedule editor are distributed
+# from the separate navimower-map-card HACS dashboard repository.
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -182,8 +134,6 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Restore local data, then start private cloud and OAuth/MQTT in parallel."""
     async_register_oauth_implementation(hass)
-    await _async_register_frontend(hass)
-
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_data.setdefault("_options_snapshot", {})[entry.entry_id] = dict(
         entry.options

@@ -1,9 +1,6 @@
 {
   "domain": "navimower",
   "name": "Navimower",
-  "after_dependencies": [
-    "frontend"
-  ],
   "codeowners": [
     "@vahesoo"
   ],
@@ -12,12 +9,12 @@
     "auth",
     "http"
   ],
-  "documentation": "https://github.com/vahesoo/Navimower",
+  "documentation": "https://github.com/vahesoo/NaviMower",
   "integration_type": "device",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/vahesoo/Navimower/issues",
+  "issue_tracker": "https://github.com/vahesoo/NaviMower/issues",
   "requirements": [
     "navimow-sdk>=0.1.2"
   ],
-  "version": "0.2.2"
+  "version": "0.2.3"
 }

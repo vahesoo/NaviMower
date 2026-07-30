@@ -66,6 +66,7 @@ from .const import (
     OPT_ZONES,
     DEFAULT_TRAIL_RETENTION_DAYS,
     MAP_API_SCHEMA_VERSION,
+    MAP_GEOMETRY_SCHEMA_VERSION,
     PRIVATE_CORE_HEALTH_SECONDS,
     PRIVATE_ENDPOINT_TTLS_ACTIVE,
     PRIVATE_ENDPOINT_TTLS_IDLE,
@@ -523,6 +524,31 @@ def _extract_geometry(geom: dict) -> dict:
     }
 
 
+def _normalize_cached_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
+    """Migrate persisted pre-v0.2.3 geometry keys without losing offline data."""
+    normalized = deepcopy_json(geometry)
+    if not isinstance(normalized, dict):
+        normalized = dict(geometry)
+
+    if "off_limit_areas" not in normalized:
+        normalized["off_limit_areas"] = normalized.get("obstacles") or []
+    if "vf_off_areas" not in normalized:
+        normalized["vf_off_areas"] = (
+            normalized.get("vision_off_areas")
+            or normalized.get("vision_off")
+            or []
+        )
+    if "channels" not in normalized:
+        normalized["channels"] = normalized.get("tunnels") or []
+
+    # Keep only the current public names in the restored snapshot.
+    normalized.pop("obstacles", None)
+    normalized.pop("vision_off_areas", None)
+    normalized.pop("vision_off", None)
+    normalized.pop("tunnels", None)
+    return normalized
+
+
 def deepcopy_json(value: Any) -> Any:
     """Return a JSON-safe deep copy without importing copy in hot parsing."""
     try:
@@ -856,19 +882,19 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if isinstance(cached, dict) and cached.get("sn") in (None, self.sn):
             geometry = cached.get("map_geometry")
             if isinstance(geometry, dict):
-                self._map_geometry = geometry
+                self._map_geometry = _normalize_cached_geometry(geometry)
             key = cached.get("map_cache_key")
             geometry_schema = _as_int(cached.get("geometry_schema"))
             if (
-                geometry_schema == MAP_API_SCHEMA_VERSION
+                geometry_schema == MAP_GEOMETRY_SCHEMA_VERSION
                 and isinstance(key, (list, tuple))
                 and len(key) == 3
             ):
                 self._map_cache_key = tuple(str(value) for value in key)
             else:
-                # v0.1.x cached reduced geometry did not contain doodles,
-                # effective heights or a frontend-visible map revision. Keep it
-                # for bootstrap display but force a one-time cloud re-decode.
+                # Keep normalized cached geometry for immediate bootstrap display,
+                # but force one cloud re-decode whenever the persisted geometry
+                # schema changes.
                 self._map_cache_key = None
 
         # Always expose a bootstrap snapshot before the network branches start.
@@ -954,7 +980,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     def _state_store_data(self) -> dict[str, Any]:
         return {
             "sn": self.sn,
-            "geometry_schema": MAP_API_SCHEMA_VERSION,
+            "geometry_schema": MAP_GEOMETRY_SCHEMA_VERSION,
             "map_geometry": self._map_geometry,
             "map_cache_key": list(self._map_cache_key)
             if self._map_cache_key

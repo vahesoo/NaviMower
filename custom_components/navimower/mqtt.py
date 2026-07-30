@@ -335,7 +335,9 @@ class NavimowerMqttBridge:
             or self.sdk is not None
         ):
             return
-        self._retry_task = self.hass.async_create_task(
+        # This retry loop may remain alive through a prolonged outage. It must
+        # not extend Home Assistant's integration-startup tracking window.
+        self._retry_task = self.hass.async_create_background_task(
             self._async_retry_start(),
             f"Retry Navimower MQTT setup {self.entry.entry_id}",
         )
@@ -479,7 +481,9 @@ class NavimowerMqttBridge:
             or self._stopped
         ):
             return
-        self._watchdog_task = self.hass.async_create_task(
+        # The watchdog is intentionally long-lived. Register it as a background
+        # task so Home Assistant does not wait for it during integration startup.
+        self._watchdog_task = self.hass.async_create_background_task(
             self._async_watchdog_loop(),
             f"Navimower MQTT watchdog {self.entry.entry_id}",
         )
