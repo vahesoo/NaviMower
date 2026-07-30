@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.1 — stability and data freshness
+
+- Added an MQTT pose-stream watchdog that distinguishes an open broker
+  connection from a healthy live `realtimeDate/location` subscription.
+- Re-subscribes when an active mower has no fresh pose for 25 seconds and
+  rebuilds only the MQTT client if the stream does not recover within 10
+  seconds; entities, map APIs and active history remain loaded.
+- Added recovery generation guards, task cancellation, timeout-bounded
+  disconnect and a quiesce-before-unload lifecycle so callbacks from an old
+  MQTT client cannot write after a reload.
+- Added increasing MQTT recovery backoff while private-cloud fallback remains
+  available.
+- Increased private-cloud polling to 5 seconds while mowing, 8 seconds while
+  returning/mapping and 15 seconds while idle for the initial field-test
+  profile.
+- Split private polling into per-endpoint TTLs and last-good caches. One timeout
+  no longer blanks unrelated sensors or marks all data unavailable.
+- Added immediate throttled private refreshes on MQTT activity changes and when
+  the live pose stream returns.
+- Added `Position source`, `MQTT position stream` and optional private-poll-age
+  diagnostics, plus endpoint and recovery details in manual exports.
+- Clarified private-cloud versus Smart Home OAuth reauthentication and improved
+  trail, channel and gate option descriptions.
+- Documented the source priority, fallback behaviour, polling profile and MQTT
+  automatic recovery model.
+
 ## 0.2.0 — standalone OAuth, exact history and map API v2
 
 - Added Navimower-owned Smart Home OAuth and official MQTT setup; the old

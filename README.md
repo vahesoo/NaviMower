@@ -110,8 +110,8 @@ Depending on mower model and firmware, Navimower provides:
 - battery, state, progress, area, coverage and maintenance sensors;
 - global cutting height;
 - current physical zone, target zone and current tunnel sensors;
-- local X/Y, heading and MQTT pose-age sensors;
-- private-cloud, OAuth, MQTT and pose-valid diagnostics;
+- local X/Y, heading, position-source and MQTT pose-age sensors;
+- private-cloud, OAuth, MQTT, pose-valid and MQTT-stream diagnostics;
 - one binary sensor per configured channel and gate;
 - zone selector, calendar/scheduler and supported setting entities;
 - SVG map camera and a lightweight map-data sensor.
@@ -161,6 +161,43 @@ The two branches degrade independently:
 OAuth token refreshes do not intentionally reload the full integration. After a
 token refresh or MQTT authentication disconnect, Navimower obtains fresh MQTT
 credentials before reconnecting.
+
+## Connectivity, polling and fallback
+
+Navimower treats MQTT transport and the live position stream as separate health
+signals. `MQTT connected` means the broker connection is open; `Live position
+valid` means a real X/Y packet has arrived within the freshness window. A broker
+can remain connected while the location subscription is silent.
+
+While the mower is active, a five-second watchdog checks the pose stream. When
+the latest pose is more than 25 seconds old, Navimower first re-subscribes to the
+location topic. If no pose arrives within 10 seconds, it rebuilds only the MQTT
+client with increasing backoff. The config entry, entities, active session and
+map APIs stay loaded during recovery.
+
+Data sources are merged by purpose:
+
+| Data | Preferred source | Fallback |
+| --- | --- | --- |
+| X/Y, heading and exact route | official MQTT | private-cloud location |
+| live activity changes | official MQTT | private-cloud `index2` |
+| coverage, areas and zone progress | private cloud | last-good cache |
+| map, zones, settings and schedule | private cloud | persisted/local cache |
+| physical channel/gate safety | fresh MQTT only | unavailable, never stale X/Y |
+
+Private-cloud polling is intentionally aggressive in v0.2.1 while field testing:
+
+- mowing: coordinator cycle every 5 seconds;
+- returning/mapping: every 8 seconds;
+- docked/idle: every 15 seconds;
+- individual endpoints have separate TTLs, so slow map/maintenance data is not
+  downloaded on every cycle.
+
+A failure from one private endpoint keeps its previous value and does not erase
+other entity states. Reauthentication is started only for a real authentication
+rejection. The diagnostic `Position source` sensor shows whether current X/Y came
+from `mqtt` or `private_cloud`; `MQTT position stream` shows states such as
+`live`, `resubscribing`, `rebuilding` or `backoff`.
 
 ## Navimower Map Card
 
@@ -273,7 +310,9 @@ additional safety logic or automatic-close behaviour.
 
 Channels are local-coordinate rectangles managed with Add/Edit/Delete steps.
 They can describe a gate passage, front yard, area behind the house or any other
-useful rectangle.
+useful rectangle. Channel and physical gate membership use only a fresh MQTT
+pose. Private-cloud fallback coordinates may keep the map route moving, but they
+are never used to issue a false physical close signal.
 
 ## Migration from v0.1.x
 
@@ -322,7 +361,8 @@ The v2 export includes:
 
 - sanitized raw responses from known read-only private endpoints;
 - nested key inventory and focused map/camera/LiDAR/terrain indexes;
-- private/OAuth/MQTT health;
+- private endpoint age/error statistics and active/idle poll profile;
+- OAuth/MQTT transport, pose-stream and automatic-recovery health;
 - map API summary, zones and doodles;
 - session metadata and persistent zone history;
 - passive MQTT topic/key inventory.
