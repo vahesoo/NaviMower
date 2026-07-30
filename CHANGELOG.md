@@ -1,5 +1,21 @@
 # Changelog
+## 0.2.4 — gap-aware session routes and map API v3
+
+- Bumped the public map API to schema v3.
+- Added gap-aware `trail_segments` for the active route and per-session
+  `segments` for retained history, so reload, restart and short operator-stop
+  gaps are not bridged by a false connecting line.
+- Kept the existing flat `trail` and `points` arrays for compatibility with
+  older map-card releases.
+- Updated the documented standalone-card requirement to
+  navimower-map-card v0.1.10 or later.
+- Expanded session regression tests to cover merged route segments and active
+  trail segmentation.
+- Expanded the public README credits and clarified that multiple-mower support
+  is available but remains experimental.
+
 ## 0.2.3 — public preview, unified sessions and frontend cleanup
+
 - Treats mowing fragments separated by no more than five minutes as one logical
   session. This covers short manual stops, zone reselection, integration reloads
   and Home Assistant restarts without inflating the session count.

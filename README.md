@@ -101,9 +101,10 @@ into the same logical session. A normal paused session already remains active
 without needing this merge rule; separated fragments beyond five minutes stay
 separate.
 
-Merged sessions retain segment start timestamps. Route samples that were not
-received during an interruption cannot be reconstructed, but the session count,
-start time and end time remain representative of one mowing job.
+Merged sessions retain separate route segments. Route samples that were not
+received during an interruption cannot be reconstructed, and the map API does
+not draw a false connecting line across that gap. The session count, start time
+and end time still represent one mowing job.
 
 Trail retention is configurable:
 
@@ -249,7 +250,7 @@ type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.9 or later** with Navimower v0.2.3. The standalone
+Use **navimower-map-card v0.1.10 or later** with Navimower v0.2.4. The standalone
 card includes:
 
 - map, zones, Off-limit, VF-off, Channel and Gate-area layers;
@@ -273,19 +274,22 @@ GET /api/navimower/sessions/<entry_id>
 GET /api/navimower/session/<entry_id>/<session_id>
 ```
 
-The map payload uses `schema_version: 2` and contains:
+The map payload uses `schema_version: 3` and contains:
 
 - map geometry, zones, Off-limit areas, VF-off areas, Channels and dock;
 - doodle metadata and original vendor SVG;
 - current coverage and zone details;
 - global/effective cutting heights;
 - active trail and every session retained by the selected history policy;
+- gap-aware `trail_segments` and per-session `segments`, while retaining flat
+  `trail`/`points` arrays for older cards;
 - local Gate areas and zone-pair gates;
 - links to the complete session index/detail APIs.
 
 The dedicated session detail endpoint returns exact timestamped points for any
-retained session. For compatibility with the current standalone card, the main
-map response also includes the XY path for every retained session.
+retained session. The main map response includes both a flat XY path and separate
+XY route segments for every retained session. New cards should prefer `segments`
+so short reload, restart and operator-stop gaps are not bridged by a false line.
 
 ## Options
 
@@ -336,6 +340,15 @@ steps. They can describe a gate passage or any other area that needs exact
 physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
+
+### From v0.2.3 to v0.2.4
+
+- The public map payload is now schema v3 and exposes gap-aware
+  `trail_segments` and per-session `segments`.
+- Flat `trail` and `points` arrays remain available for older cards, but
+  `navimower-map-card` v0.1.10 or later is recommended so route gaps are not
+  bridged by false connecting lines.
+- Restart Home Assistant after updating.
 
 ### From v0.2.2 to v0.2.3
 
