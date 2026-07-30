@@ -59,6 +59,16 @@ MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 MQTT_POSE_STALE_SECONDS: Final = 20
+# A live stream can be stale while the broker connection itself remains up.
+# The bridge starts recovery a little after the entity freshness threshold so a
+# single delayed packet does not cause needless reconnects.
+MQTT_POSE_RECOVERY_STALE_SECONDS: Final = 25
+MQTT_WATCHDOG_INTERVAL_SECONDS: Final = 5
+MQTT_RESUBSCRIBE_GRACE_SECONDS: Final = 10
+MQTT_DISCONNECT_TIMEOUT_SECONDS: Final = 15
+# First rebuild is immediate; repeated failures back off while private-cloud
+# fallback continues to publish state and position.
+MQTT_RECOVERY_BACKOFF_SECONDS: Final[tuple[int, ...]] = (0, 15, 30, 60, 120, 300)
 MQTT_HISTORY_SAVE_DELAY_SECONDS: Final = 30
 # Legacy name retained while migrating old code paths.
 MQTT_TRAIL_SAVE_DELAY_SECONDS: Final = MQTT_HISTORY_SAVE_DELAY_SECONDS
@@ -66,11 +76,40 @@ TUNNEL_DETECTION_RADIUS_M: Final = 1.0
 ZONE_EDGE_TOLERANCE_M: Final = 0.35
 
 # --- Private-cloud polling -------------------------------------------------
-DEFAULT_SCAN_INTERVAL: Final = 30
-FAST_SCAN_INTERVAL: Final = 12
-# MQTT supplies dense pose/trail. Private app-cloud polling stays conservative.
-MOW_SCAN_INTERVAL: Final = 12
-SLOW_REFRESH_EVERY: Final = 6
+# v0.2.1 deliberately starts with a fairly aggressive profile. The private
+# cloud is the fallback when the official MQTT location stream stalls, so a
+# five-second active poll keeps route gaps below the map-card break threshold on
+# a normally moving mower. These values can be relaxed after field testing.
+DEFAULT_SCAN_INTERVAL: Final = 15
+FAST_SCAN_INTERVAL: Final = 8
+MOW_SCAN_INTERVAL: Final = 5
+PRIVATE_FAST_REFRESH_MIN_SECONDS: Final = 2
+PRIVATE_CORE_HEALTH_SECONDS: Final = 45
+
+# Per-endpoint TTLs. A coordinator cycle may run every five seconds while
+# mowing, but only endpoints whose TTL has elapsed are called.
+PRIVATE_ENDPOINT_TTLS_ACTIVE: Final[dict[str, int]] = {
+    "device_info": 86400,
+    "index2": 5,
+    "auth_list": 15,
+    "location": 5,
+    "path_info_time": 5,
+    "set_list": 30,
+    "today_plan": 30,
+    "map_list": 60,
+    "maintenance": 600,
+}
+PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
+    "device_info": 86400,
+    "index2": 15,
+    "auth_list": 30,
+    "location": 30,
+    "path_info_time": 30,
+    "set_list": 60,
+    "today_plan": 60,
+    "map_list": 120,
+    "maintenance": 600,
+}
 
 # --- Map/history API -------------------------------------------------------
 MAP_API_SCHEMA_VERSION: Final = 2

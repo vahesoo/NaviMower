@@ -54,6 +54,7 @@ from .const import (
     MOW_SCAN_INTERVAL,
     MQTT_CUTTING_ACTIONS,
     MQTT_DOCKED_STATES,
+    MQTT_STATE_MAPPING,
     MQTT_STATE_MOWING,
     MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
@@ -65,7 +66,10 @@ from .const import (
     OPT_ZONES,
     DEFAULT_TRAIL_RETENTION_DAYS,
     MAP_API_SCHEMA_VERSION,
-    SLOW_REFRESH_EVERY,
+    PRIVATE_CORE_HEALTH_SECONDS,
+    PRIVATE_ENDPOINT_TTLS_ACTIVE,
+    PRIVATE_ENDPOINT_TTLS_IDLE,
+    PRIVATE_FAST_REFRESH_MIN_SECONDS,
     STATE_MOWING,
     STATE_RETURNING,
     TUNNEL_DETECTION_RADIUS_M,
@@ -77,9 +81,6 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Slow-changing endpoints refreshed only every SLOW_REFRESH_EVERY cycles.
-_SLOW_KEYS = ("set_list", "maintenance", "today_plan", "map_list")
 
 # Persist the latest decoded map so MQTT/history remain useful during a
 # temporary private-cloud outage.  Trail sessions use separate Store files.
@@ -793,8 +794,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         self.sn: str = data[CONF_VEHICLE_SN]
         self.vehicle_type: int = int(data.get(CONF_VEHICLE_TYPE, 0) or 0)
-        self._cycle = 0
         self._raw_cache: dict[str, Any] = {}
+        self._endpoint_status: dict[str, dict[str, Any]] = {}
+        self._last_private_attempt_mono: float | None = None
+        self._last_private_success_mono: float | None = None
+        self._last_private_core_success_mono: float | None = None
+        self._last_private_poll_had_success = False
+        self._last_private_poll_had_core_success = False
+        self._last_fast_refresh_request_mono = 0.0
         self._map_geometry: dict[str, Any] | None = None
         self._map_cache_key: tuple[str, str, str] | None = None
         self._map_dirty = False
@@ -818,6 +825,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         # Dense official MQTT pose is merged into private-cloud state.
         self._mqtt_location: dict[str, Any] | None = None
         self._mqtt_last_update: float | None = None
+        self._mqtt_last_message_update: float | None = None
         self._mqtt_connected = False
         self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
         self._oauth_connected = False
@@ -955,11 +963,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
     # ------------------------------------------------------------------ poll
     async def _async_update_data(self) -> dict:
-        """Refresh private-cloud data while preserving valid entity states."""
+        """Refresh private-cloud data while preserving every last-good value.
+
+        Endpoint failures are isolated inside :meth:`_fetch_blocking`. Only a
+        rejected private-cloud session or the absence of any usable core data
+        reaches this outer handler.
+        """
         try:
             snapshot = await self.hass.async_add_executor_job(self._fetch_blocking)
         except (NavimowAuthError, NavimowError) as err:
-            self.update_interval = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
             self._private_cloud_connected = False
             self._last_private_error = str(err)
             if isinstance(err, NavimowAuthError) and not self._private_reauth_started:
@@ -968,12 +980,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     self.hass, data={"reauth_type": "private"}
                 )
             snapshot = dict(self.data or self._bootstrap_snapshot())
+            self.update_interval = timedelta(
+                seconds=self._poll_interval_for_snapshot(snapshot)
+            )
             snapshot.update(self._connectivity_fields())
             return snapshot
 
-        self._private_cloud_connected = True
+        core_age = self.private_core_age()
+        self._private_cloud_connected = (
+            core_age is not None and core_age <= PRIVATE_CORE_HEALTH_SECONDS
+        )
         self._private_reauth_started = False
-        self._last_private_error = None
+        self._last_private_error = self._private_error_summary()
         self._persist_session()
         snapshot = self._apply_mqtt_snapshot(snapshot)
         self.history.update_from_snapshot(snapshot)
@@ -992,16 +1010,30 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 lambda: cached, MQTT_HISTORY_SAVE_DELAY_SECONDS
             )
 
-        code = snapshot.get("state_code")
-        if code == STATE_MOWING:
-            interval = MOW_SCAN_INTERVAL
-        elif code in ACTIVE_STATES:
-            interval = FAST_SCAN_INTERVAL
-        else:
-            interval = DEFAULT_SCAN_INTERVAL
-        self.update_interval = timedelta(seconds=interval)
+        self.update_interval = timedelta(
+            seconds=self._poll_interval_for_snapshot(snapshot)
+        )
         snapshot.update(self._connectivity_fields())
         return snapshot
+
+    @staticmethod
+    def _poll_interval_for_snapshot(snapshot: dict[str, Any]) -> int:
+        activity = snapshot.get("activity")
+        code = str(snapshot.get("state_code") or "")
+        mqtt_state = _as_int(snapshot.get("mqtt_vehicle_state"))
+        if (
+            activity == ACTIVITY_MOWING
+            or code == STATE_MOWING
+            or mqtt_state == MQTT_STATE_MOWING
+        ):
+            return MOW_SCAN_INTERVAL
+        if (
+            activity == ACTIVITY_RETURNING
+            or code in ACTIVE_STATES
+            or mqtt_state in {MQTT_STATE_RETURNING, MQTT_STATE_MAPPING}
+        ):
+            return FAST_SCAN_INTERVAL
+        return DEFAULT_SCAN_INTERVAL
 
     def _merge_zone_history(
         self, zone_details: list[dict[str, Any]]
@@ -1102,56 +1134,232 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
 
     def _fetch_blocking(self) -> dict:
-        """Runs in an executor thread. Fetches + parses one snapshot."""
+        """Fetch due private-cloud endpoints and parse one merged snapshot.
+
+        Each endpoint owns its own TTL and last-good cache. A timeout from one
+        endpoint therefore never erases values supplied by another endpoint and
+        does not turn every entity unavailable.
+        """
         sn, vtype = self.sn, self.vehicle_type
         raw = self._raw_cache
+        now = time.monotonic()
+        self._last_private_attempt_mono = now
+        active = self._private_poll_active()
+        ttls = (
+            PRIVATE_ENDPOINT_TTLS_ACTIVE
+            if active
+            else PRIVATE_ENDPOINT_TTLS_IDLE
+        )
+        getters: dict[str, Any] = {
+            "device_info": lambda: self.client.device_info(sn),
+            "index2": lambda: self.client.index2(sn),
+            "auth_list": self.client.auth_list,
+            "location": lambda: self.client.location(sn, vtype),
+            "path_info_time": lambda: self.client.path_info_time(sn),
+            "set_list": lambda: self.client.set_list(sn),
+            "maintenance": lambda: self.client.maintenance(sn),
+            "today_plan": lambda: self.client.today_plan(sn, vtype),
+            "map_list": lambda: self.client.map_list(sn),
+        }
 
-        # One-time static info (model, area limits).
-        if "device_info" not in raw:
+        successes: set[str] = set()
+        for key, getter in getters.items():
+            if self._fetch_endpoint(
+                raw,
+                key,
+                getter,
+                ttl=int(ttls.get(key, DEFAULT_SCAN_INTERVAL)),
+                now=now,
+            ):
+                successes.add(key)
+
+        # A changed location/map-list row is enough to check the map revision.
+        # _maybe_fetch_map itself avoids all detail downloads while the revision
+        # key is unchanged.
+        if (
+            self._map_geometry is None
+            or "location" in successes
+            or "map_list" in successes
+        ):
             try:
-                raw["device_info"] = self.client.device_info(sn)
+                self._maybe_fetch_map(raw)
             except NavimowAuthError:
                 raise
-            except NavimowError:
-                raw["device_info"] = {}
+            except Exception as err:  # noqa: BLE001 - keep cached geometry.
+                _LOGGER.warning(
+                    "Navimower map refresh failed; keeping cached geometry: %s",
+                    err,
+                )
 
-        # Fast, every cycle.
-        raw["index2"] = self.client.index2(sn)
-        raw["auth_list"] = self.client.auth_list()
-        try:
-            raw["location"] = self.client.location(sn, vtype)
-        except NavimowAuthError:
-            raise  # unrecoverable auth failure -> reauth (never swallow)
-        except NavimowError:
-            raw.setdefault("location", {})
-        # Per-zone coverage (cheap; persists for the last session even when docked).
-        try:
-            raw["path_info_time"] = self.client.path_info_time(sn)
-        except NavimowAuthError:
-            raise
-        except NavimowError:
-            raw.setdefault("path_info_time", [])
+        core_keys = {"index2", "auth_list", "location"}
+        core_success = bool(successes & core_keys)
+        self._last_private_poll_had_success = bool(successes)
+        self._last_private_poll_had_core_success = core_success
+        if successes:
+            self._last_private_success_mono = now
+        if core_success:
+            self._last_private_core_success_mono = now
 
-        # Slow, only every N cycles (or on the first successful fetch).
-        self._cycle = (self._cycle + 1) % SLOW_REFRESH_EVERY
-        if self._cycle == 1 or "set_list" not in raw:
-            getters = {
-                "set_list": lambda: self.client.set_list(sn),
-                "maintenance": lambda: self.client.maintenance(sn),
-                "today_plan": lambda: self.client.today_plan(sn, vtype),
-                "map_list": lambda: self.client.map_list(sn),
-            }
-            for key, getter in getters.items():
-                try:
-                    raw[key] = getter()
-                except NavimowAuthError:
-                    raise
-                except NavimowError:
-                    raw.setdefault(key, {})
-            # Map geometry: fetch + decode on the slow cycle, cached by map
-            # id/edit-time so the 2 KB blob is only downloaded when it changes.
-            self._maybe_fetch_map(raw)
+        has_cached_core = any(raw.get(key) for key in core_keys)
+        if not has_cached_core:
+            summary = self._private_error_summary() or "No private-cloud core data"
+            raise NavimowError(summary)
         return self._parse(raw)
+
+    def _private_poll_active(self) -> bool:
+        data = self.data or {}
+        activity = data.get("activity")
+        state_code = str(data.get("state_code") or "")
+        mqtt_state = _as_int((self._mqtt_location or {}).get("vehicle_state"))
+        mqtt_active = mqtt_state in {
+            MQTT_STATE_MOWING,
+            MQTT_STATE_RETURNING,
+            MQTT_STATE_MAPPING,
+        }
+        # A fresh official pose is authoritative at task start, before the
+        # private cloud has necessarily switched from docked to mowing.
+        if self._fresh_mqtt_position() is not None and mqtt_active:
+            return True
+        if activity in {ACTIVITY_MOWING, ACTIVITY_RETURNING} or state_code in ACTIVE_STATES:
+            return True
+        # Once the private cloud definitively reports docked/error, do not keep
+        # aggressive polling forever because of an old cached MQTT state=4.
+        if activity in {ACTIVITY_DOCKED, ACTIVITY_ERROR} or state_code in DOCKED_STATES:
+            return False
+        message_age = self.mqtt_message_age()
+        return bool(mqtt_active and message_age is not None and message_age <= 45)
+
+    def _fetch_endpoint(
+        self,
+        raw: dict[str, Any],
+        key: str,
+        getter: Any,
+        *,
+        ttl: int,
+        now: float,
+    ) -> bool:
+        status = self._endpoint_status.setdefault(
+            key,
+            {
+                "attempts": 0,
+                "successes": 0,
+                "failures": 0,
+                "last_attempt_mono": None,
+                "last_success_mono": None,
+                "last_error": None,
+                "last_attempt_utc": None,
+                "last_success_utc": None,
+                "last_error_utc": None,
+            },
+        )
+        last_attempt = status.get("last_attempt_mono")
+        due = key not in raw or last_attempt is None or now - last_attempt >= ttl
+        if not due:
+            return False
+
+        status["attempts"] += 1
+        status["last_attempt_mono"] = now
+        status["last_attempt_utc"] = datetime.now(UTC).isoformat()
+        try:
+            value = getter()
+            if value is None:
+                raise NavimowError(f"{key} returned no data")
+        except NavimowAuthError as err:
+            status["failures"] += 1
+            status["last_error"] = str(err)
+            status["last_error_utc"] = datetime.now(UTC).isoformat()
+            raise
+        except Exception as err:  # noqa: BLE001 - preserve cache and continue.
+            previous_error = status.get("last_error")
+            status["failures"] += 1
+            status["last_error"] = str(err)
+            status["last_error_utc"] = datetime.now(UTC).isoformat()
+            if previous_error != str(err) or status["failures"] in {1, 10, 25}:
+                _LOGGER.warning(
+                    "Navimower private endpoint %s failed; keeping last-good "
+                    "data (failure %s): %s",
+                    key,
+                    status["failures"],
+                    err,
+                )
+            return False
+
+        recovered = bool(status.get("last_error"))
+        raw[key] = value
+        status["successes"] += 1
+        status["last_success_mono"] = now
+        status["last_success_utc"] = datetime.now(UTC).isoformat()
+        status["last_error"] = None
+        status["last_error_utc"] = None
+        status["last_result_type"] = type(value).__name__
+        if recovered:
+            _LOGGER.info("Navimower private endpoint %s recovered", key)
+        return True
+
+    def private_poll_age(self) -> float | None:
+        if self._last_private_success_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_private_success_mono)
+
+    def private_core_age(self) -> float | None:
+        if self._last_private_core_success_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_private_core_success_mono)
+
+    def _private_error_summary(self) -> str | None:
+        errors = [
+            f"{key}: {status.get('last_error')}"
+            for key, status in self._endpoint_status.items()
+            if status.get("last_error")
+        ]
+        return "; ".join(errors[:3]) or None
+
+    def polling_diagnostics(self) -> dict[str, Any]:
+        """Return JSON-safe private-cloud freshness and endpoint statistics."""
+        now = time.monotonic()
+
+        def age(value: Any) -> float | None:
+            return (
+                round(max(0.0, now - float(value)), 1)
+                if value is not None
+                else None
+            )
+
+        endpoints: dict[str, Any] = {}
+        for key, status in self._endpoint_status.items():
+            endpoints[key] = {
+                "attempts": status.get("attempts", 0),
+                "successes": status.get("successes", 0),
+                "failures": status.get("failures", 0),
+                "last_attempt_utc": status.get("last_attempt_utc"),
+                "last_success_utc": status.get("last_success_utc"),
+                "last_error_utc": status.get("last_error_utc"),
+                "last_error": status.get("last_error"),
+                "last_attempt_age_s": age(status.get("last_attempt_mono")),
+                "last_success_age_s": age(status.get("last_success_mono")),
+                "last_result_type": status.get("last_result_type"),
+            }
+        return {
+            "profile": "active" if self._private_poll_active() else "idle",
+            "update_interval_s": (
+                self.update_interval.total_seconds()
+                if self.update_interval is not None
+                else None
+            ),
+            "last_poll_success_age_s": (
+                round(self.private_poll_age(), 1)
+                if self.private_poll_age() is not None
+                else None
+            ),
+            "last_core_success_age_s": (
+                round(self.private_core_age(), 1)
+                if self.private_core_age() is not None
+                else None
+            ),
+            "last_poll_had_success": self._last_private_poll_had_success,
+            "last_poll_had_core_success": self._last_private_poll_had_core_success,
+            "endpoints": endpoints,
+        }
 
     def _maybe_fetch_map(self, raw: dict) -> None:
         """Fetch + decode the map once, then only when the map version changes."""
@@ -1180,12 +1388,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         try:
             plain = self.client.map_detail_plain(self.sn, str(map_id), str(map_base_id))
             geometry = _parse_map_detail_plain(plain)
+        except NavimowAuthError:
+            raise
         except NavimowError:
             geometry = None
         if geometry is None:
             try:
                 blob = self.client.map_detail(self.sn, str(map_id), str(map_base_id))
                 geometry = _parse_map_detail(blob)
+            except NavimowAuthError:
+                raise
             except NavimowError:
                 return
         if geometry is None:
@@ -1206,6 +1418,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     "points": pts,
                     "start_from_pile": bool((station_raw or {}).get("start_from_pile")),
                 }
+        except NavimowAuthError:
+            raise
         except NavimowError:
             pass
 
@@ -1973,15 +2187,84 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return self.history.active_session_no
 
     def pose_age(self) -> float | None:
-        """Age in seconds of the latest MQTT pose."""
+        """Age in seconds of the latest true MQTT pose packet."""
         if self._mqtt_last_update is None:
             return None
         return max(0.0, time.monotonic() - self._mqtt_last_update)
 
+    def mqtt_message_age(self) -> float | None:
+        """Age of the latest relevant message on the MQTT location topic."""
+        if self._mqtt_last_message_update is None:
+            return None
+        return max(0.0, time.monotonic() - self._mqtt_last_message_update)
+
+    def mqtt_stream_expected(self) -> bool:
+        """Return whether the mower should currently emit live location data."""
+        data = self.data or {}
+        activity = data.get("activity")
+        state_code = str(data.get("state_code") or "")
+        mqtt_state = _as_int((self._mqtt_location or {}).get("vehicle_state"))
+        mqtt_active = mqtt_state in {
+            MQTT_STATE_MOWING,
+            MQTT_STATE_RETURNING,
+            MQTT_STATE_MAPPING,
+        }
+        if self._fresh_mqtt_position() is not None and mqtt_active:
+            return True
+        if activity in {ACTIVITY_MOWING, ACTIVITY_RETURNING} or state_code in ACTIVE_STATES:
+            return True
+        if activity in {ACTIVITY_DOCKED, ACTIVITY_ERROR} or state_code in DOCKED_STATES:
+            return False
+        message_age = self.mqtt_message_age()
+        return bool(mqtt_active and message_age is not None and message_age <= 45)
+
+    def request_fast_refresh(self, reason: str) -> None:
+        """Prompt one throttled private refresh after an important MQTT event."""
+        if self._shutdown_complete:
+            return
+        now = time.monotonic()
+        if now - self._last_fast_refresh_request_mono < PRIVATE_FAST_REFRESH_MIN_SECONDS:
+            return
+        self._last_fast_refresh_request_mono = now
+        self.update_interval = timedelta(seconds=MOW_SCAN_INTERVAL)
+
+        async def _refresh() -> None:
+            try:
+                await self.async_request_refresh()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Fast private refresh after %s failed", reason, exc_info=True
+                )
+
+        self.hass.async_create_task(
+            _refresh(),
+            f"Navimower fast private refresh {self.entry.entry_id}",
+        )
+
+    def publish_connectivity(self) -> None:
+        """Publish bridge/poll health changes without touching entity values."""
+        if self.data:
+            snapshot = dict(self.data)
+            snapshot.update(self._connectivity_fields())
+            self.async_set_updated_data(snapshot)
+
     def _connectivity_fields(self) -> dict[str, Any]:
+        bridge = getattr(self, "mqtt_bridge", None)
+        mqtt_health = (
+            bridge.diagnostic_health()
+            if bridge is not None and hasattr(bridge, "diagnostic_health")
+            else {}
+        )
+        poll_age = self.private_poll_age()
+        core_age = self.private_core_age()
         return {
             "private_cloud_connected": self._private_cloud_connected,
             "private_cloud_error": self._last_private_error,
+            "private_poll_age": poll_age,
+            "private_core_age": core_age,
+            "private_poll_profile": (
+                "active" if self._private_poll_active() else "idle"
+            ),
             "oauth_configured": bool(self.entry.data.get(CONF_OAUTH_TOKEN)),
             "oauth_connected": self._oauth_connected,
             "oauth_error": self._last_oauth_error,
@@ -1990,6 +2273,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "mqtt_error": self._last_mqtt_error,
             "mqtt_pose_age": self.pose_age(),
             "mqtt_pose_valid": self._fresh_mqtt_position() is not None,
+            "mqtt_stream_state": mqtt_health.get("stream_state"),
+            "mqtt_stream_expected": mqtt_health.get("stream_expected"),
+            "mqtt_recovery_count": mqtt_health.get("recovery_count", 0),
+            "mqtt_last_recovery_reason": mqtt_health.get("last_recovery_reason"),
+            "mqtt_last_location_message_age": mqtt_health.get(
+                "last_location_message_age_s"
+            ),
         }
 
     def set_private_cloud_error(self, error: str | None) -> None:
@@ -2082,6 +2372,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """Merge one official MQTT pose and persist the full session path."""
         if not isinstance(location, dict):
             return
+        previous_activity = (self.data or {}).get("activity")
+        previous_pose_valid = self._fresh_mqtt_position() is not None
+        self._mqtt_last_message_update = time.monotonic()
         self._mqtt_location = dict(location)
         pose_updated = bool(location.get("_pose_updated")) or (
             self._mqtt_last_update is None
@@ -2131,6 +2424,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["trail_started_at"] = self.history.active_started_at()
         snapshot["sessions"] = self.history.session_summaries(include_points=False)
         self.async_set_updated_data(snapshot)
+        new_activity = snapshot.get("activity")
+        if new_activity != previous_activity:
+            self.request_fast_refresh(
+                f"MQTT activity changed from {previous_activity} to {new_activity}"
+            )
+        elif pose_updated and not previous_pose_valid:
+            self.request_fast_refresh("MQTT pose stream became live")
 
     def channel_state(self, channel: NavimowerChannel) -> bool | None:
         """Return channel membership, or None when the pose is stale/missing."""

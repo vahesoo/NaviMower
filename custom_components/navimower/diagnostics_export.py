@@ -345,8 +345,16 @@ async def async_export_diagnostics(
 
     mqtt_bridge = getattr(coordinator, "mqtt_bridge", None)
     mqtt_inventory = None
+    mqtt_health = None
     if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory"):
         mqtt_inventory = mqtt_bridge.diagnostic_inventory()
+    if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_health"):
+        mqtt_health = mqtt_bridge.diagnostic_health()
+    private_polling = (
+        coordinator.polling_diagnostics()
+        if hasattr(coordinator, "polling_diagnostics")
+        else None
+    )
 
     now = datetime.now(timezone.utc)
     data = coordinator.data or {}
@@ -416,6 +424,11 @@ async def async_export_diagnostics(
             "mqtt_vehicle_state": data.get("mqtt_vehicle_state"),
             "mqtt_action": data.get("mqtt_action"),
             "mqtt_pose_age": data.get("mqtt_pose_age"),
+            "mqtt_stream_state": data.get("mqtt_stream_state"),
+            "mqtt_recovery_count": data.get("mqtt_recovery_count"),
+            "position_source": data.get("pose_source"),
+            "private_poll_age": data.get("private_poll_age"),
+            "private_poll_profile": data.get("private_poll_profile"),
             "trail_active": data.get("trail_active"),
             "trail_points": len(data.get("trail") or []),
             "current_physical_zone_id": data.get("current_physical_zone_id"),
@@ -453,6 +466,8 @@ async def async_export_diagnostics(
             "point_format": list(SESSION_DETAIL_POINT_FORMAT),
         },
         "endpoints": endpoints,
+        "private_polling": sanitize(deepcopy(private_polling)),
+        "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "mqtt_inventory": sanitize(deepcopy(mqtt_inventory)),
         "notes": [
             "Account, mower, network and physical GPS identifiers are redacted.",

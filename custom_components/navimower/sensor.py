@@ -132,6 +132,52 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         ),
     ),
     NavimowSensorDescription(
+        key="position_source",
+        translation_key="position_source",
+        icon="mdi:source-branch",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.get("pose_source"),
+        attrs_fn=lambda d: {
+            "mqtt_pose_valid": d.get("mqtt_pose_valid"),
+            "mqtt_pose_age": d.get("mqtt_pose_age"),
+            "private_poll_age": d.get("private_poll_age"),
+            "private_poll_profile": d.get("private_poll_profile"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="mqtt_stream_state",
+        translation_key="mqtt_stream_state",
+        icon="mdi:access-point-network",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.get("mqtt_stream_state"),
+        attrs_fn=lambda d: {
+            "stream_expected": d.get("mqtt_stream_expected"),
+            "recovery_count": d.get("mqtt_recovery_count"),
+            "last_recovery_reason": d.get("mqtt_last_recovery_reason"),
+            "last_location_message_age": d.get(
+                "mqtt_last_location_message_age"
+            ),
+        },
+    ),
+    NavimowSensorDescription(
+        key="private_poll_age",
+        translation_key="private_poll_age",
+        icon="mdi:cloud-clock",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: (
+            round(d.get("private_poll_age"), 1)
+            if d.get("private_poll_age") is not None
+            else None
+        ),
+        attrs_fn=lambda d: {
+            "core_age": d.get("private_core_age"),
+            "profile": d.get("private_poll_profile"),
+        },
+    ),
+    NavimowSensorDescription(
         key="mow_route_progress",
         name="Mow route progress",
         icon="mdi:progress-check",
@@ -381,6 +427,11 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "oauth_connected": self.data.get("oauth_connected"),
             "mqtt_connected": self.data.get("mqtt_connected"),
             "mqtt_pose_valid": self.data.get("mqtt_pose_valid"),
+            "mqtt_stream_state": self.data.get("mqtt_stream_state"),
+            "mqtt_recovery_count": self.data.get("mqtt_recovery_count"),
+            "position_source": self.data.get("pose_source"),
+            "private_poll_age": self.data.get("private_poll_age"),
+            "private_poll_profile": self.data.get("private_poll_profile"),
             "activity": self.data.get("activity"),
             "current_physical_zone": self.data.get("current_physical_zone"),
             "target_zone": self.data.get("target_zone"),

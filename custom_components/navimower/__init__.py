@@ -58,7 +58,7 @@ _CARDS = (
     "navimower-mow-card.js",
     "navimower-scheduler-card.js",
 )
-_CARD_VERSION = "0.2.0"
+_CARD_VERSION = "0.2.1"
 _FRONTEND_KEY = f"{DOMAIN}_frontend_registered"
 
 
@@ -248,16 +248,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload platforms, disconnect MQTT and flush persistent history."""
+    """Quiesce callbacks, unload entities, then close network resources."""
     coordinator: NavimowCoordinator | None = (
         hass.data.get(DOMAIN) or {}
     ).get(entry.entry_id)
+    bridge = getattr(coordinator, "mqtt_bridge", None) if coordinator else None
+
+    # Stop watchdog/recovery work and invalidate old callback generations before
+    # entities disappear. This prevents a late Paho callback from writing into a
+    # coordinator while Home Assistant is reloading the config entry.
+    if bridge is not None:
+        await bridge.async_quiesce()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
+        if bridge is not None:
+            try:
+                await bridge.async_resume()
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Could not resume Navimower MQTT after a rejected unload",
+                    exc_info=True,
+                )
         return False
 
     if coordinator is not None:
-        bridge = getattr(coordinator, "mqtt_bridge", None)
         if bridge is not None:
             await bridge.async_stop()
         await coordinator.async_shutdown()
