@@ -137,6 +137,20 @@ Gate areas remain available as a precise physical fallback. Gate and Gate-area
 safety uses only a fresh MQTT position; stale private-cloud fallback coordinates
 are never used to issue a false physical close signal.
 
+When mowing is started from Home Assistant with an explicit ordered zone list,
+Navimower latches the first requested zone immediately. This command intent has
+priority over short-lived stale vendor target fields, so `gate_required` can
+open the gate at departure instead of waiting for the mower to enter the
+physical Gate area. An in-flight latch keeps its original direction until the
+mower reaches the destination zone and the configured close delay expires.
+
+Normal empty navigation states are exposed as readable values (`No active
+target`, `Not in channel`, or a last-known/stale physical zone) rather than
+generic `unknown`. During a brief start, pause or dock acknowledgement, the
+lawn-mower entity preserves the explicit command activity instead of falling
+back to a false Docked state. Target and gate attributes include the chosen
+source, command age, direction and pose validity for troubleshooting.
+
 ### Mower entities and controls
 
 Depending on mower model and firmware, Navimower provides:
@@ -250,7 +264,7 @@ type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.10 or later** with Navimower v0.2.4. The standalone
+Use **navimower-map-card v0.1.12 or later** with Navimower v0.2.5. The standalone
 card includes:
 
 - map, zones, Off-limit, VF-off, Channel and Gate-area layers;
@@ -341,12 +355,20 @@ physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
 
+### From v0.2.4 to v0.2.5
+
+- No configuration migration is required; existing gate pairs and Gate areas
+  are reused.
+- Explicit Mow Now/ordered-zone commands now pre-latch the first target zone.
+- Restart Home Assistant after updating and supervise one crossing while
+  checking the target source/age and gate `from_zone` / `to_zone` attributes.
+
 ### From v0.2.3 to v0.2.4
 
 - The public map payload is now schema v3 and exposes gap-aware
   `trail_segments` and per-session `segments`.
 - Flat `trail` and `points` arrays remain available for older cards, but
-  `navimower-map-card` v0.1.10 or later is recommended so route gaps are not
+  `navimower-map-card` v0.1.12 or later is recommended so route gaps are not
   bridged by false connecting lines.
 - Restart Home Assistant after updating.
 
@@ -417,9 +439,9 @@ The action sends no mower commands and performs no settings or map writes.
   their raw metadata remains available in the API and diagnostics.
 - The swept-stripe endpoint is not used; exact history is reconstructed from
   dense live MQTT pose samples.
-- The immediate target of multi-zone tasks is decoded from the packed
-  `map_work_position` value when the mower publishes it. Firmware that omits or
-  delays that value can open an intention-based gate later than desired.
+- The immediate target of multi-zone tasks is decoded from vendor data. When
+  Home Assistant starts an explicit ordered-zone task, the first requested zone
+  is latched locally so delayed vendor target fields do not delay gate opening.
 - Map writes, boundary edits, edge-mowing changes and `clock_direction` writes
   are deliberately not included.
 

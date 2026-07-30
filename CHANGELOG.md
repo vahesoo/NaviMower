@@ -1,4 +1,25 @@
 # Changelog
+## 0.2.5 — reliable gate intent and command-state handling
+
+- Latches an explicit HA Mow Now/ordered-zone command immediately, so the
+  gate-required sensor can pre-open a gate before the mower reaches the local
+  Gate area.
+- Gives fresh HA command intent priority over a stale packed work target and
+  ignores the common transient where the reported immediate target still equals
+  the physical origin while the selected task zone is elsewhere.
+- Protects an in-flight gate latch from being overwritten by a short-lived
+  reversed/stale target; the original from-zone/to-zone direction remains active
+  until arrival and the configured close delay.
+- Requires confirmed docking before clearing gate latches while a fresh pose is
+  elsewhere on the map.
+- Adds optimistic start, pause and dock activity handling so unknown transition
+  codes no longer create false `Docked` events in the Home Assistant logbook.
+- Replaces normal empty text states with `No active target`, `Not in channel` and
+  an explicit stale/last-known physical-zone state instead of generic `unknown`.
+- Adds target source, age, confirmation and pose-valid context to target/gate
+  attributes for automation traces and diagnostics.
+- Adds dependency-free navigation-intent regression tests.
+
 ## 0.2.4 — gap-aware session routes and map API v3
 
 - Bumped the public map API to schema v3.
