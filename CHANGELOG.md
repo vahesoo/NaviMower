@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — stability and data freshness
+## 0.2.2 — stability and data freshness
 
 - Added an MQTT pose-stream watchdog that distinguishes an open broker
   connection from a healthy live `realtimeDate/location` subscription.

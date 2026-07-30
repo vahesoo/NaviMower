@@ -185,7 +185,7 @@ Data sources are merged by purpose:
 | map, zones, settings and schedule | private cloud | persisted/local cache |
 | physical channel/gate safety | fresh MQTT only | unavailable, never stale X/Y |
 
-Private-cloud polling is intentionally aggressive in v0.2.1 while field testing:
+Private-cloud polling is intentionally aggressive in v0.2.2 while field testing:
 
 - mowing: coordinator cycle every 5 seconds;
 - returning/mapping: every 8 seconds;
