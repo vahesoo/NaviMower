@@ -74,7 +74,7 @@
         "menu_options": {
           "general": "General and trail history",
           "gates": "Gates",
-          "channels": "Local channels"
+          "channels": "Gate areas"
         }
       },
       "general": {
@@ -135,16 +135,16 @@
         }
       },
       "channels": {
-        "title": "Local channels",
-        "description": "Add, edit or delete optional local-coordinate rectangles. Channel state is available only while the MQTT position is fresh; private-cloud fallback is intentionally not used for physical gate safety.",
+        "title": "Gate areas",
+        "description": "Add, edit or delete optional local-coordinate rectangles. Gate area state is available only while the MQTT position is fresh; private-cloud fallback is intentionally not used for physical gate safety.",
         "menu_options": {
-          "channel_add": "Add channel",
-          "channel_edit_select": "Edit channel",
-          "channel_delete": "Delete channel"
+          "channel_add": "Add gate area",
+          "channel_edit_select": "Edit gate area",
+          "channel_delete": "Delete gate area"
         }
       },
       "channel_add": {
-        "title": "Add a local channel",
+        "title": "Add a gate area",
         "description": "Channels are optional rectangular areas in the mower local X and Y coordinate system. They remain available alongside intention-based zone-pair gates and require a valid live MQTT position.",
         "data": {
           "name": "Channel name",
@@ -155,13 +155,13 @@
         }
       },
       "channel_edit_select": {
-        "title": "Choose a channel to edit",
+        "title": "Choose a gate area to edit",
         "data": {
-          "channel": "Channel"
+          "channel": "Gate area"
         }
       },
       "channel_edit": {
-        "title": "Edit local channel",
+        "title": "Edit gate area",
         "data": {
           "name": "Channel name",
           "x_min": "Minimum X",
@@ -173,7 +173,7 @@
       "channel_delete": {
         "title": "Delete a channel",
         "data": {
-          "channel": "Channel"
+          "channel": "Gate area"
         }
       }
     },
@@ -186,7 +186,7 @@
       "options_saved": "Navimower options were saved and the integration is reloading.",
       "zones_not_available": "At least two mapped zones must be loaded before a gate can be configured.",
       "no_gates": "No gates are configured.",
-      "no_channels": "No local channels are configured."
+      "no_channels": "No gate areas are configured."
     }
   },
   "entity": {
@@ -213,7 +213,7 @@
       "coverage": { "name": "Coverage" },
       "current_physical_zone": { "name": "Current physical zone" },
       "target_zone": { "name": "Target zone" },
-      "current_tunnel": { "name": "Current tunnel" },
+      "current_channel": { "name": "Current channel" },
       "cutting_height": { "name": "Global cutting height" },
       "position_source": { "name": "Position source" },
       "mqtt_stream_state": { "name": "MQTT position stream" },
