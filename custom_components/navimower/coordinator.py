@@ -2502,13 +2502,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "cut_height": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
             "doodles": (map_data or {}).get("doodles") or [],
+            # Flat trail is retained for older cards; trail_segments is the
+            # gap-aware representation used by map-card v0.1.10 and later.
             "trail": self.history.active_trail_xy(),
+            "trail_segments": self.history.active_trail_segments_xy(),
             "trail_session": self.history.active_session_no,
             "trail_started_at": self.history.active_started_at(),
             "trail_active": bool(data.get("trail_active")),
             "active_session": active_meta,
             "sessions": sessions,
             "session_xy_point_format": list(SESSION_CARD_POINT_FORMAT),
+            "session_segment_point_format": list(SESSION_CARD_POINT_FORMAT),
             "session_detail_point_format": list(SESSION_DETAIL_POINT_FORMAT),
             "sessions_api_path": f"/api/navimower/sessions/{entry_id}",
             "session_api_path_template": (

@@ -144,11 +144,61 @@ def _card_points(session: dict[str, Any]) -> list[list[float]]:
     ]
 
 
+def _card_segments(session: dict[str, Any]) -> list[list[list[float]]]:
+    """Return route points split at every retained session-fragment boundary."""
+    raw_points = [
+        point
+        for point in session.get("points") or []
+        if isinstance(point, list) and len(point) >= 3
+    ]
+    if not raw_points:
+        return []
+
+    starts = sorted(
+        dict.fromkeys(
+            stamp
+            for stamp in (
+                _as_int(value)
+                for value in (
+                    session.get("segment_starts_ms")
+                    or [session.get("started_at_ms")]
+                )
+            )
+            if stamp is not None
+        )
+    )
+    if len(starts) <= 1:
+        points = _card_points(session)
+        return [points] if points else []
+
+    segments: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    next_start_index = 1
+    for point in raw_points:
+        stamp = _as_int(point[0])
+        while (
+            stamp is not None
+            and next_start_index < len(starts)
+            and stamp >= starts[next_start_index]
+        ):
+            if current:
+                segments.append(current)
+                current = []
+            next_start_index += 1
+        current.append([float(point[1]), float(point[2])])
+    if current:
+        segments.append(current)
+    return segments
+
+
 def _card_session(session: dict[str, Any], *, include_points: bool) -> dict[str, Any]:
     """Return the stable payload consumed by the standalone map card."""
     row = _metadata(session)
     if include_points:
+        # ``points`` remains for older cards. New cards should prefer
+        # ``segments`` so a reload/pause gap is not bridged by a false line.
         row["points"] = _card_points(session)
+        row["segments"] = _card_segments(session)
     return row
 
 
@@ -934,6 +984,12 @@ class NavimowerHistory:
         with self._lock:
             active = self._cache.get(self._active_id or "")
             return _card_points(active) if active else []
+
+    def active_trail_segments_xy(self) -> list[list[list[float]]]:
+        """Return active route fragments without drawing across interruptions."""
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            return _card_segments(active) if active else []
 
     def latest_trail_xy(self) -> list[list[float]]:
         """Return the active trail, or the most recent cached completed trail."""
