@@ -30,7 +30,7 @@
       },
       "link_oauth": {
         "title": "Connect official live data",
-        "description": "Continue to the official Navimow Smart Home authorization page. This second connection supplies live MQTT X, Y and heading and is stored in the same standalone Navimower entry. The OAuth account must be able to access the same mower.",
+        "description": "Continue to the official Navimow Smart Home authorization page. This second connection supplies the dense live MQTT route, heading and events. Navimower automatically falls back to private-cloud polling and repairs a stalled MQTT position stream without reloading the entities. The OAuth account must be able to access the same mower.",
         "data": {}
       },
       "reauth_select": {
@@ -41,8 +41,8 @@
         }
       },
       "reauth_private": {
-        "title": "Renew private-cloud login",
-        "description": "Enter the private-cloud account password again. The password is not stored.",
+        "title": "Reconnect Navimow private cloud",
+        "description": "The private app-cloud session used for maps, settings, schedules and fallback mower data has expired. Live MQTT position may continue to work. Enter the password for the dedicated private-cloud account. The password is not stored.",
         "data": {
           "email": "Email",
           "password": "Password"
@@ -79,20 +79,21 @@
       },
       "general": {
         "title": "General and trail history",
-        "description": "Choose how long exact MQTT mowing sessions are retained in Home Assistant. Unlimited keeps every completed session until it is manually removed with the integration.",
+        "description": "Choose how long exact MQTT mowing sessions are retained in Home Assistant. Unlimited keeps every completed route and can increase Home Assistant storage and map payload size over time.",
         "data": {
           "trail_retention_days": "Trail history retention",
           "include_return_trail": "Include the return-to-dock path",
           "diagnostics_detail": "Diagnostics detail"
         },
         "data_description": {
+          "trail_retention_days": "Completed session routes are stored locally. Shorter retention reduces storage and map loading time.",
           "include_return_trail": "Keep the mower route after cutting ends while it travels back to the dock.",
-          "diagnostics_detail": "Extended keeps additional integration context in manual exports; tokens and account identifiers remain redacted."
+          "diagnostics_detail": "Extended includes endpoint freshness and MQTT recovery context in manual exports; tokens and account identifiers remain redacted."
         }
       },
       "gates": {
         "title": "Gates",
-        "description": "Add, edit or delete physical gates between mapped zones.",
+        "description": "Add, edit or delete physical gates between mapped zones. Gate and channel safety uses only a fresh live MQTT position; stale fallback coordinates never close a gate.",
         "menu_options": {
           "gate_add": "Add gate",
           "gate_edit_select": "Edit gate",
@@ -101,7 +102,7 @@
       },
       "gate_add": {
         "title": "Add a gate",
-        "description": "Select the two mapped zones connected by this physical gate. With bidirectional enabled, either transition can request the gate. When disabled, the direction is Zone A to Zone B.",
+        "description": "Select the two mapped zones connected by this physical gate. With bidirectional enabled, either transition can request the gate. When disabled, the direction is Zone A to Zone B. Keep required after arrival delays the close signal by the selected number of seconds.",
         "data": {
           "name": "Gate name",
           "zone_a": "Zone A",
@@ -118,7 +119,7 @@
       },
       "gate_edit": {
         "title": "Edit gate",
-        "description": "When bidirectional is disabled, the allowed direction is Zone A to Zone B.",
+        "description": "When bidirectional is disabled, the allowed direction is Zone A to Zone B. The close delay keeps the required signal active after the mower reaches the destination zone.",
         "data": {
           "name": "Gate name",
           "zone_a": "Zone A",
@@ -135,7 +136,7 @@
       },
       "channels": {
         "title": "Local channels",
-        "description": "Add, edit or delete optional local-coordinate rectangles.",
+        "description": "Add, edit or delete optional local-coordinate rectangles. Channel state is available only while the MQTT position is fresh; private-cloud fallback is intentionally not used for physical gate safety.",
         "menu_options": {
           "channel_add": "Add channel",
           "channel_edit_select": "Edit channel",
@@ -144,7 +145,7 @@
       },
       "channel_add": {
         "title": "Add a local channel",
-        "description": "Channels are optional rectangular areas in the mower local X and Y coordinate system. They remain available alongside intention-based zone-pair gates.",
+        "description": "Channels are optional rectangular areas in the mower local X and Y coordinate system. They remain available alongside intention-based zone-pair gates and require a valid live MQTT position.",
         "data": {
           "name": "Channel name",
           "x_min": "Minimum X",
@@ -195,158 +196,65 @@
       }
     },
     "sensor": {
-      "battery": {
-        "name": "Battery"
-      },
-      "state": {
-        "name": "Status"
-      },
-      "state_code": {
-        "name": "State code"
-      },
-      "mowing_progress": {
-        "name": "Mowing progress"
-      },
-      "current_zone": {
-        "name": "Current zone"
-      },
-      "session_area": {
-        "name": "Session area"
-      },
-      "weekly_area": {
-        "name": "Area this week"
-      },
-      "total_area": {
-        "name": "Total area"
-      },
-      "next_mow": {
-        "name": "Next mow"
-      },
-      "error_text": {
-        "name": "Error"
-      },
-      "signal_wifi": {
-        "name": "Wi-Fi signal"
-      },
-      "blades_life": {
-        "name": "Blades life"
-      },
-      "chassis_life": {
-        "name": "Chassis life"
-      },
-      "schedule": {
-        "name": "Schedule"
-      },
-      "coverage": {
-        "name": "Coverage"
-      },
-      "current_physical_zone": {
-        "name": "Current physical zone"
-      },
-      "target_zone": {
-        "name": "Target zone"
-      },
-      "current_tunnel": {
-        "name": "Current tunnel"
-      },
-      "cutting_height": {
-        "name": "Global cutting height"
-      }
+      "battery": { "name": "Battery" },
+      "state": { "name": "Status" },
+      "state_code": { "name": "State code" },
+      "mowing_progress": { "name": "Mowing progress" },
+      "current_zone": { "name": "Current zone" },
+      "session_area": { "name": "Session area" },
+      "weekly_area": { "name": "Area this week" },
+      "total_area": { "name": "Total area" },
+      "next_mow": { "name": "Next mow" },
+      "error_text": { "name": "Error" },
+      "signal_wifi": { "name": "Wi-Fi signal" },
+      "blades_life": { "name": "Blades life" },
+      "chassis_life": { "name": "Chassis life" },
+      "schedule": { "name": "Schedule" },
+      "coverage": { "name": "Coverage" },
+      "current_physical_zone": { "name": "Current physical zone" },
+      "target_zone": { "name": "Target zone" },
+      "current_tunnel": { "name": "Current tunnel" },
+      "cutting_height": { "name": "Global cutting height" },
+      "position_source": { "name": "Position source" },
+      "mqtt_stream_state": { "name": "MQTT position stream" },
+      "private_poll_age": { "name": "Private-cloud poll age" }
     },
     "calendar": {
-      "schedule": {
-        "name": "Mowing schedule"
-      }
+      "schedule": { "name": "Mowing schedule" }
     },
     "binary_sensor": {
-      "problem": {
-        "name": "Problem"
-      },
-      "online": {
-        "name": "Online"
-      },
-      "docked": {
-        "name": "Docked"
-      },
-      "zone_transition": {
-        "name": "Zone transition"
-      },
-      "private_cloud_connected": {
-        "name": "Private cloud connected"
-      },
-      "oauth_connected": {
-        "name": "Smart Home OAuth connected"
-      },
-      "mqtt_connected": {
-        "name": "MQTT connected"
-      },
-      "pose_valid": {
-        "name": "Live position valid"
-      }
+      "problem": { "name": "Problem" },
+      "online": { "name": "Online" },
+      "docked": { "name": "Docked" },
+      "zone_transition": { "name": "Zone transition" },
+      "private_cloud_connected": { "name": "Private cloud connected" },
+      "oauth_connected": { "name": "Smart Home OAuth connected" },
+      "mqtt_connected": { "name": "MQTT connected" },
+      "pose_valid": { "name": "Live position valid" }
     },
     "switch": {
-      "night_mow": {
-        "name": "Night mowing"
-      },
-      "rain_sensor": {
-        "name": "Rain sensor"
-      },
-      "rain_detection": {
-        "name": "Rain detection"
-      },
-      "sound": {
-        "name": "Sound"
-      },
-      "power_saving": {
-        "name": "Power saving"
-      },
-      "child_lock": {
-        "name": "Child lock"
-      },
-      "lift_alarm": {
-        "name": "Lift alarm"
-      },
-      "mowing_cycle": {
-        "name": "Cyclic mowing"
-      },
-      "frost_delay": {
-        "name": "Frost delay"
-      },
-      "snow_delay": {
-        "name": "Snow delay"
-      },
-      "storm_delay": {
-        "name": "Strong wind delay"
-      },
-      "high_temp_delay": {
-        "name": "High-temperature delay"
-      },
-      "efls": {
-        "name": "Camera positioning (EFLS)"
-      },
-      "obstacle_avoidance": {
-        "name": "Obstacle avoidance"
-      },
-      "traction_control": {
-        "name": "Traction control"
-      },
-      "animal_protection": {
-        "name": "Animal-friendly"
-      },
-      "night_light": {
-        "name": "Night light"
-      },
-      "weather_rain": {
-        "name": "Rain forecast"
-      },
-      "rain_delay_mode": {
-        "name": "Delay on rain"
-      }
+      "night_mow": { "name": "Night mowing" },
+      "rain_sensor": { "name": "Rain sensor" },
+      "rain_detection": { "name": "Rain detection" },
+      "sound": { "name": "Sound" },
+      "power_saving": { "name": "Power saving" },
+      "child_lock": { "name": "Child lock" },
+      "lift_alarm": { "name": "Lift alarm" },
+      "mowing_cycle": { "name": "Cyclic mowing" },
+      "frost_delay": { "name": "Frost delay" },
+      "snow_delay": { "name": "Snow delay" },
+      "storm_delay": { "name": "Strong wind delay" },
+      "high_temp_delay": { "name": "High-temperature delay" },
+      "efls": { "name": "Camera positioning (EFLS)" },
+      "obstacle_avoidance": { "name": "Obstacle avoidance" },
+      "traction_control": { "name": "Traction control" },
+      "animal_protection": { "name": "Animal-friendly" },
+      "night_light": { "name": "Night light" },
+      "weather_rain": { "name": "Rain forecast" },
+      "rain_delay_mode": { "name": "Delay on rain" }
     },
     "select": {
-      "zone": {
-        "name": "Mow zone"
-      },
+      "zone": { "name": "Mow zone" },
       "night_light_level": {
         "name": "Night light brightness",
         "state": {
@@ -364,20 +272,12 @@
       }
     },
     "number": {
-      "return_battery_level": {
-        "name": "Return-to-dock battery"
-      },
-      "charging_limit": {
-        "name": "Charging limit"
-      },
-      "rain_delay_time": {
-        "name": "Rain delay time"
-      }
+      "return_battery_level": { "name": "Return-to-dock battery" },
+      "charging_limit": { "name": "Charging limit" },
+      "rain_delay_time": { "name": "Rain delay time" }
     },
     "camera": {
-      "map": {
-        "name": "Map"
-      }
+      "map": { "name": "Map" }
     }
   }
 }
