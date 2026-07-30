@@ -112,6 +112,9 @@ assert merged["started_at_ms"] == 1_000_000
 assert merged["ended_at_ms"] == 1_420_000
 assert merged["segment_starts_ms"] == [1_000_000, 1_359_999]
 assert len(merged["points"]) == 2
+merged_card = history._card_session(merged, include_points=True)
+assert merged_card["points"] == [[1.0, 2.0], [1.0, 2.0]]
+assert merged_card["segments"] == [[[1.0, 2.0]], [[1.0, 2.0]]]
 
 active = session("5", 1_200_000, None, active=True)
 merged_active = history._merge_session_records(base, active)
@@ -172,6 +175,10 @@ async def runtime_resume_test() -> None:
     assert current["active"] is True
     assert current["zone_ids"] == [13, 24]
     assert len(current["segment_starts_ms"]) == 2
+    assert manager.active_trail_segments_xy() == [
+        [[1.0, 2.0], [1.1, 2.1]],
+        [[3.0, 4.0]],
+    ]
 
     # Let the earlier asynchronous finalizer run. It must not overwrite resume.
     if hass.tasks:
@@ -273,6 +280,10 @@ async def persisted_repair_test() -> None:
     assert manager._active_id == "1"
     assert summaries[0]["active"] is True
     assert summaries[0]["segment_count"] == 2
+    assert summaries[0]["segments"] == [
+        [[1.0, 2.0]],
+        [[1.0, 2.0]],
+    ]
     assert "navimower_session_entry2_2" not in Store.values
 
 
