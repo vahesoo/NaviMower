@@ -25,6 +25,8 @@ jobs:
         run: python tests/test_map_cache_migration.py
       - name: Run MQTT task lifecycle tests
         run: python tests/test_mqtt_task_lifecycle.py
+      - name: Run navigation intent tests
+        run: python tests/test_navigation_intent.py
       - name: Validate JSON
         run: |
           python -m json.tool hacs.json >/dev/null
