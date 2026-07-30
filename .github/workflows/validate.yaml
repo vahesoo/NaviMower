@@ -19,21 +19,23 @@ jobs:
           python-version: "3.13"
       - name: Compile Python
         run: python -m compileall -q custom_components/navimower
+      - name: Run history merge tests
+        run: python tests/test_history_merge.py
+      - name: Run map cache migration tests
+        run: python tests/test_map_cache_migration.py
+      - name: Run MQTT task lifecycle tests
+        run: python tests/test_mqtt_task_lifecycle.py
       - name: Validate JSON
         run: |
           python -m json.tool hacs.json >/dev/null
           python -m json.tool custom_components/navimower/manifest.json >/dev/null
           python -m json.tool custom_components/navimower/strings.json >/dev/null
           python -m json.tool custom_components/navimower/translations/en.json >/dev/null
-      - name: Validate bundled cards
+      - name: Verify standalone-card separation
         run: |
-          node --check custom_components/navimower/www/navimower-mow-card.js
-          node --check custom_components/navimower/www/navimower-scheduler-card.js
-      - name: Verify map-card separation
-        run: |
-          test ! -e custom_components/navimower/www/navimower-map-card.js
-          ! grep -R --line-number --fixed-strings '/local/navimower/navimower-map-card.js' custom_components/navimower
-
+          test ! -d custom_components/navimower/www
+          ! grep -R --line-number --fixed-strings 'add_extra_js_url' custom_components/navimower
+          ! grep -R --line-number --fixed-strings '/local/navimower/' custom_components/navimower
   hacs:
     runs-on: ubuntu-latest
     steps:
