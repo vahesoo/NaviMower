@@ -23,6 +23,7 @@ from homeassistant.helpers import device_registry as dr
 from .diagnostics_export import async_export_diagnostics
 
 from .const import (
+    ACTIVITY_MOWING,
     DOMAIN,
     encode_partition_ids,
     mow_setup,
@@ -203,7 +204,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
-        zones = [int(z) for z in call.data.get("zones") or []]
+        requested_zones = [int(z) for z in call.data.get("zones") or []]
+        zones = list(requested_zones)
         # An explicit list means "mow these, in this order"; omitting it means
         # "all zones, no preference" -> let the robot route itself (see mow_setup).
         ordered = bool(zones)
@@ -221,6 +223,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
         partition_ids = encode_partition_ids(zones)
         partition_setup = mow_setup(reset=call.data["reset"], ordered=ordered)
+        coordinator.set_pending_activity(ACTIVITY_MOWING)
+        coordinator.set_command_target(
+            requested_zones if ordered else [], source="navimower.mow"
+        )
         try:
             await coordinator.async_send(
                 coordinator.client.mow_zones,
@@ -229,6 +235,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 partition_setup,
             )
         except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
+            coordinator.clear_pending_activity()
+            if ordered:
+                coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
     hass.services.async_register(

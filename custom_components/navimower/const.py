@@ -120,6 +120,12 @@ SESSION_CACHE_LIMIT: Final = 64
 # Short operator stops, integration reloads and Home Assistant restarts are one
 # logical mowing session when cutting resumes within this window.
 SESSION_MERGE_GAP_SECONDS: Final = 300
+# A direct HA mowing command is the strongest navigation-intent source until
+# the mower confirms the same immediate target or the safety TTL expires.
+COMMAND_TARGET_TTL_SECONDS: Final = 1800
+# Optimistic command activity prevents short transition/unknown states from
+# being exposed as Docked while pause/start/dock is still being acknowledged.
+COMMAND_ACTIVITY_TTL_SECONDS: Final = 30
 
 # --- Coverage / rendered trail --------------------------------------------
 SWATH_WIDTH_M: Final = 0.25

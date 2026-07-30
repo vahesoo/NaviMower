@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    ACTIVITY_DOCKED,
     ACTIVITY_ERROR,
     ACTIVITY_MOWING,
     ACTIVITY_PAUSED,
@@ -29,6 +30,7 @@ from .entity import NavimowEntity
 _LOGGER = logging.getLogger(__name__)
 
 _ACTIVITY_MAP = {
+    ACTIVITY_DOCKED: LawnMowerActivity.DOCKED,
     ACTIVITY_MOWING: LawnMowerActivity.MOWING,
     ACTIVITY_PAUSED: LawnMowerActivity.PAUSED,
     ACTIVITY_RETURNING: LawnMowerActivity.RETURNING,
@@ -55,10 +57,23 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
 
     def __init__(self, coordinator: NavimowCoordinator) -> None:
         super().__init__(coordinator, "mower")
+        self._last_valid_activity = (
+            LawnMowerActivity.DOCKED
+            if (coordinator.data or {}).get("docked") is True
+            else LawnMowerActivity.PAUSED
+        )
 
     @property
     def activity(self) -> LawnMowerActivity:
-        return _ACTIVITY_MAP.get(self.data.get("activity"), LawnMowerActivity.DOCKED)
+        mapped = _ACTIVITY_MAP.get(self.data.get("activity"))
+        if mapped is not None:
+            self._last_valid_activity = mapped
+            return mapped
+        if self.data.get("docked") is True:
+            self._last_valid_activity = LawnMowerActivity.DOCKED
+            return LawnMowerActivity.DOCKED
+        # Never turn an unknown/transition code into a false Docked event.
+        return self._last_valid_activity
 
     async def async_start_mowing(self) -> None:
         """Resume a paused job, otherwise mow the zone chosen in the zone select.
@@ -70,7 +85,12 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         client = self.coordinator.client
         sn = self._sn
         if self.data.get("state_code") == STATE_PAUSED:
-            await self.coordinator.async_send(client.resume, sn)
+            self.coordinator.set_pending_activity(ACTIVITY_MOWING)
+            try:
+                await self.coordinator.async_send(client.resume, sn)
+            except Exception:
+                self.coordinator.clear_pending_activity()
+                raise
             return
 
         zones = self.data.get("zones") or []
@@ -85,18 +105,39 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         partition_ids = encode_partition_ids(region_ids)
         # A picked zone is a preference to honour; "all zones" is not, so let the
         # robot choose its own route there.
-        await self.coordinator.async_send(
-            client.mow_zones,
-            sn,
-            partition_ids,
-            mow_setup(reset=True, ordered=bool(sel)),
+        self.coordinator.set_pending_activity(ACTIVITY_MOWING)
+        self.coordinator.set_command_target(
+            sel if sel else [], source="lawn_mower.start_mowing"
         )
+        try:
+            await self.coordinator.async_send(
+                client.mow_zones,
+                sn,
+                partition_ids,
+                mow_setup(reset=True, ordered=bool(sel)),
+            )
+        except Exception:
+            self.coordinator.clear_pending_activity()
+            if sel:
+                self.coordinator.clear_command_target()
+            raise
 
     async def async_pause(self) -> None:
-        await self.coordinator.async_send(self.coordinator.client.pause, self._sn)
+        self.coordinator.set_pending_activity(ACTIVITY_PAUSED)
+        try:
+            await self.coordinator.async_send(self.coordinator.client.pause, self._sn)
+        except Exception:
+            self.coordinator.clear_pending_activity()
+            raise
 
     async def async_dock(self) -> None:
-        await self.coordinator.async_send(self.coordinator.client.dock, self._sn)
+        self.coordinator.clear_command_target()
+        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
+        try:
+            await self.coordinator.async_send(self.coordinator.client.dock, self._sn)
+        except Exception:
+            self.coordinator.clear_pending_activity()
+            raise
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -107,7 +148,9 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             "current_zone": data.get("current_zone"),
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
-            "current_tunnel": data.get("current_tunnel"),
+            "target_zone_source": data.get("target_zone_source"),
+            "command_target_active": data.get("command_target_active"),
+            "current_channel": data.get("current_channel"),
             "pose_source": data.get("pose_source"),
             "mqtt_pose_age": data.get("mqtt_pose_age"),
             "map_api_path": f"/api/navimower/map/{self.coordinator.entry.entry_id}",

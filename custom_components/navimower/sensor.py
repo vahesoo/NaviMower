@@ -214,6 +214,10 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         attrs_fn=lambda d: {
             "zone_ids": d.get("target_zone_ids"),
             "dock_zone_id": d.get("dock_zone_id"),
+            "source": d.get("target_zone_source"),
+            "command_source": d.get("target_zone_command_source"),
+            "target_age_seconds": d.get("target_zone_age_seconds"),
+            "command_target_active": d.get("command_target_active"),
         },
     ),
     NavimowSensorDescription(
@@ -222,6 +226,7 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:tunnel",
         value_fn=lambda d: d.get("current_channel"),
         attrs_fn=lambda d: {
+            "channel_id": d.get("current_channel_id"),
             "tunnel_id": d.get("current_channel_id"),
             "connection": d.get("current_channel_connection"),
             "distance_m": d.get("current_channel_distance"),

@@ -35,6 +35,7 @@ from .const import (
     ACTIVITY_DOCKED,
     ACTIVITY_ERROR,
     ACTIVITY_MOWING,
+    ACTIVITY_PAUSED,
     ACTIVITY_RETURNING,
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_ID,
@@ -46,6 +47,8 @@ from .const import (
     CONF_UID,
     CONF_VEHICLE_SN,
     CONF_VEHICLE_TYPE,
+    COMMAND_ACTIVITY_TTL_SECONDS,
+    COMMAND_TARGET_TTL_SECONDS,
     DEFAULT_LANGUAGE,
     DEFAULT_SCAN_INTERVAL,
     DOCKED_STATES,
@@ -154,6 +157,102 @@ def _as_bool(value: Any) -> bool | None:
     if s in ("0", "00", "false", "off", "no", ""):
         return False
     return None
+
+
+def _dedupe_zone_ids(values: Any) -> list[int]:
+    """Return positive integer zone ids in stable order."""
+    result: list[int] = []
+    for item in values or []:
+        value = _as_int(item)
+        if value is not None and value > 0 and value not in result:
+            result.append(value)
+    return result
+
+
+def _command_target_is_fresh(
+    set_at: float | None,
+    now: float,
+    ttl: int = COMMAND_TARGET_TTL_SECONDS,
+) -> bool:
+    """Return whether a locally issued target intent is still authoritative."""
+    return set_at is not None and 0 <= now - set_at <= ttl
+
+
+def _resolve_navigation_target_ids(
+    *,
+    is_docked: bool,
+    is_returning: bool,
+    dock_zone_id: int | None,
+    physical_zone_id: int | None,
+    command_target_ids: list[int],
+    command_target_fresh: bool,
+    mqtt_work_target: int | None,
+    cloud_work_target: int | None,
+    mqtt_partition_ids: list[int],
+    cloud_zone_ids: list[int],
+    last_target_ids: list[int],
+) -> tuple[list[int], str, bool]:
+    """Resolve the best target and its source without trusting stale origin data.
+
+    The direct HA command wins while fresh. A packed immediate target that still
+    equals the physical origin is treated as stale when a single, newer task zone
+    points elsewhere. This is the common start-up transition seen after a mower is
+    sent from one side of a gate to the other.
+    """
+    if is_returning and dock_zone_id is not None:
+        return [dock_zone_id], "returning_to_dock", False
+    if is_docked:
+        return [], "docked", False
+
+    command_ids = _dedupe_zone_ids(command_target_ids)
+    command_target = command_ids[0] if command_ids else None
+    command_confirmed = bool(
+        command_target_fresh
+        and command_target is not None
+        and physical_zone_id == command_target
+        and command_target in {mqtt_work_target, cloud_work_target}
+    )
+    if command_target_fresh and command_target is not None:
+        return [command_target], (
+            "ha_command_confirmed" if command_confirmed else "ha_command"
+        ), command_confirmed
+
+    mqtt_ids = _dedupe_zone_ids(mqtt_partition_ids)
+    cloud_ids = _dedupe_zone_ids(cloud_zone_ids)
+    task_ids = mqtt_ids or cloud_ids
+
+    def _stale_origin(value: int | None) -> bool:
+        return bool(
+            value is not None
+            and physical_zone_id is not None
+            and value == physical_zone_id
+            and len(task_ids) == 1
+            and task_ids[0] != physical_zone_id
+        )
+
+    if (
+        mqtt_work_target is not None
+        and mqtt_work_target > 0
+        and not _stale_origin(mqtt_work_target)
+    ):
+        return [mqtt_work_target], "mqtt_work_target", False
+    if mqtt_ids:
+        return mqtt_ids, "mqtt_partition_ids", False
+    if cloud_ids:
+        return cloud_ids, "private_current_zones", False
+    if (
+        cloud_work_target is not None
+        and cloud_work_target > 0
+        and not _stale_origin(cloud_work_target)
+    ):
+        return [cloud_work_target], "private_work_target", False
+
+    last_ids = _dedupe_zone_ids(last_target_ids)
+    return (
+        (last_ids, "last_known", False)
+        if last_ids
+        else ([], "none", False)
+    )
 
 
 def _parse_zone_options(raw: str | None) -> list[dict]:
@@ -867,6 +966,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         self._gate_latches: dict[str, dict[str, Any]] = {}
         self._last_target_zone_ids: list[int] = []
+        self._command_target_zone_ids: list[int] = []
+        self._command_target_set_at: float | None = None
+        self._command_target_source: str | None = None
+        self._pending_activity: str | None = None
+        self._pending_activity_set_at: float | None = None
+        self._last_physical_zone_id: int | None = None
+        self._last_physical_zone_name: str | None = None
         self._private_reauth_started = False
         self._gate_release_tasks: dict[str, Any] = {}
         self._shutdown_complete = False
@@ -1677,10 +1783,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             activity = ACTIVITY_DOCKED
         elif activity is None:
             # Preserve the last trustworthy activity for short-lived unknown
-            # cloud state codes instead of falsely reporting the mower docked.
-            activity = previous_activity or ACTIVITY_DOCKED
+            # cloud state codes. Only a known dock code may default to Docked.
+            activity = previous_activity or (
+                ACTIVITY_DOCKED if state_code in DOCKED_STATES else ACTIVITY_PAUSED
+            )
+        pending_activity = self._pending_activity_value()
         if has_error:
             activity = ACTIVITY_ERROR
+            self.clear_pending_activity()
+        elif pending_activity is not None:
+            # Keep the explicit HA command state through short vendor transition
+            # codes. Clear it only after a matching known state is observed.
+            if activity == pending_activity and (
+                mqtt_vehicle_state is not None
+                or state_code in VEHICLE_STATE_TO_ACTIVITY
+            ):
+                self.clear_pending_activity()
+            else:
+                activity = pending_activity
+
+        state_label = VEHICLE_STATE_LABELS.get(state_code)
+        if state_label is None:
+            normalized = str(activity or "transitioning").replace("_", " ").title()
+            state_label = f"{normalized} ({state_code})" if state_code else normalized
 
         # --- settings (MowerSettingBean; snake_case in set-list, camelCase in bean)
         night_mow = _as_bool(_find(set_list, "night_mow_switch", "nightMowSwitch"))
@@ -1769,16 +1894,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             # core state
             "battery": battery,
             "state_code": state_code,
-            "state": VEHICLE_STATE_LABELS.get(
-                state_code,
-                f"Unknown ({state_code})" if state_code else "Unknown",
-            ),
+            "state": state_label,
             "activity": activity,
             "mqtt_vehicle_state": mqtt_vehicle_state,
             "mqtt_action": mqtt_action,
             "trail_active": self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action),
             "online": online,
-            "docked": self._is_docked_state(state_code, mqtt_vehicle_state),
+            "docked": bool(
+                self._is_docked_state(state_code, mqtt_vehicle_state)
+                and pending_activity not in {
+                    ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING
+                }
+            ),
             "error": has_error,
             "error_text": error_text,
             # progress / areas
@@ -1907,6 +2034,56 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return mqtt_vehicle_state == MQTT_STATE_RETURNING
         return str(state_code or "") == STATE_RETURNING
 
+    def _pending_activity_value(self) -> str | None:
+        """Return a fresh optimistic command activity, clearing expired state."""
+        if self._pending_activity is None or self._pending_activity_set_at is None:
+            return None
+        if (
+            time.monotonic() - self._pending_activity_set_at
+            > COMMAND_ACTIVITY_TTL_SECONDS
+        ):
+            self._pending_activity = None
+            self._pending_activity_set_at = None
+            return None
+        return self._pending_activity
+
+    def set_pending_activity(self, activity: str) -> None:
+        """Publish an optimistic activity while the mower acknowledges a command."""
+        self._pending_activity = str(activity)
+        self._pending_activity_set_at = time.monotonic()
+        if self.data:
+            updated = dict(self.data)
+            updated["activity"] = activity
+            if activity in {ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING}:
+                updated["docked"] = False
+            updated.update(self._navigation_fields(updated))
+            self.async_set_updated_data(updated)
+
+    def clear_pending_activity(self) -> None:
+        """Clear an optimistic command activity after failure or confirmation."""
+        self._pending_activity = None
+        self._pending_activity_set_at = None
+
+    def set_command_target(
+        self, zone_ids: list[int], *, source: str = "ha_mow_command"
+    ) -> None:
+        """Latch an explicit ordered-zone command for gate pre-opening."""
+        self._command_target_zone_ids = _dedupe_zone_ids(zone_ids)
+        self._command_target_set_at = (
+            time.monotonic() if self._command_target_zone_ids else None
+        )
+        self._command_target_source = source if self._command_target_zone_ids else None
+        if self.data:
+            updated = dict(self.data)
+            updated.update(self._navigation_fields(updated))
+            self.async_set_updated_data(updated)
+
+    def clear_command_target(self) -> None:
+        """Clear locally latched navigation intent."""
+        self._command_target_zone_ids = []
+        self._command_target_set_at = None
+        self._command_target_source = None
+
     def _cancel_gate_release(self, slug: str) -> None:
         cancel = self._gate_release_tasks.pop(slug, None)
         if cancel is not None:
@@ -1938,7 +2115,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
 
     def _navigation_fields(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        """Derive physical zone, target zone, tunnel and gate intent from live X/Y."""
+        """Derive physical zone, target zone, channel and gate intent from live X/Y."""
         position = self._fresh_mqtt_position()
         pose_valid = position is not None
         map_data = snapshot.get("map") or {}
@@ -1953,9 +2130,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 zone_names[zone_id] = str(zone.get("name") or f"Zone {zone_id}")
 
         physical = _zone_at_position(position, zones) if pose_valid else None
-        # When decoded geometry is unavailable, currentMowBoundary is the best
-        # live fallback. Do not use it while geometry exists because it can stay
-        # on the previous zone while the mower is physically in a tunnel.
         if physical is None and pose_valid and not zones:
             fallback_id = _as_int((self._mqtt_location or {}).get("mow_boundary"))
             if fallback_id is not None:
@@ -1970,10 +2144,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             tunnel = _tunnel_at_position(position, channels)
 
         station = map_data.get("station") or {}
-        dock_zone = _zone_at_position(
-            {"x": station.get("x"), "y": station.get("y")}, zones
-        ) if station else None
+        dock_zone = (
+            _zone_at_position(
+                {"x": station.get("x"), "y": station.get("y")}, zones
+            )
+            if station
+            else None
+        )
         dock_zone_id = _as_int((dock_zone or {}).get("id"))
+
+        physical_id = _as_int((physical or {}).get("id"))
+        physical_name = (physical or {}).get("name")
+        if physical_id is not None and physical_name:
+            self._last_physical_zone_id = physical_id
+            self._last_physical_zone_name = str(physical_name)
 
         state_code = str(snapshot.get("state_code") or "")
         mqtt_state = (
@@ -1981,78 +2165,124 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             if pose_valid
             else None
         )
-        is_docked = self._is_docked_state(state_code, mqtt_state)
-        is_returning = self._is_returning_state(state_code, mqtt_state)
+        pending_activity = self._pending_activity_value()
+        raw_docked = self._is_docked_state(state_code, mqtt_state)
+        raw_returning = self._is_returning_state(state_code, mqtt_state)
+        command_activity_active = pending_activity in {
+            ACTIVITY_MOWING,
+            ACTIVITY_PAUSED,
+            ACTIVITY_RETURNING,
+        }
+        docked_confirmed = bool(
+            raw_docked
+            and not command_activity_active
+            and (
+                mqtt_state in MQTT_DOCKED_STATES
+                or (dock_zone_id is not None and physical_id == dock_zone_id)
+                or (
+                    not pose_valid
+                    and not self._gate_latches
+                    and not self._command_target_zone_ids
+                )
+            )
+        )
+        is_returning = raw_returning or pending_activity == ACTIVITY_RETURNING
 
-        target_ids: list[int] = []
-        if is_docked:
+        mqtt_work_target = _as_int(
+            (self._mqtt_location or {}).get("work_target_zone")
+        )
+        cloud_work_target = _as_int(snapshot.get("work_target_zone"))
+        mqtt_partition_ids = _dedupe_zone_ids(
+            (self._mqtt_location or {}).get("partition_ids")
+        )
+        cloud_zone_ids = _dedupe_zone_ids(snapshot.get("current_zone_ids"))
+        now_monotonic = time.monotonic()
+        command_fresh = bool(
+            self._command_target_zone_ids
+            and _command_target_is_fresh(
+                self._command_target_set_at, now_monotonic
+            )
+        )
+        if self._command_target_zone_ids and not command_fresh:
+            self.clear_command_target()
+        command_target_age = (
+            round(now_monotonic - self._command_target_set_at, 1)
+            if command_fresh and self._command_target_set_at is not None
+            else None
+        )
+        command_source = self._command_target_source if command_fresh else None
+
+        target_ids, target_source, command_confirmed = _resolve_navigation_target_ids(
+            is_docked=docked_confirmed,
+            is_returning=is_returning,
+            dock_zone_id=dock_zone_id,
+            physical_zone_id=physical_id,
+            command_target_ids=self._command_target_zone_ids,
+            command_target_fresh=command_fresh,
+            mqtt_work_target=mqtt_work_target,
+            cloud_work_target=cloud_work_target,
+            mqtt_partition_ids=mqtt_partition_ids,
+            cloud_zone_ids=cloud_zone_ids,
+            last_target_ids=self._last_target_zone_ids,
+        )
+
+        if command_confirmed:
+            # Use the confirmed command for this snapshot, then let subsequent
+            # packets follow the mower's own immediate target.
+            self.clear_command_target()
+
+        if docked_confirmed:
+            self.clear_command_target()
             self._last_target_zone_ids = []
             self._gate_latches.clear()
             for slug in list(self._gate_release_tasks):
                 self._cancel_gate_release(slug)
-        else:
-            immediate_target = _as_int(
-                (self._mqtt_location or {}).get("work_target_zone")
-            )
-            if immediate_target is None:
-                immediate_target = _as_int(snapshot.get("work_target_zone"))
-            mqtt_ids = (self._mqtt_location or {}).get("partition_ids")
-            if isinstance(mqtt_ids, list):
-                target_ids = [
-                    value
-                    for item in mqtt_ids
-                    if (value := _as_int(item)) is not None
-                ]
-            cloud_ids = [
-                value
-                for item in (snapshot.get("current_zone_ids") or [])
-                if (value := _as_int(item)) is not None
-            ]
-            if is_returning and dock_zone_id is not None:
-                target_ids = [dock_zone_id]
-            elif immediate_target is not None and immediate_target > 0:
-                # ``partitionIds`` can contain all zones selected for a task.
-                # The packed work-position target is the immediate destination
-                # and therefore the useful gate pre-open signal.
-                target_ids = [immediate_target]
-            elif not target_ids:
-                target_ids = cloud_ids or list(self._last_target_zone_ids)
-            if target_ids:
-                self._last_target_zone_ids = list(dict.fromkeys(target_ids))
-                target_ids = list(self._last_target_zone_ids)
+        elif target_ids:
+            self._last_target_zone_ids = list(target_ids)
 
-        target_names = [zone_names.get(zone_id, f"Zone {zone_id}") for zone_id in target_ids]
-        physical_id = _as_int((physical or {}).get("id"))
-        physical_name = (physical or {}).get("name")
-        tunnel_connection = [
-            value
-            for item in ((tunnel or {}).get("connection") or [])
-            if (value := _as_int(item)) is not None
+        target_names = [
+            zone_names.get(zone_id, f"Zone {zone_id}") for zone_id in target_ids
         ]
+        tunnel_connection = _dedupe_zone_ids((tunnel or {}).get("connection"))
 
-        if not pose_valid:
-            physical_state = None
-        elif physical_name:
-            physical_state = str(physical_name)
-        elif tunnel is not None:
-            physical_state = "Between zones"
+        if pose_valid:
+            if physical_name:
+                physical_state = str(physical_name)
+                physical_source = (physical or {}).get("source", "map_polygon")
+            elif tunnel is not None:
+                physical_state = "Between zones"
+                physical_source = "mapped_channel"
+            else:
+                physical_state = "Outside mapped zones"
+                physical_source = "live_pose"
+        elif docked_confirmed and dock_zone_id is not None:
+            physical_state = zone_names.get(dock_zone_id, f"Zone {dock_zone_id}")
+            physical_source = "confirmed_dock_zone"
+        elif self._last_physical_zone_name:
+            physical_state = self._last_physical_zone_name
+            physical_source = "last_known_stale_pose"
         else:
-            physical_state = "Outside mapped zones"
+            physical_state = "Position unavailable"
+            physical_source = "pose_unavailable"
 
-        target_state = ", ".join(target_names) if target_names else None
-        tunnel_state = None
+        target_state = ", ".join(target_names) if target_names else "No active target"
         if tunnel is not None:
             tunnel_state = str(
                 tunnel.get("name")
-                or (f"Tunnel {tunnel.get('id')}" if tunnel.get("id") is not None else "Tunnel")
+                or (
+                    f"Channel {tunnel.get('id')}"
+                    if tunnel.get("id") is not None
+                    else "Channel"
+                )
             )
+        else:
+            tunnel_state = "Not in channel" if pose_valid else "Position unavailable"
 
-        transition: bool | None
         if not pose_valid:
-            transition = None
+            transition: bool | None = False if docked_confirmed else None
         elif len(target_ids) == 1:
             target_id = target_ids[0]
-            transition = (
+            transition = bool(
                 (physical_id is not None and physical_id != target_id)
                 or (tunnel is not None and target_id in tunnel_connection)
             )
@@ -2060,39 +2290,40 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             transition = False
 
         gate_states: dict[str, dict[str, Any]] = {}
-        now_monotonic = time.monotonic()
         for gate in self.gates:
             pair = set(gate.zones)
             target_id = target_ids[0] if len(target_ids) == 1 else None
             intent = gate.allows_transition(physical_id, target_id)
+            latch = self._gate_latches.get(gate.slug)
             tunnel_from_id = gate.other_zone(target_id) if target_id is not None else None
-            tunnel_direction_allowed = (
+            tunnel_direction_allowed = bool(
                 target_id is not None
                 and tunnel_from_id is not None
                 and gate.allows_transition(tunnel_from_id, target_id)
             )
-            tunnel_matches = (
+            tunnel_matches = bool(
                 tunnel is not None
                 and set(tunnel_connection) == pair
-                and (
-                    gate.slug in self._gate_latches
-                    or tunnel_direction_allowed
-                )
+                and (latch is not None or tunnel_direction_allowed)
             )
 
-            if intent:
+            # Do not overwrite an in-flight latch when a stale target briefly
+            # flips to the origin/other side. The original from->to direction is
+            # authoritative until arrival and close-delay release.
+            if intent and latch is None:
                 self._cancel_gate_release(gate.slug)
-                self._gate_latches[gate.slug] = {
+                latch = {
                     "from_zone_id": int(physical_id),
                     "to_zone_id": int(target_id),
                     "release_at": None,
+                    "target_source": target_source,
                 }
+                self._gate_latches[gate.slug] = latch
 
-            latch = self._gate_latches.get(gate.slug)
             if latch:
                 from_id = _as_int(latch.get("from_zone_id"))
                 to_id = _as_int(latch.get("to_zone_id"))
-                arrived = (
+                arrived = bool(
                     pose_valid
                     and tunnel is None
                     and to_id is not None
@@ -2121,16 +2352,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     self._cancel_gate_release(gate.slug)
                     latch = None
                 elif from_id is not None and to_id is not None:
-                    # Cancel one-way latches if the reported transition reverses.
                     if not gate.allows_transition(from_id, to_id):
                         self._gate_latches.pop(gate.slug, None)
                         self._cancel_gate_release(gate.slug)
                         latch = None
 
             if not pose_valid:
-                # Never emit a false close signal just because the MQTT pose is
-                # stale while a gate transition is already latched.
-                required = True if latch else None
+                if latch:
+                    required: bool | None = True
+                elif docked_confirmed:
+                    required = False
+                else:
+                    required = None
             else:
                 required = bool(intent or tunnel_matches or latch)
 
@@ -2167,9 +2400,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 ),
                 "current_zone_id": physical_id,
                 "target_zone_id": target_id,
+                "target_source": (latch or {}).get("target_source") or target_source,
+                "command_source": command_source,
+                "target_age_seconds": command_target_age,
+                "command_target_active": command_fresh,
+                "intent_confirmed": command_confirmed,
                 "current_channel_id": _as_int((tunnel or {}).get("id")),
                 "current_channel_name": tunnel_state,
                 "pose_age": self.pose_age(),
+                "pose_valid": pose_valid,
             }
 
         if transition is False and any(
@@ -2180,13 +2419,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return {
             "current_physical_zone": physical_state,
             "current_physical_zone_id": physical_id,
-            "current_physical_zone_source": (
-                (physical or {}).get("source", "map_polygon")
-                if physical
-                else None
-            ),
+            "current_physical_zone_source": physical_source,
             "target_zone": target_state,
             "target_zone_ids": target_ids,
+            "target_zone_source": target_source,
+            "target_zone_command_source": command_source,
+            "target_zone_age_seconds": command_target_age,
+            "command_target_active": command_fresh,
             "current_channel": tunnel_state,
             "current_channel_id": _as_int((tunnel or {}).get("id")),
             "current_channel_connection": tunnel_connection,
@@ -2426,12 +2665,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["mqtt_action"] = mqtt_action
         cutting = self._is_cutting(state_code, mqtt_state, mqtt_action)
         snapshot["trail_active"] = cutting
+        candidate_activity = snapshot.get("activity")
         if cutting:
-            snapshot["activity"] = ACTIVITY_MOWING
+            candidate_activity = ACTIVITY_MOWING
         elif mqtt_state == MQTT_STATE_RETURNING:
-            snapshot["activity"] = ACTIVITY_RETURNING
+            candidate_activity = ACTIVITY_RETURNING
         elif mqtt_state in MQTT_DOCKED_STATES:
-            snapshot["activity"] = ACTIVITY_DOCKED
+            candidate_activity = ACTIVITY_DOCKED
+        pending_activity = self._pending_activity_value()
+        if pending_activity is not None:
+            if candidate_activity == pending_activity:
+                self.clear_pending_activity()
+            else:
+                candidate_activity = pending_activity
+        snapshot["activity"] = candidate_activity
+        snapshot["docked"] = bool(
+            self._is_docked_state(state_code, mqtt_state)
+            and pending_activity not in {
+                ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING
+            }
+        )
         snapshot["mow_route_progress"] = (
             _as_float(location.get("mow_progress")) / 100.0
             if location.get("mow_progress") is not None
@@ -2459,9 +2712,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.request_fast_refresh("MQTT pose stream became live")
 
     def channel_state(self, channel: NavimowerChannel) -> bool | None:
-        """Return channel membership, or None when the pose is stale/missing."""
+        """Return channel membership, using a safe OFF while confirmed docked."""
         position = self._fresh_mqtt_position()
         if position is None:
+            data = self.data or {}
+            if data.get("docked") is True and self._pending_activity_value() is None:
+                return False
             return None
         return channel.contains(position.get("x"), position.get("y"))
 
