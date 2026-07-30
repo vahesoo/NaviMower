@@ -1,4 +1,22 @@
 # Changelog
+## 0.2.3 — public preview, unified sessions and frontend cleanup
+- Treats mowing fragments separated by no more than five minutes as one logical
+  session. This covers short manual stops, zone reselection, integration reloads
+  and Home Assistant restarts without inflating the session count.
+- Repairs matching adjacent fragments already present in retained history and
+  records segment start timestamps for future gap-aware map rendering.
+- Protects a resumed session from a stale finalize write that was already in
+  flight when cutting restarted.
+- Registers the long-lived MQTT watchdog and startup-retry loop as Home Assistant
+  background tasks so they do not hold integration startup open.
+- Added map-geometry cache schema v3. Older `obstacles`, `vision_off` and
+  `tunnels` keys are normalized immediately and a one-time cloud refresh is
+  forced after upgrade.
+- Removed the bundled Mow Now and Scheduler frontend cards and the frontend
+  dependency. Their controls are now part of navimower-map-card v0.1.9 or later;
+  the `navimower.mow` and `navimower.set_schedule` services remain available.
+- Updated validation and public documentation for the standalone-card workflow,
+  account limitations, current map terminology and release migration.
 
 ## 0.2.2 — stability and data freshness
 
