@@ -20,6 +20,24 @@ onward.
 > machine with a cutting blade; verify commands and physical-gate automations in
 > a safe environment.
 
+## Project origins
+
+The private-cloud foundation used by Navimower was created by **Roberto
+Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
+Roberto reverse-engineered the Navimow mobile application's private-cloud
+communication and implemented the authentication, encrypted protocol, map
+decoding and control foundation on which this integration builds.
+
+Navimower extends that work with the official Smart Home OAuth/MQTT connection
+to obtain dense live mower events and position data without repeatedly polling
+the private cloud. It also adds persistent route history, physical-zone and gate
+logic, and a separately maintained
+[Navimower Map Card](https://github.com/vahesoo/navimower-map-card) for the map,
+Mow Now controls and schedule editing.
+
+A sincere thank you to Roberto for the excellent reverse-engineering work and
+for making the original project available to the community.
+
 ## Recommended account arrangement
 
 Use a dedicated shared Navimow account for the private app-cloud session and
@@ -44,6 +62,11 @@ identity before starting MQTT.
 > Navimower config entry. Reusing one private-cloud account across parallel
 > entries is currently unsupported and has caused session invalidation during
 > field testing.
+
+Multiple-mower support is present: each mower can be added as its own Navimower
+config entry and receives its own entities, map and history. This area is still
+experimental and needs further development and broader testing, especially when
+several mowers are accessed through the same private-cloud account.
 
 ## Main features
 
@@ -374,6 +397,8 @@ The action sends no mower commands and performs no settings or map writes.
 - Current OAuth/private endpoints target the European/FRA service.
 - A dedicated private-cloud shared account is strongly recommended. Reusing
   one private-cloud account across parallel entries is currently unsupported.
+- Multiple-mower support is available through separate config entries, but it
+  remains experimental and needs further development and broader field testing.
 - Exact state codes and some settings remain firmware-specific.
 - The standalone map card does not currently render temporary doodles, although
   their raw metadata remains available in the API and diagnostics.
@@ -387,15 +412,21 @@ The action sends no mower commands and performs no settings or map writes.
 
 ## Credits and licence
 
-Navimower is based substantially on
-[ilguala/navimow_pro](https://github.com/ilguala/navimow_pro), especially its
-private-cloud authentication, encrypted protocol, map decoder, coordinator,
-entities, scheduler and camera implementation.
+The private-cloud foundation used by Navimower was created by **Roberto
+Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
+His project reverse-engineered the Navimow mobile application's private-cloud
+communication and provided the authentication, encrypted protocol, map decoder,
+coordinator, entities, scheduler and camera implementation from which this
+project developed. Thank you, Roberto, for the excellent work and for sharing it
+with the community.
 
-The standalone official OAuth/MQTT bridge, persistent live route history and
-local Gate-area/gate work are adapted from
+Navimower adds the official Smart Home OAuth/MQTT connection so that dense live
+position and mower events can be consumed without placing unnecessary polling
+load on the private cloud. Persistent live route history and local
+Gate-area/gate work were adapted from
 [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA) and continued in this
-repository.
+repository. The user interface is developed separately in
+[vahesoo/navimower-map-card](https://github.com/vahesoo/navimower-map-card).
 
 See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). The project is distributed
 under the MIT License.
