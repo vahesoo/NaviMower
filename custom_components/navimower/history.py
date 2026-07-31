@@ -25,6 +25,7 @@ from .const import (
     MQTT_HISTORY_SAVE_DELAY_SECONDS,
     SESSION_CACHE_LIMIT,
     SESSION_MERGE_GAP_SECONDS,
+    VENDOR_COMPLETION_PROGRESS_MIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,6 +128,8 @@ def _metadata(session: dict[str, Any]) -> dict[str, Any]:
         "zone_ids": list(session.get("zone_ids") or []),
         "cutting_height_mm": session.get("cutting_height_mm"),
         "completed": session.get("completed"),
+        "completion_reason": session.get("completion_reason"),
+        "final_progress": deepcopy(session.get("final_progress") or {}),
         "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
         "point_count": (
             len(session.get("points") or [])
@@ -228,6 +231,11 @@ def _sessions_can_merge(
     """Return whether two fragments belong to one logical mowing session."""
     if previous.get("legacy") or continuation.get("legacy"):
         return False
+    # A vendor progress reset is an intentional mowing-cycle boundary, not a
+    # short interruption. Never repair or resume across it even when the gap is
+    # only a few seconds.
+    if previous.get("completion_reason") == "cycle_reset":
+        return False
     previous_end = _session_end_ms(previous)
     continuation_start = _as_int(continuation.get("started_at_ms"))
     if previous_end is None or continuation_start is None:
@@ -276,6 +284,14 @@ def _merge_session_records(
             else previous.get("completed")
         )
     )
+    merged["completion_reason"] = (
+        None
+        if continuation_active
+        else continuation.get("completion_reason") or previous.get("completion_reason")
+    )
+    final_progress = dict(previous.get("final_progress") or {})
+    final_progress.update(continuation.get("final_progress") or {})
+    merged["final_progress"] = final_progress
 
     points = [
         list(point)
@@ -340,6 +356,12 @@ class NavimowerHistory:
         # not hundreds of independent scheduled writes.
         self._session_stores: dict[str, Store] = {}
         self._zone_history: dict[str, dict[str, Any]] = {}
+        # Last observed vendor progress per zone. This is persisted so a cycle
+        # restart can still be recognized after a Home Assistant restart.
+        self._zone_progress_state: dict[str, dict[str, Any]] = {}
+        # A detected cycle restart must never be merged back into the previous
+        # session by the normal five-minute interruption rule.
+        self._force_new_session_once = False
 
     # ---------------------------------------------------------------- load
     async def async_load(self) -> None:
@@ -364,6 +386,13 @@ class NavimowerHistory:
                 self._zone_history = {
                     str(key): dict(value)
                     for key, value in zone_history.items()
+                    if isinstance(value, dict)
+                }
+            zone_progress_state = data.get("zone_progress_state")
+            if isinstance(zone_progress_state, dict):
+                self._zone_progress_state = {
+                    str(key): dict(value)
+                    for key, value in zone_progress_state.items()
                     if isinstance(value, dict)
                 }
 
@@ -549,6 +578,8 @@ class NavimowerHistory:
             "zone_ids": [],
             "cutting_height_mm": None,
             "completed": None,
+            "completion_reason": "legacy_import",
+            "final_progress": {},
             "segment_starts_ms": [points[0][0]],
             "points": points,
         }
@@ -567,6 +598,7 @@ class NavimowerHistory:
                 "active_id": self._active_id,
                 "sessions": deepcopy(self._sessions),
                 "zone_history": deepcopy(self._zone_history),
+                "zone_progress_state": deepcopy(self._zone_progress_state),
             }
 
     def _active_snapshot(self) -> dict[str, Any] | None:
@@ -660,6 +692,29 @@ class NavimowerHistory:
                 )
 
             if docked and not cutting:
+                if active.get("completed") is True:
+                    completed_ms = _timestamp_ms(pose_time)
+                    final_progress = dict(active.get("final_progress") or {})
+                    for zone_id in _unique_ints(active.get("zone_ids")):
+                        state = self._zone_progress_state.get(str(zone_id)) or {}
+                        progress = _as_int(state.get("progress"))
+                        if progress is not None:
+                            final_progress[str(zone_id)] = progress
+                        record = dict(self._zone_history.get(str(zone_id)) or {})
+                        record.update(
+                            {
+                                "id": zone_id,
+                                "name": record.get("name") or f"Zone {zone_id}",
+                                "last_completed_at": _iso(completed_ms),
+                                "last_completed_progress": progress,
+                            }
+                        )
+                        self._zone_history[str(zone_id)] = record
+                    active["final_progress"] = final_progress
+                    active["completion_reason"] = (
+                        active.get("completion_reason") or "dock_completed"
+                    )
+                    self._schedule_index_save()
                 self._finish_active_locked(pose_time)
             else:
                 self._update_active_metadata_locked(active)
@@ -678,7 +733,9 @@ class NavimowerHistory:
         mode: str | None,
     ) -> None:
         start_ms = _timestamp_ms(pose_time)
-        if self._resume_recent_session_locked(
+        force_new = self._force_new_session_once
+        self._force_new_session_once = False
+        if not force_new and self._resume_recent_session_locked(
             start_ms=start_ms,
             zone_ids=zone_ids,
             cutting_height_mm=cutting_height_mm,
@@ -702,6 +759,8 @@ class NavimowerHistory:
             "zone_ids": list(dict.fromkeys(int(value) for value in zone_ids)),
             "cutting_height_mm": cutting_height_mm,
             "completed": None,
+            "completion_reason": None,
+            "final_progress": {},
             "segment_starts_ms": [start_ms],
             "points": [],
         }
@@ -739,6 +798,8 @@ class NavimowerHistory:
         previous["ended_at_ms"] = None
         previous["ended_at"] = None
         previous["completed"] = None
+        previous["completion_reason"] = None
+        previous["final_progress"] = {}
         previous["zone_ids"] = _unique_ints(
             previous.get("zone_ids"), zone_ids
         )
@@ -863,6 +924,145 @@ class NavimowerHistory:
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Could not finalize session %s", session_id, exc_info=True)
 
+    # ----------------------------------------------------------- cycle tracking
+    @staticmethod
+    def _progress_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return one normalized progress row per mapped zone."""
+        coverage_by_id = {
+            _as_int(item.get("id")): item
+            for item in (snapshot.get("coverage") or {}).get("zones") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        details_by_id = {
+            _as_int(item.get("id")): item
+            for item in snapshot.get("zone_details") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        rows: list[dict[str, Any]] = []
+        for zone_id in sorted(set(coverage_by_id) | set(details_by_id)):
+            if zone_id is None:
+                continue
+            coverage = coverage_by_id.get(zone_id) or {}
+            detail = details_by_id.get(zone_id) or {}
+            progress = _as_int(
+                detail.get("progress")
+                if detail.get("progress") is not None
+                else detail.get("percentage")
+                if detail.get("percentage") is not None
+                else coverage.get("pct")
+            )
+            rows.append(
+                {
+                    "id": zone_id,
+                    "name": detail.get("name") or coverage.get("name") or f"Zone {zone_id}",
+                    "progress": progress,
+                    "start_time": _as_int(coverage.get("start_time")),
+                    "end_time": _as_int(coverage.get("end_time")),
+                }
+            )
+        return rows
+
+    def prepare_cycle(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        pose_time: Any,
+    ) -> bool:
+        """Split the active route when Navimow starts a new mowing cycle.
+
+        Navimow may complete a practical cycle at 97-99% and immediately begin
+        another pass while the scheduled window is still open. The mower never
+        docks between those passes, so dock-based sessions alone cannot clear
+        the current map. A large same-zone progress reset, or a newer vendor
+        start timestamp paired with a lower progress value, is treated as a new
+        cycle. The completed route remains in retained history.
+        """
+        rows = self._progress_rows(snapshot)
+        if not rows:
+            return False
+        reset_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            for row in rows:
+                zone_id = _as_int(row.get("id"))
+                if zone_id is None:
+                    continue
+                previous = dict(self._zone_progress_state.get(str(zone_id)) or {})
+                old_progress = _as_int(previous.get("progress"))
+                new_progress = _as_int(row.get("progress"))
+                old_start = _as_int(previous.get("start_time"))
+                new_start = _as_int(row.get("start_time"))
+                hard_reset = (
+                    old_progress is not None
+                    and new_progress is not None
+                    and old_progress >= 70
+                    and new_progress <= 20
+                    and old_progress - new_progress >= 40
+                )
+                timestamp_reset = (
+                    old_progress is not None
+                    and new_progress is not None
+                    and old_start is not None
+                    and new_start is not None
+                    and new_start > old_start
+                    and new_progress <= 25
+                    and old_progress - new_progress >= 10
+                )
+                # A large progress reset is itself the cycle boundary. It may
+                # arrive during the brief non-cutting handover between two
+                # scheduled passes, so waiting for ``cutting`` would overwrite
+                # the old high-water mark and leave the previous route visible.
+                if active is not None and (hard_reset or timestamp_reset):
+                    reset_rows.append((previous, row))
+
+            if reset_rows and active is not None:
+                final_progress: dict[str, int] = {}
+                completion_ms = _timestamp_ms(pose_time)
+                for previous, row in reset_rows:
+                    zone_id = _as_int(row.get("id"))
+                    old_progress = _as_int(previous.get("progress"))
+                    if zone_id is None:
+                        continue
+                    if old_progress is not None:
+                        final_progress[str(zone_id)] = old_progress
+                    new_start = _as_int(row.get("start_time"))
+                    if new_start is not None:
+                        completion_ms = min(completion_ms, _timestamp_ms(new_start))
+                    record = dict(self._zone_history.get(str(zone_id)) or {})
+                    record.update(
+                        {
+                            "id": zone_id,
+                            "name": row.get("name") or record.get("name") or f"Zone {zone_id}",
+                            "last_completed_at": _iso(completion_ms),
+                            "last_completed_progress": old_progress,
+                        }
+                    )
+                    self._zone_history[str(zone_id)] = record
+                active["completed"] = True
+                active["completion_reason"] = "cycle_reset"
+                active["final_progress"] = final_progress
+                self._update_active_metadata_locked(active)
+                self._force_new_session_once = True
+                self._finish_active_locked(pose_time)
+                _LOGGER.info(
+                    "Started a new Navimower mowing cycle after progress reset in zone(s) %s",
+                    ", ".join(str(row.get("id")) for _previous, row in reset_rows),
+                )
+
+            for row in rows:
+                zone_id = _as_int(row.get("id"))
+                if zone_id is None:
+                    continue
+                self._zone_progress_state[str(zone_id)] = {
+                    "progress": _as_int(row.get("progress")),
+                    "start_time": _as_int(row.get("start_time")),
+                    "end_time": _as_int(row.get("end_time")),
+                    "observed_at_ms": _timestamp_ms(pose_time),
+                }
+
+        self._schedule_index_save()
+        return bool(reset_rows)
+
     # ----------------------------------------------------------- zone history
     def update_zone_history(
         self,
@@ -893,7 +1093,13 @@ class NavimowerHistory:
                         "finished_area_m2": detail.get(
                             "finished_area_m2", row.get("finished")
                         ),
-                        "percentage": detail.get("percentage", row.get("pct")),
+                        "percentage": (
+                            detail.get("progress")
+                            if detail.get("progress") is not None
+                            else detail.get("percentage", row.get("pct"))
+                        ),
+                        "vendor_percentage": detail.get("vendor_percentage", row.get("pct")),
+                        "progress_source": detail.get("progress_source") or "coverage",
                         "cutting_height_mm": detail.get("cutting_height_mm"),
                         "inherits_global_height": detail.get(
                             "inherits_global_height"
@@ -933,12 +1139,23 @@ class NavimowerHistory:
                     or _as_int(item.get("id")) in set(active.get("zone_ids") or [])
                 ]
                 percentages = [
-                    _as_int(item.get("percentage"))
+                    _as_int(
+                        item.get("progress")
+                        if item.get("progress") is not None
+                        else item.get("percentage")
+                    )
                     for item in relevant
-                    if _as_int(item.get("percentage")) is not None
+                    if _as_int(
+                        item.get("progress")
+                        if item.get("progress") is not None
+                        else item.get("percentage")
+                    ) is not None
                 ]
-                if percentages and all(value >= 100 for value in percentages):
+                if percentages and all(
+                    value >= VENDOR_COMPLETION_PROGRESS_MIN for value in percentages
+                ):
                     active["completed"] = True
+                    active["completion_reason"] = active.get("completion_reason") or "vendor_progress"
                 self._update_active_metadata_locked(active)
                 changed = True
 

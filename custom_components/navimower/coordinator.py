@@ -80,6 +80,7 @@ from .const import (
     ZONE_EDGE_TOLERANCE_M,
     VEHICLE_STATE_LABELS,
     VEHICLE_STATE_TO_ACTIVITY,
+    VENDOR_COMPLETION_PROGRESS_MIN,
     decode_partition_id_list,
     encode_partition_ids,
 )
@@ -130,6 +131,20 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _progress_percent(value: Any) -> int | None:
+    """Normalize ratio, percent or basis-point progress to 0..100 percent."""
+    parsed = _as_float(value)
+    if parsed is None or parsed < 0:
+        return None
+    if 0 < parsed < 1:
+        parsed *= 100
+    elif parsed > 100:
+        parsed /= 100
+    if parsed < 0 or parsed > 100:
+        return None
+    return int(round(parsed))
 
 
 def _utc_iso_from_seconds(value: Any) -> str | None:
@@ -1196,17 +1211,28 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             if (parsed := _as_int(value)) is not None
         }
         percentages = {
-            _as_int(item.get("id")): _as_int(item.get("pct"))
-            for item in (snapshot.get("coverage") or {}).get("zones") or []
+            _as_int(item.get("id")): _progress_percent(
+                item.get("progress")
+                if item.get("progress") is not None
+                else item.get("percentage")
+            )
+            for item in snapshot.get("zone_details") or []
             if isinstance(item, dict) and _as_int(item.get("id")) is not None
         }
+        for item in (snapshot.get("coverage") or {}).get("zones") or []:
+            if not isinstance(item, dict):
+                continue
+            zone_id = _as_int(item.get("id"))
+            if zone_id is None or percentages.get(zone_id) is not None:
+                continue
+            percentages[zone_id] = _progress_percent(item.get("pct"))
         relevant = (
             [percentages.get(zone_id) for zone_id in selected]
             if selected
             else list(percentages.values())
         )
         known = [value for value in relevant if value is not None]
-        return all(value >= 100 for value in known) if known else None
+        return all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known) if known else None
 
     def _active_cutting_height(self, snapshot: dict[str, Any]) -> int | None:
         target_ids = (
@@ -1249,6 +1275,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         ]
         active_height = self._active_cutting_height(snapshot)
         snapshot["active_cutting_height_mm"] = active_height
+        cycle_reset = self.history.prepare_cycle(
+            snapshot,
+            pose_time=snapshot.get("pose_time"),
+        )
+        snapshot["cycle_reset_detected"] = cycle_reset
         self.history.observe(
             position=position,
             pose_time=snapshot.get("pose_time"),
@@ -1687,7 +1718,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     ),
                     "last_completed_at": (
                         dt_util.utc_from_timestamp(end_time).isoformat()
-                        if end_time and (percentage or 0) >= 100
+                        if end_time and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN
                         else None
                     ),
                     "configured_height_raw": raw_height,
@@ -1711,6 +1742,40 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 }
             )
         return details
+
+    @staticmethod
+    def _apply_active_zone_progress(
+        zone_details: list[dict[str, Any]],
+        *,
+        zone_id: int | None,
+        progress_candidates: list[tuple[str, Any]],
+    ) -> None:
+        """Expose the live task progress used by the app for the active zone.
+
+        ``get-path-info-time`` can lag behind the mower's current task. The
+        official MQTT route progress and packed work progress are therefore
+        preferred for the one active target zone while the vendor percentage is
+        retained separately for diagnostics and cycle-reset detection.
+        """
+        if zone_id is None:
+            return
+        progress = None
+        source = None
+        for candidate_source, candidate_value in progress_candidates:
+            normalized = _progress_percent(candidate_value)
+            if normalized is not None:
+                progress = normalized
+                source = candidate_source
+                break
+        if progress is None:
+            return
+        for detail in zone_details:
+            if _as_int(detail.get("id")) != zone_id:
+                continue
+            detail["vendor_percentage"] = detail.get("percentage")
+            detail["progress"] = progress
+            detail["progress_source"] = source
+            break
 
     def _parse(self, raw: dict) -> dict:
         index2 = raw.get("index2") or {}
@@ -1880,7 +1945,27 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "rain_delay_wire": rain_delay_wire,
         }
 
+        mowing_progress = _progress_percent(
+            _find(location, "mowing_percentage", "mowingPercentage", "progress")
+        )
+        work_progress = _progress_percent((packed_work or {}).get("progress"))
+        mqtt_route_progress = _progress_percent(
+            (self._mqtt_location or {}).get("mow_progress")
+        )
         zone_details = self._build_zone_details(coverage, settings["cut_height"])
+        active_progress_zone = _as_int((packed_work or {}).get("target_zone"))
+        if active_progress_zone is None and len(current_ids) == 1:
+            active_progress_zone = current_ids[0]
+        if activity == ACTIVITY_MOWING:
+            self._apply_active_zone_progress(
+                zone_details,
+                zone_id=active_progress_zone,
+                progress_candidates=[
+                    ("mqtt_route", mqtt_route_progress),
+                    ("work_progress", work_progress),
+                    ("mowing_progress", mowing_progress),
+                ],
+            )
 
         # --- maintenance (blades / chassis) -- field names are firmware-specific
         maint = self._parse_maintenance(maintenance)
@@ -1909,14 +1994,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "error": has_error,
             "error_text": error_text,
             # progress / areas
-            "mowing_progress": _as_int(
-                _find(
-                    location,
-                    "mowing_percentage",
-                    "mowingPercentage",
-                    "progress",
-                )
-            ),
+            "mowing_progress": mowing_progress,
             "session_area": _as_float(location.get("subtotal_area")),
             "weekly_area": _as_float(location.get("mowing_week_area")),
             "total_area": (
@@ -1933,7 +2011,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "work_action": _as_int((packed_work or {}).get("action")),
             "work_sub_action": _as_int((packed_work or {}).get("sub_action")),
             "work_mode": _as_int((packed_work or {}).get("mode")),
-            "work_progress": _as_int((packed_work or {}).get("progress")),
+            "work_progress": work_progress,
             # weekly mowing schedule (days -> periods -> zones)
             "schedule": _parse_schedule(set_list, zone_names),
             # connectivity
@@ -2685,13 +2763,33 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING
             }
         )
+        route_progress = _progress_percent(location.get("mow_progress"))
         snapshot["mow_route_progress"] = (
-            _as_float(location.get("mow_progress")) / 100.0
-            if location.get("mow_progress") is not None
+            route_progress
+            if route_progress is not None
             else snapshot.get("mow_route_progress")
         )
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
+        if cutting and route_progress is not None:
+            zone_details = [
+                dict(item) for item in snapshot.get("zone_details") or []
+                if isinstance(item, dict)
+            ]
+            active_zone_ids = (
+                snapshot.get("target_zone_ids")
+                or snapshot.get("current_zone_ids")
+                or []
+            )
+            active_zone_id = (
+                _as_int(active_zone_ids[0]) if len(active_zone_ids) == 1 else None
+            )
+            self._apply_active_zone_progress(
+                zone_details,
+                zone_id=active_zone_id,
+                progress_candidates=[("mqtt_route", route_progress)],
+            )
+            snapshot["zone_details"] = zone_details
         # Only a new pose packet contributes a route point. Progress, target-
         # zone and delay packets still update the session state, but their
         # cached X/Y must not create a false sample with an old pose timestamp.
@@ -2766,6 +2864,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "trail_started_at": self.history.active_started_at(),
             "trail_active": bool(data.get("trail_active")),
             "active_session": active_meta,
+            "current_cycle_session_id": (active_meta or {}).get("id"),
+            "history_day_count": 3,
+            "completion_threshold_pct": VENDOR_COMPLETION_PROGRESS_MIN,
             "sessions": sessions,
             "session_xy_point_format": list(SESSION_CARD_POINT_FORMAT),
             "session_segment_point_format": list(SESSION_CARD_POINT_FORMAT),

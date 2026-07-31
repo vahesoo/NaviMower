@@ -112,7 +112,7 @@ PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
 }
 
 # --- Map/history API -------------------------------------------------------
-MAP_API_SCHEMA_VERSION: Final = 3
+MAP_API_SCHEMA_VERSION: Final = 4
 # Cached reduced map geometry has its own version. Bump this whenever the
 # persisted geometry keys or semantics change without changing the public API.
 MAP_GEOMETRY_SCHEMA_VERSION: Final = 3
@@ -120,6 +120,10 @@ SESSION_CACHE_LIMIT: Final = 64
 # Short operator stops, integration reloads and Home Assistant restarts are one
 # logical mowing session when cutting resumes within this window.
 SESSION_MERGE_GAP_SECONDS: Final = 300
+# Navimow may intentionally finish a practical cycle below 100% when small
+# obstructed/inaccessible remnants remain. A vendor end timestamp at or above
+# this threshold is treated as a completed cycle.
+VENDOR_COMPLETION_PROGRESS_MIN: Final = 95
 # A direct HA mowing command is the strongest navigation-intent source until
 # the mower confirms the same immediate target or the safety TTL expires.
 COMMAND_TARGET_TTL_SECONDS: Final = 1800
