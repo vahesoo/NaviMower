@@ -19,7 +19,7 @@ jobs:
           python-version: "3.13"
       - name: Compile Python
         run: python -m compileall -q custom_components/navimower
-      - name: Run history merge tests
+      - name: Run history and cycle tests
         run: python tests/test_history_merge.py
       - name: Run map cache migration tests
         run: python tests/test_map_cache_migration.py
@@ -27,6 +27,8 @@ jobs:
         run: python tests/test_mqtt_task_lifecycle.py
       - name: Run navigation intent tests
         run: python tests/test_navigation_intent.py
+      - name: Run progress mapping tests
+        run: python tests/test_progress_mapping.py
       - name: Validate JSON
         run: |
           python -m json.tool hacs.json >/dev/null
