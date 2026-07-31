@@ -343,7 +343,7 @@ async def cycle_reset_split_test() -> None:
     assert len(manager._sessions) == 2
     first = manager._cache[first_id]
     assert first["completed"] is True
-    assert first["completion_reason"] == "cycle_reset"
+    assert first["completion_reason"] == "vendor_cycle_reset"
     assert first["final_progress"] == {"24": 98}
     assert not history._sessions_can_merge(first, manager._cache[second_id])
     zone_history = manager.zone_history()["24"]
@@ -432,3 +432,97 @@ async def dock_completion_history_test() -> None:
 
 asyncio.run(dock_completion_history_test())
 print("dock completion history tests passed")
+
+
+async def explicit_partial_reset_test() -> None:
+    """A successful reset command splits even a 50% pass without completing it."""
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-explicit-reset", "TEST")
+    manager.process_pose(
+        position={"x": 2.0, "y": 2.0},
+        pose_time=2_500_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    first_id = manager._active_id
+    assert first_id
+    fifty = {
+        "coverage": {"zones": [{"id": 24, "name": "Yard", "pct": 50}]},
+        "zone_details": [{"id": 24, "name": "Yard", "progress": 50}],
+    }
+    assert manager.prepare_cycle(fifty, pose_time=2_500_000_010) is False
+    assert manager.start_new_cycle(
+        pose_time=2_500_000_020,
+        zone_ids=[24],
+        reason="navimower.mow_reset",
+    ) is True
+    assert manager._active_id is None
+    first = manager._cache[first_id]
+    assert first["completed"] is False
+    assert first["completion_reason"] == "navimower.mow_reset"
+    assert first["final_progress"] == {"24": 50}
+    assert "last_completed_at" not in manager.zone_history().get("24", {})
+
+    manager.process_pose(
+        position={"x": 2.1, "y": 2.1},
+        pose_time=2_500_000_021,
+        heading=0.1,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    second_id = manager._active_id
+    assert second_id and second_id != first_id
+    assert not history._sessions_can_merge(first, manager._cache[second_id])
+    diag = manager.cycle_diagnostics()
+    assert diag["last_event"]["reason"] == "navimower.mow_reset"
+    assert diag["last_event"]["completed"] is False
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+
+asyncio.run(explicit_partial_reset_test())
+
+
+async def vendor_partial_reset_test() -> None:
+    """An app-side 50% -> 3% reset starts a new cycle but not last-completed."""
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-app-reset", "TEST")
+    manager.process_pose(
+        position={"x": 3.0, "y": 3.0},
+        pose_time=2_600_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[13],
+    )
+    high = {
+        "coverage": {"zones": [{"id": 13, "name": "Street", "pct": 50}]},
+        "zone_details": [{"id": 13, "name": "Street", "progress": 50}],
+    }
+    low = {
+        "coverage": {"zones": [{"id": 13, "name": "Street", "pct": 3}]},
+        "zone_details": [{"id": 13, "name": "Street", "progress": 3}],
+    }
+    assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False
+    assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True
+    first = manager._sessions[0]
+    assert first["completed"] is False
+    assert first["completion_reason"] == "vendor_cycle_reset_partial"
+    assert "last_completed_at" not in manager.zone_history().get("13", {})
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+
+asyncio.run(vendor_partial_reset_test())
+print("explicit and vendor partial reset tests passed")
