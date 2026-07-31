@@ -289,3 +289,146 @@ async def persisted_repair_test() -> None:
 
 asyncio.run(persisted_repair_test())
 print("history merge tests passed")
+
+
+async def cycle_reset_split_test() -> None:
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-cycle", "TEST")
+
+    manager.process_pose(
+        position={"x": 1.0, "y": 1.0},
+        pose_time=2_200_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    first_id = manager._active_id
+    assert first_id
+
+    high = {
+        "coverage": {
+            "zones": [{"id": 24, "name": "Yard", "pct": 98, "start_time": 2_199_999_000}],
+        },
+        "zone_details": [{"id": 24, "name": "Yard", "progress": 98, "percentage": 98}],
+    }
+    assert manager.prepare_cycle(high, pose_time=2_200_000_010) is False
+
+    reset = {
+        "coverage": {
+            "zones": [{"id": 24, "name": "Yard", "pct": 4, "start_time": 2_200_000_020}],
+        },
+        "zone_details": [{"id": 24, "name": "Yard", "progress": 4, "percentage": 4}],
+    }
+    # The vendor can publish the reset during the brief non-cutting handover
+    # between two scheduled passes. The old route must still be finalized.
+    assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
+    assert manager._active_id is None
+
+    manager.process_pose(
+        position={"x": 1.2, "y": 1.2},
+        pose_time=2_200_000_021,
+        heading=0.1,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    second_id = manager._active_id
+    assert second_id and second_id != first_id
+    assert len(manager._sessions) == 2
+    first = manager._cache[first_id]
+    assert first["completed"] is True
+    assert first["completion_reason"] == "cycle_reset"
+    assert first["final_progress"] == {"24": 98}
+    assert not history._sessions_can_merge(first, manager._cache[second_id])
+    zone_history = manager.zone_history()["24"]
+    assert zone_history["last_completed_progress"] == 98
+    assert zone_history["last_completed_at"]
+
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+
+asyncio.run(cycle_reset_split_test())
+
+
+def practical_completion_threshold_test() -> None:
+    Store.values.clear()
+    manager = history.NavimowerHistory(FakeHass(), "entry-threshold", "TEST")
+    manager.process_pose(
+        position={"x": 0.0, "y": 0.0},
+        pose_time=2_300_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[13],
+    )
+    manager.update_zone_history(
+        {"zones": [{"id": 13, "pct": 97}]},
+        [{"id": 13, "name": "Street", "percentage": 97}],
+    )
+    active = manager.active_session
+    assert active is not None
+    assert active["completed"] is True
+    assert active["completion_reason"] == "vendor_progress"
+
+
+practical_completion_threshold_test()
+print("cycle tracking tests passed")
+
+
+async def dock_completion_history_test() -> None:
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-dock-complete", "TEST")
+    manager.process_pose(
+        position={"x": 0.0, "y": 0.0},
+        pose_time=2_400_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    manager.update_zone_history(
+        {"zones": [{"id": 24, "pct": 97}]},
+        [{"id": 24, "name": "Yard", "progress": 97, "percentage": 23}],
+    )
+    manager.prepare_cycle(
+        {
+            "coverage": {"zones": [{"id": 24, "pct": 23}]},
+            "zone_details": [{"id": 24, "name": "Yard", "progress": 97}],
+        },
+        pose_time=2_400_000_010,
+    )
+    manager.process_pose(
+        position={"x": 0.1, "y": 0.1},
+        pose_time=2_400_000_020,
+        heading=0.0,
+        activity="docked",
+        cutting=False,
+        docked=True,
+        returning=False,
+        zone_ids=[24],
+        completed=True,
+    )
+    zone = manager.zone_history()["24"]
+    assert zone["last_completed_at"]
+    assert zone["last_completed_progress"] == 97
+    completed = manager.session_summaries(include_points=True)[-1]
+    assert completed["completion_reason"] == "vendor_progress"
+    assert completed["final_progress"] == {"24": 97}
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+
+asyncio.run(dock_completion_history_test())
+print("dock completion history tests passed")
