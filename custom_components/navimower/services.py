@@ -234,6 +234,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 partition_ids,
                 partition_setup,
             )
+            if call.data["reset"]:
+                coordinator.start_new_mowing_cycle(
+                    zones, source="navimower.mow_reset"
+                )
         except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
             coordinator.clear_pending_activity()
             if ordered:

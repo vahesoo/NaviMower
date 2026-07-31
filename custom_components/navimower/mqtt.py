@@ -61,6 +61,7 @@ class NavimowerMqttBridge:
         self.device: Any = None
         self._device_id = ""
         self._location_cache: dict[str, dict[str, Any]] = {}
+        self._hook_state: dict[int, dict[str, Any]] = {}
 
         self._refresh_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
@@ -256,6 +257,8 @@ class NavimowerMqttBridge:
         self._quiescing = True
         self._unloading = True
         self._generation += 1
+        if self.sdk is not None:
+            self._detach_hooks(self.sdk)
         retry, watchdog, recovery = (
             self._retry_task,
             self._watchdog_task,
@@ -300,9 +303,10 @@ class NavimowerMqttBridge:
 
     async def _async_disconnect_sdk(self, sdk: Any) -> None:
         """Detach callbacks and disconnect a possibly wedged SDK with a timeout."""
-        # Hook closures carry a generation id. Incrementing the generation before
-        # this method makes every late callback a no-op without mutating SDK
-        # internals while its network thread is winding down.
+        # Restore the SDK callbacks before stopping its paho thread. Otherwise a
+        # late thread callback can instantiate our async wrapper after Home
+        # Assistant's loop is already closing, producing "was never awaited".
+        self._detach_hooks(sdk)
         try:
             await asyncio.wait_for(
                 self.hass.async_add_executor_job(sdk.disconnect),
@@ -373,7 +377,13 @@ class NavimowerMqttBridge:
     # ---------------------------------------------------------- MQTT hooks
     def _attach_hooks(self, sdk: Any, device_id: str, generation: int) -> None:
         mqtt = sdk._mqtt
-        original_on_message = mqtt.on_message
+        originals = {
+            "on_connected": getattr(mqtt, "on_connected", None),
+            "on_ready": getattr(mqtt, "on_ready", None),
+            "on_disconnected": getattr(mqtt, "on_disconnected", None),
+            "on_message": getattr(mqtt, "on_message", None),
+        }
+        original_on_message = originals["on_message"]
 
         def current() -> bool:
             return (
@@ -449,8 +459,35 @@ class NavimowerMqttBridge:
         mqtt.on_ready = _on_ready
         mqtt.on_disconnected = _on_disconnected
         mqtt.on_message = _on_message
+        self._hook_state[id(sdk)] = {
+            "mqtt": mqtt,
+            "originals": originals,
+            "hooks": {
+                "on_connected": _on_connected,
+                "on_ready": _on_ready,
+                "on_disconnected": _on_disconnected,
+                "on_message": _on_message,
+            },
+        }
         if sdk.is_connected:
             self.hass.async_create_task(_on_connected())
+
+    def _detach_hooks(self, sdk: Any) -> None:
+        """Restore callbacks installed by this bridge without touching newer hooks."""
+        state = self._hook_state.pop(id(sdk), None)
+        if not isinstance(state, dict):
+            return
+        mqtt = state.get("mqtt")
+        originals = state.get("originals") or {}
+        hooks = state.get("hooks") or {}
+        if mqtt is None:
+            return
+        for name, hook in hooks.items():
+            try:
+                if getattr(mqtt, name, None) is hook:
+                    setattr(mqtt, name, originals.get(name))
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Could not restore MQTT hook %s", name, exc_info=True)
 
     async def _async_subscribe_location(
         self, sdk: Any, device_id: str, generation: int

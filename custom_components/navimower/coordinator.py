@@ -49,18 +49,23 @@ from .const import (
     CONF_VEHICLE_TYPE,
     COMMAND_ACTIVITY_TTL_SECONDS,
     COMMAND_TARGET_TTL_SECONDS,
+    CUTTING_HEIGHT_MAX_MM,
+    CUTTING_HEIGHT_MIN_MM,
     DEFAULT_LANGUAGE,
     DEFAULT_SCAN_INTERVAL,
     DOCKED_STATES,
     DOMAIN,
     FAST_SCAN_INTERVAL,
+    GATE_ARRIVAL_GUARD_SECONDS,
     MOW_SCAN_INTERVAL,
     MQTT_CUTTING_ACTIONS,
     MQTT_DOCKED_STATES,
+    MQTT_STATE_IDLE,
     MQTT_STATE_MAPPING,
     MQTT_STATE_MOWING,
     MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
+    MQTT_STATE_STALE_SECONDS,
     MQTT_HISTORY_SAVE_DELAY_SECONDS,
     OPT_CHANNELS,
     OPT_GATES,
@@ -145,6 +150,51 @@ def _progress_percent(value: Any) -> int | None:
     if parsed < 0 or parsed > 100:
         return None
     return int(round(parsed))
+
+
+def _normalize_cutting_height_mm(value: Any) -> int | None:
+    """Return a plausible remote cutting height, not encoded firmware data."""
+    parsed = _as_int(value)
+    if parsed is None:
+        return None
+    if CUTTING_HEIGHT_MIN_MM <= parsed <= CUTTING_HEIGHT_MAX_MM:
+        return parsed
+    return None
+
+
+def _apply_gate_arrival_guard(
+    *,
+    target_ids: list[int],
+    target_source: str,
+    physical_zone_id: int | None,
+    guards: dict[str, dict[str, Any]],
+    now_monotonic: float,
+    command_fresh: bool,
+    is_returning: bool,
+) -> tuple[list[int], str, dict[str, Any] | None]:
+    """Suppress a stale reverse target immediately after a gate arrival."""
+    if command_fresh or is_returning or physical_zone_id is None or len(target_ids) != 1:
+        return target_ids, target_source, None
+    if target_source not in {
+        "mqtt_work_target", "mqtt_partition_ids", "private_current_zones",
+        "private_work_target", "last_known",
+    }:
+        return target_ids, target_source, None
+    target_id = target_ids[0]
+    for slug, guard in guards.items():
+        arrived_at = _as_float(guard.get("arrived_at"))
+        from_id = _as_int(guard.get("from_zone_id"))
+        to_id = _as_int(guard.get("to_zone_id"))
+        if arrived_at is None or from_id is None or to_id is None:
+            continue
+        age = now_monotonic - arrived_at
+        if 0 <= age <= GATE_ARRIVAL_GUARD_SECONDS:
+            if physical_zone_id == to_id and target_id == from_id:
+                held = dict(guard)
+                held["slug"] = slug
+                held["age_seconds"] = round(age, 1)
+                return [to_id], "gate_arrival_guard", held
+    return target_ids, target_source, None
 
 
 def _utc_iso_from_seconds(value: Any) -> str | None:
@@ -966,6 +1016,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_location: dict[str, Any] | None = None
         self._mqtt_last_update: float | None = None
         self._mqtt_last_message_update: float | None = None
+        self._mqtt_state_last_update: float | None = None
+        self._mqtt_action_last_update: float | None = None
         self._mqtt_connected = False
         self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
         self._oauth_connected = False
@@ -980,6 +1032,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             entry.options.get(OPT_GATES)
         )
         self._gate_latches: dict[str, dict[str, Any]] = {}
+        self._gate_arrival_guards: dict[str, dict[str, Any]] = {}
+        self._last_docked_source: str | None = None
         self._last_target_zone_ids: list[int] = []
         self._command_target_zone_ids: list[int] = []
         self._command_target_set_at: float | None = None
@@ -1043,7 +1097,27 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             for zone in map_geometry.get("zones") or []
             if isinstance(zone, dict)
         ]
-        map_payload = self._map_snapshot(map_geometry) if map_geometry else None
+        cached_raw_heights = [
+            _as_int((zone.get("boundary") or {}).get("height_set"))
+            for zone in map_geometry.get("zones") or []
+            if isinstance(zone, dict)
+        ]
+        cached_height_supported = bool(
+            any(_normalize_cutting_height_mm(value) is not None for value in cached_raw_heights)
+            and not any(
+                value not in (None, 0, 256)
+                and _normalize_cutting_height_mm(value) is None
+                for value in cached_raw_heights
+            )
+        )
+        map_payload = (
+            self._map_snapshot(
+                map_geometry,
+                cutting_height_supported=cached_height_supported,
+            )
+            if map_geometry
+            else None
+        )
         snapshot: dict[str, Any] = {
             "vehicle_sn": self.sn,
             "vehicle_type": self.vehicle_type,
@@ -1059,12 +1133,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "current_zone": None,
             "current_zone_ids": [],
             "coverage": None,
-            "settings": {},
+            "settings": {
+                "cut_height": None,
+                "cut_height_raw": None,
+                "cutting_height_supported": cached_height_supported,
+            },
+            "cutting_height_supported": cached_height_supported,
             "maintenance": {},
             "position": None,
             "map": map_payload,
             "zone_details": self._merge_zone_history(
-                self._build_zone_details(None, None)
+                self._build_zone_details(None, None, cached_height_supported)
             ),
             "trail": self.history.active_points_xy(),
             "sessions": self.history.session_summaries(include_points=False),
@@ -1235,6 +1314,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known) if known else None
 
     def _active_cutting_height(self, snapshot: dict[str, Any]) -> int | None:
+        if snapshot.get("cutting_height_supported") is False:
+            return None
         target_ids = (
             snapshot.get("target_zone_ids")
             or snapshot.get("current_zone_ids")
@@ -1247,10 +1328,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         }
         if len(target_ids) == 1:
             detail = details.get(_as_int(target_ids[0])) or {}
-            height = _as_int(detail.get("cutting_height_mm"))
+            height = _normalize_cutting_height_mm(detail.get("cutting_height_mm"))
             if height is not None:
                 return height
-        return _as_int((snapshot.get("settings") or {}).get("cut_height"))
+        return _normalize_cutting_height_mm(
+            (snapshot.get("settings") or {}).get("cut_height")
+        )
 
     def _update_history(
         self,
@@ -1260,7 +1343,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         mqtt_action: int | None,
     ) -> None:
         cutting = self._is_cutting(snapshot.get("state_code"), mqtt_state, mqtt_action)
-        docked = self._is_docked_state(snapshot.get("state_code"), mqtt_state)
+        docked = bool(snapshot.get("docked"))
         returning = self._is_returning_state(
             snapshot.get("state_code"), mqtt_state
         )
@@ -1373,7 +1456,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         data = self.data or {}
         activity = data.get("activity")
         state_code = str(data.get("state_code") or "")
-        mqtt_state = _as_int((self._mqtt_location or {}).get("vehicle_state"))
+        mqtt_state = self._fresh_mqtt_vehicle_state()
         mqtt_active = mqtt_state in {
             MQTT_STATE_MOWING,
             MQTT_STATE_RETURNING,
@@ -1649,8 +1732,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return zones
 
     @staticmethod
-    def _map_snapshot(map_geometry: dict[str, Any]) -> dict[str, Any]:
+    def _map_snapshot(
+        map_geometry: dict[str, Any],
+        *,
+        cutting_height_supported: bool | None = None,
+    ) -> dict[str, Any]:
         """Return the stable map object exposed to entities and HTTP API."""
+        zones = deepcopy_json(map_geometry.get("zones") or []) or []
+        if cutting_height_supported is False:
+            for zone in zones:
+                if not isinstance(zone, dict):
+                    continue
+                boundary = zone.get("boundary")
+                if isinstance(boundary, dict):
+                    boundary.pop("height_set", None)
         return {
             "id": map_geometry.get("id"),
             "map_id": map_geometry.get("map_id"),
@@ -1659,7 +1754,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "revision": map_geometry.get("revision"),
             "name": map_geometry.get("name"),
             "area": map_geometry.get("area"),
-            "zones": map_geometry.get("zones") or [],
+            "zones": zones,
             "off_limit_areas": map_geometry.get("off_limit_areas") or [],
             "vf_off_areas": map_geometry.get("vf_off_areas") or [],
             "channels": map_geometry.get("channels") or [],
@@ -1676,7 +1771,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         }
 
     def _build_zone_details(
-        self, coverage: dict[str, Any] | None, global_height: int | None
+        self,
+        coverage: dict[str, Any] | None,
+        global_height: int | None,
+        cutting_height_supported: bool,
     ) -> list[dict[str, Any]]:
         """Return effective height, edge settings and current zone history."""
         coverage_by_id = {
@@ -1694,7 +1792,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             boundary = zone.get("boundary") or {}
             raw_height = _as_int(boundary.get("height_set"))
             inherits = raw_height in (None, 0, 256)
-            effective_height = global_height if inherits else raw_height
+            configured_height = None if inherits else _normalize_cutting_height_mm(raw_height)
+            effective_height = None
+            if cutting_height_supported:
+                effective_height = global_height if inherits else configured_height
             row = coverage_by_id.get(zone_id) or {}
             start_time = _as_int(row.get("start_time"))
             end_time = _as_int(row.get("end_time"))
@@ -1718,13 +1819,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     ),
                     "last_completed_at": (
                         dt_util.utc_from_timestamp(end_time).isoformat()
-                        if end_time and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN
+                        if end_time
+                        and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN
                         else None
                     ),
+                    "cutting_height_supported": cutting_height_supported,
                     "configured_height_raw": raw_height,
-                    "configured_height_mm": None if inherits else raw_height,
+                    "configured_height_mm": configured_height,
                     "cutting_height_mm": effective_height,
-                    "inherits_global_height": inherits,
+                    "inherits_global_height": (
+                        inherits if cutting_height_supported else None
+                    ),
                     "mow_edge": _as_bool(boundary.get("mow_edge")),
                     "obstacle_mow_edge": _as_bool(
                         boundary.get("obstacle_mow_edge")
@@ -1826,16 +1931,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         coverage = _parse_coverage(raw.get("path_info_time"), zone_names)
         mqtt_position = self._fresh_mqtt_position()
         position = mqtt_position or cloud_position
-        mqtt_vehicle_state = (
-            _as_int((self._mqtt_location or {}).get("vehicle_state"))
-            if mqtt_position is not None
-            else None
-        )
-        mqtt_action = (
-            _as_int((self._mqtt_location or {}).get("action"))
-            if mqtt_position is not None
-            else None
-        )
+        mqtt_vehicle_state = self._fresh_mqtt_vehicle_state()
+        mqtt_action = self._fresh_mqtt_action()
         trail = self.history.active_points_xy()
 
         previous_activity = (self.data or {}).get("activity")
@@ -1871,6 +1968,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if state_label is None:
             normalized = str(activity or "transitioning").replace("_", " ").title()
             state_label = f"{normalized} ({state_code})" if state_code else normalized
+
+        docked, docked_source = self._resolved_docked_state(
+            state_code, mqtt_vehicle_state, activity, pending_activity
+        )
+        self._last_docked_source = docked_source
 
         # --- settings (MowerSettingBean; snake_case in set-list, camelCase in bean)
         night_mow = _as_bool(_find(set_list, "night_mow_switch", "nightMowSwitch"))
@@ -1915,6 +2017,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 except (TypeError, ValueError):
                     rain_delay_wire = None
 
+        raw_cut_height = _as_int(_find(set_list, "height"))
+        normalized_cut_height = _normalize_cutting_height_mm(raw_cut_height)
+        raw_zone_heights = [
+            _as_int((zone.get("boundary") or {}).get("height_set"))
+            for zone in map_geom.get("zones") or []
+            if isinstance(zone, dict)
+        ]
+        zone_height_values = [
+            _normalize_cutting_height_mm(value) for value in raw_zone_heights
+        ]
+        encoded_zone_height = any(
+            value not in (None, 0, 256)
+            and _normalize_cutting_height_mm(value) is None
+            for value in raw_zone_heights
+        )
+        cutting_height_supported = bool(
+            not encoded_zone_height
+            and (
+                normalized_cut_height is not None
+                or any(value is not None for value in zone_height_values)
+            )
+        )
+
         settings = {
             "night_mow": night_mow,
             "rain_sensor": rain_sensor,
@@ -1932,7 +2057,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "obstacle_avoid": obstacle_avoid,
             "traction": traction,
             "night_light_level": night_light_level,
-            "cut_height": _as_int(_find(set_list, "height")),
+            "cut_height": normalized_cut_height,
+            "cut_height_raw": raw_cut_height,
+            "cutting_height_supported": cutting_height_supported,
             # set-list reports these percentages as DECIMAL (10 / 100). Only the
             # app's internal bean and the device (s:mower) write use hex -- the
             # number entities write hex to the robot, decimal to the cloud.
@@ -1952,7 +2079,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         mqtt_route_progress = _progress_percent(
             (self._mqtt_location or {}).get("mow_progress")
         )
-        zone_details = self._build_zone_details(coverage, settings["cut_height"])
+        zone_details = self._build_zone_details(
+            coverage, settings["cut_height"], cutting_height_supported
+        )
         active_progress_zone = _as_int((packed_work or {}).get("target_zone"))
         if active_progress_zone is None and len(current_ids) == 1:
             active_progress_zone = current_ids[0]
@@ -1983,14 +2112,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "activity": activity,
             "mqtt_vehicle_state": mqtt_vehicle_state,
             "mqtt_action": mqtt_action,
+            "mqtt_state_age": self.mqtt_state_age(),
+            "mqtt_action_age": self.mqtt_action_age(),
             "trail_active": self._is_cutting(state_code, mqtt_vehicle_state, mqtt_action),
             "online": online,
-            "docked": bool(
-                self._is_docked_state(state_code, mqtt_vehicle_state)
-                and pending_activity not in {
-                    ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING
-                }
-            ),
+            "docked": docked,
+            "docked_source": docked_source,
             "error": has_error,
             "error_text": error_text,
             # progress / areas
@@ -2041,7 +2168,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "cutting_height_mm": settings.get("cut_height"),
             "trail": trail,
             # decoded map geometry (None until the map is fetched/decoded)
-            "map": self._map_snapshot(map_geom) if map_geom else None,
+            "map": self._map_snapshot(
+                map_geom, cutting_height_supported=cutting_height_supported
+            ) if map_geom else None,
+            "cutting_height_supported": cutting_height_supported,
             # groups
             "settings": settings,
             "maintenance": maint,
@@ -2073,6 +2203,47 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return None
         return {"x": x, "y": y, "heading": _as_float(self._mqtt_location.get("theta"))}
 
+    def mqtt_state_age(self) -> float | None:
+        if self._mqtt_state_last_update is None:
+            return None
+        return max(0.0, time.monotonic() - self._mqtt_state_last_update)
+
+    def mqtt_action_age(self) -> float | None:
+        if self._mqtt_action_last_update is None:
+            return None
+        return max(0.0, time.monotonic() - self._mqtt_action_last_update)
+
+    def _fresh_mqtt_vehicle_state(self) -> int | None:
+        age = self.mqtt_state_age()
+        if age is None or age > MQTT_STATE_STALE_SECONDS:
+            return None
+        return _as_int((self._mqtt_location or {}).get("vehicle_state"))
+
+    def _fresh_mqtt_action(self) -> int | None:
+        age = self.mqtt_action_age()
+        if age is None or age > MQTT_STATE_STALE_SECONDS:
+            return None
+        return _as_int((self._mqtt_location or {}).get("action"))
+
+    def _resolved_docked_state(
+        self,
+        state_code: str | None,
+        mqtt_vehicle_state: int | None,
+        activity: str | None,
+        pending_activity: str | None,
+    ) -> tuple[bool, str]:
+        if pending_activity in {ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING}:
+            return False, "pending_activity"
+        if mqtt_vehicle_state in {MQTT_STATE_MOWING, MQTT_STATE_RETURNING, MQTT_STATE_MAPPING}:
+            return False, "mqtt_active_state"
+        if activity in {ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING}:
+            return False, "normalized_activity"
+        if mqtt_vehicle_state in MQTT_DOCKED_STATES:
+            return True, "mqtt_docked_state"
+        if str(state_code or "") in DOCKED_STATES:
+            return True, "private_docked_state"
+        return False, "not_docked"
+
     @staticmethod
     def _is_cutting(
         state_code: str | None,
@@ -2097,9 +2268,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         state_code: str | None,
         mqtt_vehicle_state: int | None,
     ) -> bool:
-        """Return docked state, preferring a fresh MQTT vehicle state."""
-        if mqtt_vehicle_state is not None:
-            return mqtt_vehicle_state in MQTT_DOCKED_STATES
+        """Return docked state, treating MQTT idle as neutral context."""
+        if mqtt_vehicle_state in MQTT_DOCKED_STATES:
+            return True
+        if mqtt_vehicle_state in {MQTT_STATE_MOWING, MQTT_STATE_RETURNING, MQTT_STATE_MAPPING}:
+            return False
+        if mqtt_vehicle_state == MQTT_STATE_IDLE:
+            return str(state_code or "") in DOCKED_STATES
         return str(state_code or "") in DOCKED_STATES
 
     @staticmethod
@@ -2238,13 +2413,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._last_physical_zone_name = str(physical_name)
 
         state_code = str(snapshot.get("state_code") or "")
-        mqtt_state = (
-            _as_int((self._mqtt_location or {}).get("vehicle_state"))
-            if pose_valid
-            else None
-        )
+        mqtt_state = self._fresh_mqtt_vehicle_state()
         pending_activity = self._pending_activity_value()
-        raw_docked = self._is_docked_state(state_code, mqtt_state)
+        raw_docked = bool(snapshot.get("docked"))
         raw_returning = self._is_returning_state(state_code, mqtt_state)
         command_activity_active = pending_activity in {
             ACTIVITY_MOWING,
@@ -2304,6 +2475,23 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             last_target_ids=self._last_target_zone_ids,
         )
 
+        self._gate_arrival_guards = {
+            slug: guard
+            for slug, guard in self._gate_arrival_guards.items()
+            if _as_float(guard.get("arrived_at")) is not None
+            and 0 <= now_monotonic - float(guard["arrived_at"])
+            <= GATE_ARRIVAL_GUARD_SECONDS
+        }
+        target_ids, target_source, held_arrival_guard = _apply_gate_arrival_guard(
+            target_ids=target_ids,
+            target_source=target_source,
+            physical_zone_id=physical_id,
+            guards=self._gate_arrival_guards,
+            now_monotonic=now_monotonic,
+            command_fresh=command_fresh,
+            is_returning=is_returning,
+        )
+
         if command_confirmed:
             # Use the confirmed command for this snapshot, then let subsequent
             # packets follow the mower's own immediate target.
@@ -2313,6 +2501,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.clear_command_target()
             self._last_target_zone_ids = []
             self._gate_latches.clear()
+            self._gate_arrival_guards.clear()
             for slug in list(self._gate_release_tasks):
                 self._cancel_gate_release(slug)
         elif target_ids:
@@ -2408,6 +2597,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     and physical_id == to_id
                 )
                 if arrived:
+                    if gate.slug not in self._gate_arrival_guards:
+                        self._gate_arrival_guards[gate.slug] = {
+                            "from_zone_id": from_id,
+                            "to_zone_id": to_id,
+                            "arrived_at": now_monotonic,
+                            "target_source": (latch or {}).get("target_source"),
+                        }
                     release_at = _as_float(latch.get("release_at"))
                     if release_at is None:
                         release_at = now_monotonic + gate.close_delay
@@ -2487,6 +2683,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "current_channel_name": tunnel_state,
                 "pose_age": self.pose_age(),
                 "pose_valid": pose_valid,
+                "arrival_guard_active": bool(
+                    (
+                        held_arrival_guard
+                        and held_arrival_guard.get("slug") == gate.slug
+                    )
+                    or gate.slug in self._gate_arrival_guards
+                ),
+                "arrival_guard_age_seconds": (
+                    held_arrival_guard.get("age_seconds")
+                    if (
+                        held_arrival_guard
+                        and held_arrival_guard.get("slug") == gate.slug
+                    )
+                    else (
+                        round(
+                            now_monotonic
+                            - float(self._gate_arrival_guards[gate.slug]["arrived_at"]),
+                            1,
+                        )
+                        if gate.slug in self._gate_arrival_guards
+                        else None
+                    )
+                ),
             }
 
         if transition is False and any(
@@ -2511,6 +2730,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "dock_zone_id": dock_zone_id,
             "zone_transition": transition,
             "gate_states": gate_states,
+            "gate_arrival_guards": {
+                slug: {
+                    **dict(guard),
+                    "age_seconds": round(
+                        now_monotonic - float(guard.get("arrived_at") or now_monotonic),
+                        1,
+                    ),
+                }
+                for slug, guard in self._gate_arrival_guards.items()
+            },
         }
 
     def gate_state(self, gate: NavimowerGate) -> bool | None:
@@ -2546,7 +2775,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         data = self.data or {}
         activity = data.get("activity")
         state_code = str(data.get("state_code") or "")
-        mqtt_state = _as_int((self._mqtt_location or {}).get("vehicle_state"))
+        mqtt_state = self._fresh_mqtt_vehicle_state()
         mqtt_active = mqtt_state in {
             MQTT_STATE_MOWING,
             MQTT_STATE_RETURNING,
@@ -2616,6 +2845,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "mqtt_error": self._last_mqtt_error,
             "mqtt_pose_age": self.pose_age(),
             "mqtt_pose_valid": self._fresh_mqtt_position() is not None,
+            "mqtt_state_age": self.mqtt_state_age(),
+            "mqtt_action_age": self.mqtt_action_age(),
             "mqtt_stream_state": mqtt_health.get("stream_state"),
             "mqtt_stream_expected": mqtt_health.get("stream_expected"),
             "mqtt_recovery_count": mqtt_health.get("recovery_count", 0),
@@ -2658,25 +2889,36 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
     def _apply_mqtt_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         position = self._fresh_mqtt_position()
-        mqtt_state = (
-            _as_int((self._mqtt_location or {}).get("vehicle_state"))
-            if position is not None
-            else None
-        )
-        mqtt_action = (
-            _as_int((self._mqtt_location or {}).get("action"))
-            if position is not None
-            else None
-        )
+        mqtt_state = self._fresh_mqtt_vehicle_state()
+        mqtt_action = self._fresh_mqtt_action()
         if position is not None:
             snapshot["position"] = position
             snapshot["pose_source"] = "mqtt"
             snapshot["pose_time"] = (self._mqtt_location or {}).get("pose_time")
         snapshot["mqtt_vehicle_state"] = mqtt_state
         snapshot["mqtt_action"] = mqtt_action
-        snapshot["trail_active"] = self._is_cutting(
-            snapshot.get("state_code"), mqtt_state, mqtt_action
+        snapshot["mqtt_state_age"] = self.mqtt_state_age()
+        snapshot["mqtt_action_age"] = self.mqtt_action_age()
+        cutting = self._is_cutting(snapshot.get("state_code"), mqtt_state, mqtt_action)
+        snapshot["trail_active"] = cutting
+        activity = snapshot.get("activity")
+        if cutting:
+            activity = ACTIVITY_MOWING
+        elif mqtt_state == MQTT_STATE_RETURNING:
+            activity = ACTIVITY_RETURNING
+        elif mqtt_state in MQTT_DOCKED_STATES:
+            activity = ACTIVITY_DOCKED
+        pending_activity = self._pending_activity_value()
+        if pending_activity is not None:
+            activity = pending_activity
+        snapshot["activity"] = activity
+        docked, docked_source = self._resolved_docked_state(
+            str(snapshot.get("state_code") or ""), mqtt_state,
+            str(activity or ""), pending_activity,
         )
+        snapshot["docked"] = docked
+        snapshot["docked_source"] = docked_source
+        self._last_docked_source = docked_source
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
         # MQTT ingestion owns every live route point. A private refresh may
@@ -2712,35 +2954,46 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.async_set_updated_data(snapshot)
 
     def ingest_mqtt_location(self, location: dict[str, Any]) -> None:
-        """Merge one official MQTT pose and persist the full session path."""
+        """Merge one official MQTT update and persist the live session path."""
         if not isinstance(location, dict):
             return
         previous_activity = (self.data or {}).get("activity")
         previous_pose_valid = self._fresh_mqtt_position() is not None
-        self._mqtt_last_message_update = time.monotonic()
-        self._mqtt_location = dict(location)
+        now_monotonic = time.monotonic()
+        self._mqtt_last_message_update = now_monotonic
+
+        merged = dict(self._mqtt_location or {})
+        merged.update(location)
+        self._mqtt_location = merged
+
         pose_updated = bool(location.get("_pose_updated")) or (
             self._mqtt_last_update is None
             and _as_float(location.get("x")) is not None
             and _as_float(location.get("y")) is not None
         )
         if pose_updated:
-            # Progress/zone/state packets carry cached X/Y as context. They must
-            # not refresh pose age or make a stalled location stream look live.
-            self._mqtt_last_update = time.monotonic()
+            self._mqtt_last_update = now_monotonic
+        if location.get("vehicle_state") is not None:
+            self._mqtt_state_last_update = now_monotonic
+        if location.get("action") is not None:
+            self._mqtt_action_last_update = now_monotonic
         self._mqtt_connected = True
+
         position = self._fresh_mqtt_position()
-        mqtt_state = _as_int(location.get("vehicle_state"))
-        mqtt_action = _as_int(location.get("action"))
+        mqtt_state = self._fresh_mqtt_vehicle_state()
+        mqtt_action = self._fresh_mqtt_action()
         snapshot = dict(self.data or self._bootstrap_snapshot())
         state_code = str(snapshot.get("state_code") or "")
         if position is not None:
             snapshot["position"] = position
             snapshot["pose_source"] = "mqtt"
-            snapshot["pose_time"] = location.get("pose_time")
-        snapshot["mqtt_location"] = dict(location)
+            snapshot["pose_time"] = merged.get("pose_time")
+        snapshot["mqtt_location"] = dict(merged)
         snapshot["mqtt_vehicle_state"] = mqtt_state
         snapshot["mqtt_action"] = mqtt_action
+        snapshot["mqtt_state_age"] = self.mqtt_state_age()
+        snapshot["mqtt_action_age"] = self.mqtt_action_age()
+
         cutting = self._is_cutting(state_code, mqtt_state, mqtt_action)
         snapshot["trail_active"] = cutting
         candidate_activity = snapshot.get("activity")
@@ -2754,19 +3007,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if pending_activity is not None:
             if candidate_activity == pending_activity:
                 self.clear_pending_activity()
+                pending_activity = None
             else:
                 candidate_activity = pending_activity
         snapshot["activity"] = candidate_activity
-        snapshot["docked"] = bool(
-            self._is_docked_state(state_code, mqtt_state)
-            and pending_activity not in {
-                ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING
-            }
+        docked, docked_source = self._resolved_docked_state(
+            state_code, mqtt_state, str(candidate_activity or ""), pending_activity
         )
-        route_progress = _progress_percent(location.get("mow_progress"))
+        snapshot["docked"] = docked
+        snapshot["docked_source"] = docked_source
+        self._last_docked_source = docked_source
+
+        route_progress = _progress_percent(merged.get("mow_progress"))
         snapshot["mow_route_progress"] = (
-            route_progress
-            if route_progress is not None
+            route_progress if route_progress is not None
             else snapshot.get("mow_route_progress")
         )
         snapshot.update(self._connectivity_fields())
@@ -2781,18 +3035,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 or snapshot.get("current_zone_ids")
                 or []
             )
-            active_zone_id = (
-                _as_int(active_zone_ids[0]) if len(active_zone_ids) == 1 else None
-            )
+            active_zone_id = _as_int(active_zone_ids[0]) if len(active_zone_ids) == 1 else None
             self._apply_active_zone_progress(
                 zone_details,
                 zone_id=active_zone_id,
                 progress_candidates=[("mqtt_route", route_progress)],
             )
             snapshot["zone_details"] = zone_details
-        # Only a new pose packet contributes a route point. Progress, target-
-        # zone and delay packets still update the session state, but their
-        # cached X/Y must not create a false sample with an old pose timestamp.
+
         self._update_history(
             snapshot, position if pose_updated else None, mqtt_state, mqtt_action
         )
@@ -2808,6 +3058,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             )
         elif pose_updated and not previous_pose_valid:
             self.request_fast_refresh("MQTT pose stream became live")
+
+    def start_new_mowing_cycle(
+        self,
+        zone_ids: list[int] | None = None,
+        *,
+        source: str,
+    ) -> bool:
+        """Split history immediately after a successful reset/new-job command."""
+        changed = self.history.start_new_cycle(
+            pose_time=int(time.time() * 1000),
+            zone_ids=_dedupe_zone_ids(zone_ids or []),
+            reason=source,
+        )
+        if self.data:
+            snapshot = dict(self.data)
+            snapshot["cycle_reset_detected"] = changed
+            snapshot["cycle_reset_reason"] = source
+            snapshot["trail"] = self.history.active_points_xy()
+            snapshot["trail_session"] = self.history.active_session_no
+            snapshot["trail_started_at"] = self.history.active_started_at()
+            snapshot["sessions"] = self.history.session_summaries(include_points=False)
+            self.async_set_updated_data(snapshot)
+        return changed
 
     def channel_state(self, channel: NavimowerChannel) -> bool | None:
         """Return channel membership, using a safe OFF while confirmed docked."""
@@ -2825,7 +3098,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """Build the versioned payload consumed by Navimower Map Card."""
         data = self.data or self._bootstrap_snapshot()
         entry_id = self.entry.entry_id
-        map_data = data.get("map") or self._map_snapshot(self._map_geometry or {})
+        map_data = data.get("map") or self._map_snapshot(
+            self._map_geometry or {},
+            cutting_height_supported=data.get("cutting_height_supported"),
+        )
         active = self.history.active_session
         active_meta = None
         if active is not None:
@@ -2855,6 +3131,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "zone_details": data.get("zone_details") or [],
             "cut_height": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
+            "cutting_height_supported": bool(data.get("cutting_height_supported")),
             "doodles": (map_data or {}).get("doodles") or [],
             # Flat trail is retained for older cards; trail_segments is the
             # gap-aware representation used by map-card v0.1.10 and later.

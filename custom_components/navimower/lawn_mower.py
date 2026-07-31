@@ -116,6 +116,9 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
                 partition_ids,
                 mow_setup(reset=True, ordered=bool(sel)),
             )
+            self.coordinator.start_new_mowing_cycle(
+                region_ids, source="lawn_mower.start_mowing_reset"
+            )
         except Exception:
             self.coordinator.clear_pending_activity()
             if sel:

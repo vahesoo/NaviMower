@@ -234,7 +234,7 @@ def _sessions_can_merge(
     # A vendor progress reset is an intentional mowing-cycle boundary, not a
     # short interruption. Never repair or resume across it even when the gap is
     # only a few seconds.
-    if previous.get("completion_reason") == "cycle_reset":
+    if "reset" in str(previous.get("completion_reason") or ""):
         return False
     previous_end = _session_end_ms(previous)
     continuation_start = _as_int(continuation.get("started_at_ms"))
@@ -362,6 +362,7 @@ class NavimowerHistory:
         # A detected cycle restart must never be merged back into the previous
         # session by the normal five-minute interruption rule.
         self._force_new_session_once = False
+        self._last_cycle_event: dict[str, Any] | None = None
 
     # ---------------------------------------------------------------- load
     async def async_load(self) -> None:
@@ -395,6 +396,9 @@ class NavimowerHistory:
                     for key, value in zone_progress_state.items()
                     if isinstance(value, dict)
                 }
+            last_cycle_event = data.get("last_cycle_event")
+            if isinstance(last_cycle_event, dict):
+                self._last_cycle_event = dict(last_cycle_event)
 
         await self._async_prune(save=False)
         ids = [
@@ -599,6 +603,7 @@ class NavimowerHistory:
                 "sessions": deepcopy(self._sessions),
                 "zone_history": deepcopy(self._zone_history),
                 "zone_progress_state": deepcopy(self._zone_progress_state),
+                "last_cycle_event": deepcopy(self._last_cycle_event),
             }
 
     def _active_snapshot(self) -> dict[str, Any] | None:
@@ -962,25 +967,79 @@ class NavimowerHistory:
             )
         return rows
 
+    def start_new_cycle(
+        self,
+        *,
+        pose_time: Any,
+        zone_ids: list[int] | None = None,
+        reason: str = "ha_reset_command",
+    ) -> bool:
+        """Create an explicit cycle boundary after a successful reset command."""
+        boundary_ms = _timestamp_ms(pose_time)
+        requested = _unique_ints(zone_ids or [])
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            active_zones = _unique_ints((active or {}).get("zone_ids") or [])
+            relevant = active_zones or requested
+            final_progress: dict[str, int] = {}
+            known_progress: list[int] = []
+            for zone_id in relevant:
+                state = self._zone_progress_state.get(str(zone_id)) or {}
+                progress = _as_int(state.get("peak_progress"))
+                if progress is None:
+                    progress = _as_int(state.get("progress"))
+                if progress is not None:
+                    final_progress[str(zone_id)] = progress
+                    known_progress.append(progress)
+            completed = bool(known_progress) and all(
+                value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known_progress
+            )
+            if active is not None:
+                completed = bool(active.get("completed") is True or completed)
+                active["completed"] = completed
+                active["completion_reason"] = reason
+                active["final_progress"] = final_progress
+                self._update_active_metadata_locked(active)
+                self._finish_active_locked(boundary_ms)
+            if completed:
+                for zone_id in relevant:
+                    progress = final_progress.get(str(zone_id))
+                    record = dict(self._zone_history.get(str(zone_id)) or {})
+                    record.update({
+                        "id": zone_id,
+                        "name": record.get("name") or f"Zone {zone_id}",
+                        "last_completed_at": _iso(boundary_ms),
+                        "last_completed_progress": progress,
+                    })
+                    self._zone_history[str(zone_id)] = record
+            self._force_new_session_once = True
+            self._last_cycle_event = {
+                "reason": reason,
+                "at_ms": boundary_ms,
+                "at": _iso(boundary_ms),
+                "zone_ids": relevant,
+                "completed": completed,
+                "final_progress": final_progress,
+                "source": "explicit_command",
+            }
+        self._schedule_index_save()
+        _LOGGER.info(
+            "Started a new Navimower mowing cycle from %s for zone(s) %s",
+            reason, ", ".join(str(value) for value in relevant) or "all",
+        )
+        return True
+
     def prepare_cycle(
         self,
         snapshot: dict[str, Any],
         *,
         pose_time: Any,
     ) -> bool:
-        """Split the active route when Navimow starts a new mowing cycle.
-
-        Navimow may complete a practical cycle at 97-99% and immediately begin
-        another pass while the scheduled window is still open. The mower never
-        docks between those passes, so dock-based sessions alone cannot clear
-        the current map. A large same-zone progress reset, or a newer vendor
-        start timestamp paired with a lower progress value, is treated as a new
-        cycle. The completed route remains in retained history.
-        """
+        """Split the active route when vendor progress starts a new cycle."""
         rows = self._progress_rows(snapshot)
         if not rows:
             return False
-        reset_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        reset_rows: list[tuple[dict[str, Any], dict[str, Any], int]] = []
         with self._lock:
             active = self._cache.get(self._active_id or "")
             for row in rows:
@@ -989,79 +1048,116 @@ class NavimowerHistory:
                     continue
                 previous = dict(self._zone_progress_state.get(str(zone_id)) or {})
                 old_progress = _as_int(previous.get("progress"))
+                peak_progress = _as_int(previous.get("peak_progress"))
+                if peak_progress is None:
+                    peak_progress = old_progress
                 new_progress = _as_int(row.get("progress"))
                 old_start = _as_int(previous.get("start_time"))
                 new_start = _as_int(row.get("start_time"))
-                hard_reset = (
-                    old_progress is not None
-                    and new_progress is not None
-                    and old_progress >= 70
-                    and new_progress <= 20
-                    and old_progress - new_progress >= 40
+                drop = (
+                    peak_progress - new_progress
+                    if peak_progress is not None and new_progress is not None
+                    else None
                 )
-                timestamp_reset = (
-                    old_progress is not None
-                    and new_progress is not None
-                    and old_start is not None
-                    and new_start is not None
-                    and new_start > old_start
-                    and new_progress <= 25
+                hard_reset = bool(
+                    drop is not None and (
+                        (peak_progress >= 15 and new_progress <= 5 and drop >= 15)
+                        or (peak_progress >= 50 and new_progress <= 20 and drop >= 30)
+                    )
+                )
+                timestamp_reset = bool(
+                    old_progress is not None and new_progress is not None
+                    and old_start is not None and new_start is not None
+                    and new_start > old_start and new_progress <= 25
                     and old_progress - new_progress >= 10
                 )
-                # A large progress reset is itself the cycle boundary. It may
-                # arrive during the brief non-cutting handover between two
-                # scheduled passes, so waiting for ``cutting`` would overwrite
-                # the old high-water mark and leave the previous route visible.
                 if active is not None and (hard_reset or timestamp_reset):
-                    reset_rows.append((previous, row))
+                    reset_rows.append((previous, row, peak_progress or old_progress or 0))
 
             if reset_rows and active is not None:
                 final_progress: dict[str, int] = {}
                 completion_ms = _timestamp_ms(pose_time)
-                for previous, row in reset_rows:
+                completion_flags: list[bool] = []
+                for _previous, row, previous_peak in reset_rows:
                     zone_id = _as_int(row.get("id"))
-                    old_progress = _as_int(previous.get("progress"))
                     if zone_id is None:
                         continue
-                    if old_progress is not None:
-                        final_progress[str(zone_id)] = old_progress
+                    final_progress[str(zone_id)] = previous_peak
+                    completed_zone = previous_peak >= VENDOR_COMPLETION_PROGRESS_MIN
+                    completion_flags.append(completed_zone)
                     new_start = _as_int(row.get("start_time"))
                     if new_start is not None:
                         completion_ms = min(completion_ms, _timestamp_ms(new_start))
-                    record = dict(self._zone_history.get(str(zone_id)) or {})
-                    record.update(
-                        {
+                    if completed_zone:
+                        record = dict(self._zone_history.get(str(zone_id)) or {})
+                        record.update({
                             "id": zone_id,
                             "name": row.get("name") or record.get("name") or f"Zone {zone_id}",
                             "last_completed_at": _iso(completion_ms),
-                            "last_completed_progress": old_progress,
-                        }
-                    )
-                    self._zone_history[str(zone_id)] = record
-                active["completed"] = True
-                active["completion_reason"] = "cycle_reset"
+                            "last_completed_progress": previous_peak,
+                        })
+                        self._zone_history[str(zone_id)] = record
+                completed_cycle = bool(completion_flags) and all(completion_flags)
+                active["completed"] = completed_cycle
+                active["completion_reason"] = (
+                    "vendor_cycle_reset"
+                    if completed_cycle
+                    else "vendor_cycle_reset_partial"
+                )
                 active["final_progress"] = final_progress
                 self._update_active_metadata_locked(active)
                 self._force_new_session_once = True
                 self._finish_active_locked(pose_time)
+                self._last_cycle_event = {
+                    "reason": active["completion_reason"],
+                    "at_ms": completion_ms,
+                    "at": _iso(completion_ms),
+                    "zone_ids": [
+                        _as_int(row.get("id")) for _previous, row, _peak in reset_rows
+                        if _as_int(row.get("id")) is not None
+                    ],
+                    "completed": completed_cycle,
+                    "final_progress": final_progress,
+                    "source": "vendor_progress",
+                }
                 _LOGGER.info(
                     "Started a new Navimower mowing cycle after progress reset in zone(s) %s",
-                    ", ".join(str(row.get("id")) for _previous, row in reset_rows),
+                    ", ".join(str(row.get("id")) for _previous, row, _peak in reset_rows),
                 )
 
+            reset_zone_ids = {_as_int(row.get("id")) for _previous, row, _peak in reset_rows}
             for row in rows:
                 zone_id = _as_int(row.get("id"))
                 if zone_id is None:
                     continue
+                progress = _as_int(row.get("progress"))
+                previous = self._zone_progress_state.get(str(zone_id)) or {}
+                previous_peak = _as_int(previous.get("peak_progress"))
+                if previous_peak is None:
+                    previous_peak = _as_int(previous.get("progress"))
+                if zone_id in reset_zone_ids:
+                    peak = progress
+                else:
+                    known = [value for value in (previous_peak, progress) if value is not None]
+                    peak = max(known) if known else None
                 self._zone_progress_state[str(zone_id)] = {
-                    "progress": _as_int(row.get("progress")),
+                    "progress": progress,
+                    "peak_progress": peak,
                     "start_time": _as_int(row.get("start_time")),
                     "end_time": _as_int(row.get("end_time")),
                     "observed_at_ms": _timestamp_ms(pose_time),
                 }
-
         self._schedule_index_save()
         return bool(reset_rows)
+
+    def cycle_diagnostics(self) -> dict[str, Any]:
+        """Return non-sensitive cycle state for diagnostics."""
+        with self._lock:
+            return {
+                "last_event": deepcopy(self._last_cycle_event),
+                "zone_progress_state": deepcopy(self._zone_progress_state),
+                "force_new_session_once": self._force_new_session_once,
+            }
 
     # ----------------------------------------------------------- zone history
     def update_zone_history(

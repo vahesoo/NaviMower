@@ -59,6 +59,8 @@ MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 MQTT_POSE_STALE_SECONDS: Final = 20
+# Vehicle state/action packets can remain authoritative without a fresh pose.
+MQTT_STATE_STALE_SECONDS: Final = 90
 # A live stream can be stale while the broker connection itself remains up.
 # The bridge starts recovery a little after the entity freshness threshold so a
 # single delayed packet does not cause needless reconnects.
@@ -124,9 +126,14 @@ SESSION_MERGE_GAP_SECONDS: Final = 300
 # obstructed/inaccessible remnants remain. A vendor end timestamp at or above
 # this threshold is treated as a completed cycle.
 VENDOR_COMPLETION_PROGRESS_MIN: Final = 95
+# Block encoded/manual-height firmware values from the public map payload.
+CUTTING_HEIGHT_MIN_MM: Final = 10
+CUTTING_HEIGHT_MAX_MM: Final = 100
 # A direct HA mowing command is the strongest navigation-intent source until
 # the mower confirms the same immediate target or the safety TTL expires.
 COMMAND_TARGET_TTL_SECONDS: Final = 1800
+# Hold a confirmed gate arrival briefly against stale reverse cloud targets.
+GATE_ARRIVAL_GUARD_SECONDS: Final = 120
 # Optimistic command activity prevents short transition/unknown states from
 # being exposed as Docked while pause/start/dock is still being acknowledged.
 COMMAND_ACTIVITY_TTL_SECONDS: Final = 30
