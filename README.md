@@ -80,7 +80,7 @@ several mowers are accessed through the same private-cloud account.
 - temporary app doodle metadata with original vendor SVG, center, direction,
   scale, creation time and expiry time;
 - global cutting height and each zone's configured/effective cutting height;
-- zone progress, finished area, last mowing time and last completed time;
+- app-like active-zone progress, finished area, last mowing time and last completed time;
 - cached map data retained through temporary private-cloud outages;
 - automatic migration and refresh of older cached map schemas.
 
@@ -95,16 +95,24 @@ timestamp, X, Y, heading, activity, MQTT vehicle state, MQTT action
 
 A session starts when cutting begins, survives normal pause/transit and
 optionally the return-to-dock route, and normally ends when the mower is docked.
+If Navimow finishes one practical mowing cycle and immediately starts another
+pass while the scheduled window is still open, a same-zone progress reset creates
+a new session even though the mower never docked. This lets the Current map start
+cleanly while the previous route remains in history.
+
 If a Stop/Start, integration reload or Home Assistant restart creates separate
 history fragments, fragments with a gap of up to **five minutes** are joined
-into the same logical session. A normal paused session already remains active
-without needing this merge rule; separated fragments beyond five minutes stay
-separate.
+into the same logical session. Intentional cycle-reset boundaries are never
+merged. A normal paused session already remains active without needing this
+merge rule; separated fragments beyond five minutes stay separate.
 
 Merged sessions retain separate route segments. Route samples that were not
 received during an interruption cannot be reconstructed, and the map API does
 not draw a false connecting line across that gap. The session count, start time
-and end time still represent one mowing job.
+and end time still represent one mowing job. Navimow can legitimately finish at
+97-99% when only inaccessible or obstructed remnants remain; a vendor-ended cycle
+at 95% or above is therefore retained as completed instead of requiring exactly
+100%.
 
 Trail retention is configurable:
 
@@ -264,11 +272,11 @@ type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.12 or later** with Navimower v0.2.5. The standalone
+Use **navimower-map-card v0.1.13 or later** with Navimower v0.2.6. The standalone
 card includes:
 
 - map, zones, Off-limit, VF-off, Channel and Gate-area layers;
-- persistent and active mowing history;
+- cycle-aware Current view and selectable three-day mowing history;
 - Mow, Pause and Dock controls;
 - ordered Mow Now zone selection with restart/continue choice;
 - integrated weekly schedule editor.
@@ -288,13 +296,13 @@ GET /api/navimower/sessions/<entry_id>
 GET /api/navimower/session/<entry_id>/<session_id>
 ```
 
-The map payload uses `schema_version: 3` and contains:
+The map payload uses `schema_version: 4` and contains:
 
 - map geometry, zones, Off-limit areas, VF-off areas, Channels and dock;
 - doodle metadata and original vendor SVG;
-- current coverage and zone details;
+- current coverage, app-like active-zone progress and persistent zone details;
 - global/effective cutting heights;
-- active trail and every session retained by the selected history policy;
+- active cycle trail and every session retained by the selected history policy;
 - gap-aware `trail_segments` and per-session `segments`, while retaining flat
   `trail`/`points` arrays for older cards;
 - local Gate areas and zone-pair gates;
@@ -354,6 +362,17 @@ steps. They can describe a gate passage or any other area that needs exact
 physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
+
+### From v0.2.5 to v0.2.6
+
+- The public map payload is now schema v4.
+- Intentional progress resets create a fresh current-cycle session instead of
+  reusing the previous route. Existing retained sessions are preserved.
+- Cycles with a vendor end timestamp and at least 95% progress can populate
+  `last_completed_at`; the next cycle no longer erases that timestamp.
+- Install `navimower-map-card` v0.1.13 or later for the Current/three-day History
+  selector and the corrected three-pulse animation.
+- Restart Home Assistant after updating.
 
 ### From v0.2.4 to v0.2.5
 

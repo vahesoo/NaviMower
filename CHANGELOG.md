@@ -1,4 +1,25 @@
 # Changelog
+## 0.2.6 — cycle-aware history and app-like progress
+
+- Detects an intentional new mowing cycle when the same zone progress resets,
+  including the brief non-cutting handover before Navimow starts another pass
+  without docking.
+- Splits the new cycle into a fresh active route so the Current map clears while
+  the completed route remains available in retained history.
+- Prevents the normal five-minute session repair rule from merging across an
+  intentional cycle-reset boundary.
+- Treats vendor-ended cycles at 95% or higher as practically completed, covering
+  inaccessible remnants and temporary obstacles that prevent a literal 100%.
+- Preserves `last_completed_at` and the previous final percentage when the next
+  cycle has already started, and records practical completion again on a
+  confirmed completed dock return.
+- Prefers official MQTT route progress, then packed work progress, for the active
+  zone while retaining the private-cloud coverage percentage for diagnostics.
+- Bumps the public map API to schema v4 and exposes cycle/history metadata for
+  navimower-map-card v0.1.13.
+- Expands dependency-free history regression tests with cycle-reset and practical
+  completion coverage.
+
 ## 0.2.5 — reliable gate intent and command-state handling
 
 - Latches an explicit HA Mow Now/ordered-zone command immediately, so the
