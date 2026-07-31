@@ -79,7 +79,7 @@ several mowers are accessed through the same private-cloud account.
 - mapped Channels and charging station;
 - temporary app doodle metadata with original vendor SVG, center, direction,
   scale, creation time and expiry time;
-- global cutting height and each zone's configured/effective cutting height;
+- global and per-zone cutting height on models that report a trustworthy remote height;
 - app-like active-zone progress, finished area, last mowing time and last completed time;
 - cached map data retained through temporary private-cloud outages;
 - automatic migration and refresh of older cached map schemas.
@@ -97,8 +97,11 @@ A session starts when cutting begins, survives normal pause/transit and
 optionally the return-to-dock route, and normally ends when the mower is docked.
 If Navimow finishes one practical mowing cycle and immediately starts another
 pass while the scheduled window is still open, a same-zone progress reset creates
-a new session even though the mower never docked. This lets the Current map start
-cleanly while the previous route remains in history.
+a new session even though the mower never docked. This lets the active-cycle
+route start cleanly while the previous route remains in history. A successful
+`navimower.mow` call with `reset: true` creates that boundary immediately, even
+when the previous pass stopped at 50%; `reset: false` keeps the existing vendor
+progress and current cycle.
 
 If a Stop/Start, integration reload or Home Assistant restart creates separate
 history fragments, fragments with a gap of up to **five minutes** are joined
@@ -165,7 +168,7 @@ Depending on mower model and firmware, Navimower provides:
 
 - `lawn_mower` controls;
 - battery, state, progress, area, coverage and maintenance sensors;
-- global cutting height;
+- global cutting height on supported models;
 - current physical zone, target zone and current Channel sensors;
 - local X/Y, heading, position-source and MQTT pose-age sensors;
 - private-cloud, OAuth, MQTT, pose-valid and MQTT-stream diagnostics;
@@ -175,7 +178,8 @@ Depending on mower model and firmware, Navimower provides:
 - `navimower.mow`, `navimower.set_schedule` and diagnostics services.
 
 Firmware-dependent settings are created only when the corresponding value is
-reported by the mower.
+reported by the mower. Manual-height models do not expose encoded map values as
+cutting-height millimetres.
 
 ## Installation
 
@@ -272,11 +276,11 @@ type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.13 or later** with Navimower v0.2.6. The standalone
+Use **navimower-map-card v0.1.13 or later** with Navimower v0.2.7. The standalone
 card includes:
 
 - map, zones, Off-limit, VF-off, Channel and Gate-area layers;
-- cycle-aware Current view and selectable three-day mowing history;
+- a Today view plus the two preceding dates for three-day mowing history;
 - Mow, Pause and Dock controls;
 - ordered Mow Now zone selection with restart/continue choice;
 - integrated weekly schedule editor.
@@ -301,7 +305,7 @@ The map payload uses `schema_version: 4` and contains:
 - map geometry, zones, Off-limit areas, VF-off areas, Channels and dock;
 - doodle metadata and original vendor SVG;
 - current coverage, app-like active-zone progress and persistent zone details;
-- global/effective cutting heights;
+- global/effective cutting heights when supported;
 - active cycle trail and every session retained by the selected history policy;
 - gap-aware `trail_segments` and per-session `segments`, while retaining flat
   `trail`/`points` arrays for older cards;
@@ -363,6 +367,24 @@ physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
 
+### From v0.2.6 to v0.2.7
+
+- A successful `reset: true` mow command immediately starts a new history cycle;
+  a partial previous cycle remains in retained history but is not marked as
+  completed.
+- App-side progress resets are also detected from lower partial progress, such
+  as 50% to 0-5%, without requiring the old cycle to be near 100%.
+- MQTT vehicle state and action remain authoritative independently of pose age,
+  preventing the Docked binary sensor from switching on while the mower is
+  actually mowing or returning.
+- Manual/unsupported cutting-height values such as encoded `316` are removed
+  from the public map instead of being displayed as millimetres.
+- A short arrival guard blocks stale reverse gate targets after a confirmed
+  crossing, while a fresh Mow or Dock command still takes effect immediately.
+- MQTT callbacks are detached before SDK shutdown to avoid late un-awaited
+  coroutine warnings during Home Assistant restart.
+- No options migration is required. Restart Home Assistant after updating.
+
 ### From v0.2.5 to v0.2.6
 
 - The public map payload is now schema v4.
@@ -370,8 +392,9 @@ physical presence from fresh MQTT coordinates.
   reusing the previous route. Existing retained sessions are preserved.
 - Cycles with a vendor end timestamp and at least 95% progress can populate
   `last_completed_at`; the next cycle no longer erases that timestamp.
-- Install `navimower-map-card` v0.1.13 or later for the Current/three-day History
-  selector and the corrected three-pulse animation.
+- Install `navimower-map-card` v0.1.13 or later for the three-day History
+  selector (Today plus the two preceding dates) and the corrected three-pulse
+  animation.
 - Restart Home Assistant after updating.
 
 ### From v0.2.4 to v0.2.5

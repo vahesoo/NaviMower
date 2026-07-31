@@ -1,4 +1,27 @@
 # Changelog
+## 0.2.7 — state consistency and cycle reset reliability
+
+- Makes a successful `navimower.mow` `reset: true` command an immediate history
+  boundary, so a partially completed route is retained but the next active route
+  starts cleanly without waiting for a later vendor progress update.
+- Detects app-side partial resets such as 50% to 0-5%, while keeping partial
+  cycles separate from `last_completed_at` and preserving the 95% practical
+  completion rule.
+- Tracks MQTT vehicle-state and action freshness independently from pose age,
+  merges partial MQTT snapshots, and forces Docked off whenever the normalized
+  mower activity is mowing, paused or returning.
+- Filters encoded/manual cutting-height values and removes unsupported raw
+  `height_set` data from the public map, preventing values such as `316 mm` on
+  i105-class manual-height mowers.
+- Adds a short gate-arrival guard that ignores a stale reverse cloud target after
+  the mower reaches the destination, without delaying a fresh Mow or Dock command.
+- Restores SDK MQTT callbacks before disconnect so late paho-thread messages do
+  not create un-awaited coroutine warnings during Home Assistant shutdown.
+- Expands diagnostics with dock-source, MQTT state/action age, cycle reset,
+  cutting-height capability and gate-arrival context.
+- Adds regression coverage for explicit/partial cycle resets, Docked consistency,
+  cutting-height filtering, gate-arrival protection and MQTT hook cleanup.
+
 ## 0.2.6 — cycle-aware history and app-like progress
 
 - Detects an intentional new mowing cycle when the same zone progress resets,
