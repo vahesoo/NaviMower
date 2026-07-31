@@ -29,6 +29,10 @@ jobs:
         run: python tests/test_navigation_intent.py
       - name: Run progress mapping tests
         run: python tests/test_progress_mapping.py
+      - name: Run state consistency tests
+        run: python tests/test_state_consistency.py
+      - name: Run MQTT shutdown hook tests
+        run: python tests/test_mqtt_shutdown_hooks.py
       - name: Validate JSON
         run: |
           python -m json.tool hacs.json >/dev/null
