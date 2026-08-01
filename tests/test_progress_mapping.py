@@ -34,7 +34,10 @@ assert progress(10_100) is None
 assert 'detail["vendor_percentage"] = detail.get("percentage")' in source
 assert '("mqtt_route", mqtt_route_progress)' in source
 assert '("work_progress", work_progress)' in source
-assert '("mowing_progress", mowing_progress)' in source
+assert '("mowing_progress", private_mowing_progress)' in source
+assert '("mqtt_mowing_percentage", mqtt_progress["mowing_percentage"])' in source
+assert '("mqtt_work_progress", mqtt_progress["work_progress"])' in source
+assert '("mqtt_route_progress", mqtt_progress["route_progress"])' in source
 assert 'item.get("progress")' in source.split("def _session_completed", 1)[1].split("def ", 1)[0]
 
 print("progress mapping tests passed")
