@@ -43,7 +43,7 @@ from .const import (
     MQTT_USERNAME,
     MQTT_WATCHDOG_INTERVAL_SECONDS,
 )
-from .location import location_topic, parse_location_payload
+from .location import extract_mqtt_battery, location_topic, parse_location_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -428,6 +428,27 @@ class NavimowerMqttBridge:
             now = time.monotonic()
             self._last_any_message_mono = now
             self._record_message_inventory(topic, payload, incoming_device_id)
+            if incoming_device_id == device_id and topic.endswith(
+                "/realtimeDate/state"
+            ):
+                try:
+                    parsed_state = json.loads(
+                        (payload or b"").decode("utf-8", errors="replace")
+                    )
+                except (TypeError, ValueError):
+                    parsed_state = None
+                if isinstance(parsed_state, dict):
+                    battery = extract_mqtt_battery(parsed_state)
+                    if battery is not None:
+                        self.coordinator.ingest_mqtt_state(
+                            {
+                                "battery": battery,
+                                "timestamp": parsed_state.get("timestamp"),
+                                "state": parsed_state.get("state")
+                                or parsed_state.get("status")
+                                or parsed_state.get("vehicleState"),
+                            }
+                        )
             if incoming_device_id == device_id and topic.endswith(
                 "/realtimeDate/location"
             ):

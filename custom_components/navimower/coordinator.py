@@ -49,6 +49,7 @@ from .const import (
     CONF_VEHICLE_TYPE,
     COMMAND_ACTIVITY_TTL_SECONDS,
     COMMAND_TARGET_TTL_SECONDS,
+    CYCLE_RESET_STALE_GUARD_SECONDS,
     CUTTING_HEIGHT_MAX_MM,
     CUTTING_HEIGHT_MIN_MM,
     DEFAULT_LANGUAGE,
@@ -66,6 +67,7 @@ from .const import (
     MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
     MQTT_STATE_STALE_SECONDS,
+    MQTT_TELEMETRY_STALE_SECONDS,
     MQTT_HISTORY_SAVE_DELAY_SECONDS,
     OPT_CHANNELS,
     OPT_GATES,
@@ -1018,6 +1020,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_last_message_update: float | None = None
         self._mqtt_state_last_update: float | None = None
         self._mqtt_action_last_update: float | None = None
+        self._mqtt_battery: int | None = None
+        self._mqtt_battery_last_update: float | None = None
+        self._mqtt_progress_last_update: float | None = None
+        self._mqtt_area_last_update: float | None = None
         self._mqtt_connected = False
         self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
         self._oauth_connected = False
@@ -1042,6 +1048,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._pending_activity_set_at: float | None = None
         self._last_physical_zone_id: int | None = None
         self._last_physical_zone_name: str | None = None
+        self._last_channel_state: str | None = None
+        self._last_channel_id: int | None = None
+        self._last_channel_connection: list[int] = []
+        self._last_channel_distance: float | None = None
+        self._progress_reset_pending = False
+        self._coverage_reset_pending = False
+        self._area_reset_pending = False
+        self._cycle_reset_started_mono: float | None = None
+        self._cycle_reset_reason: str | None = None
+        self._cycle_reset_previous_area: float | None = None
+        self._restored_telemetry: dict[str, Any] = {}
         self._private_reauth_started = False
         self._gate_release_tasks: dict[str, Any] = {}
         self._shutdown_complete = False
@@ -1071,6 +1088,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 # but force one cloud re-decode whenever the persisted geometry
                 # schema changes.
                 self._map_cache_key = None
+            telemetry = cached.get("telemetry")
+            if isinstance(telemetry, dict):
+                self._restored_telemetry = dict(telemetry)
 
         # Always expose a bootstrap snapshot before the network branches start.
         # Cached geometry/history is included when present; otherwise entities can
@@ -1129,6 +1149,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "online": None,
             "docked": None,
             "error": False,
+            "battery": _as_int(self._restored_telemetry.get("battery")),
+            "battery_source": self._restored_telemetry.get("battery_source")
+            or "persisted_last_known",
+            "mowing_progress": _progress_percent(
+                self._restored_telemetry.get("mowing_progress")
+            ),
+            "session_area": _as_float(
+                self._restored_telemetry.get("session_area")
+            ),
+            "total_area": (
+                _as_float(self._restored_telemetry.get("total_area"))
+                if _as_float(self._restored_telemetry.get("total_area")) is not None
+                else _as_float(map_geometry.get("area"))
+            ),
             "zones": zones,
             "current_zone": None,
             "current_zone_ids": [],
@@ -1177,7 +1211,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.debug("Map-state checkpoint failed", exc_info=True)
         await super().async_shutdown()
 
-    def _state_store_data(self) -> dict[str, Any]:
+    def _state_store_data(
+        self, snapshot: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        data = snapshot or self.data or {}
         return {
             "sn": self.sn,
             "geometry_schema": MAP_GEOMETRY_SCHEMA_VERSION,
@@ -1185,6 +1222,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "map_cache_key": list(self._map_cache_key)
             if self._map_cache_key
             else None,
+            "telemetry": {
+                "battery": data.get("battery"),
+                "battery_source": data.get("battery_source"),
+                "mowing_progress": data.get("mowing_progress"),
+                "session_area": data.get("session_area"),
+                "total_area": data.get("total_area"),
+            },
         }
 
     # ------------------------------------------------------------------ poll
@@ -1231,10 +1275,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
         if self._map_dirty:
             self._map_dirty = False
-            cached = self._state_store_data()
-            self._state_store.async_delay_save(
-                lambda: cached, MQTT_HISTORY_SAVE_DELAY_SECONDS
-            )
+        self._schedule_state_save(snapshot)
 
         self.update_interval = timedelta(
             seconds=self._poll_interval_for_snapshot(snapshot)
@@ -1895,7 +1936,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             _find(location, "map_work_position", "mapWorkPosition")
             or _find(index2, "map_work_position", "mapWorkPosition")
         )
-        battery = _as_int(
+        private_battery = _as_int(
             index2.get("soc") if index2.get("soc") is not None else auth.get("soc")
         )
         network_status = _as_int(index2.get("network_status"))
@@ -2072,7 +2113,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "rain_delay_wire": rain_delay_wire,
         }
 
-        mowing_progress = _progress_percent(
+        private_mowing_progress = _progress_percent(
             _find(location, "mowing_percentage", "mowingPercentage", "progress")
         )
         work_progress = _progress_percent((packed_work or {}).get("progress"))
@@ -2092,7 +2133,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 progress_candidates=[
                     ("mqtt_route", mqtt_route_progress),
                     ("work_progress", work_progress),
-                    ("mowing_progress", mowing_progress),
+                    ("mowing_progress", private_mowing_progress),
                 ],
             )
 
@@ -2106,7 +2147,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "model": str(auth.get("subType") or _find(raw.get("device_info"), "model") or ""),
             "name": str(auth.get("selfDefinedName") or auth.get("vehicle_name") or "Navimow"),
             # core state
-            "battery": battery,
+            "battery": private_battery,
+            "battery_private_cloud": private_battery,
             "state_code": state_code,
             "state": state_label,
             "activity": activity,
@@ -2121,10 +2163,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "error": has_error,
             "error_text": error_text,
             # progress / areas
-            "mowing_progress": mowing_progress,
+            "mowing_progress": private_mowing_progress,
+            "mowing_progress_private_cloud": private_mowing_progress,
             "session_area": _as_float(location.get("subtotal_area")),
+            "session_area_private_cloud": _as_float(location.get("subtotal_area")),
             "weekly_area": _as_float(location.get("mowing_week_area")),
             "total_area": (
+                map_geom.get("area")
+                if map_geom.get("area") is not None
+                else _as_float(_find(raw.get("device_info"), "map_area_limit"))
+            ),
+            "total_area_private_cloud": (
                 map_geom.get("area")
                 if map_geom.get("area") is not None
                 else _as_float(_find(raw.get("device_info"), "map_area_limit"))
@@ -2192,6 +2241,389 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             },
         }
         return snapshot
+
+    @staticmethod
+    def _age_since(updated_at: float | None) -> float | None:
+        if updated_at is None:
+            return None
+        return max(0.0, time.monotonic() - updated_at)
+
+    def _private_endpoint_age(self, *keys: str) -> float | None:
+        ages: list[float] = []
+        now = time.monotonic()
+        for key in keys:
+            updated = (self._endpoint_status.get(key) or {}).get("last_success_mono")
+            if updated is not None:
+                ages.append(max(0.0, now - float(updated)))
+        return min(ages) if ages else self.private_poll_age()
+
+    def _fresh_mqtt_battery(self) -> int | None:
+        age = self._age_since(self._mqtt_battery_last_update)
+        if age is None or age > MQTT_TELEMETRY_STALE_SECONDS:
+            return None
+        value = _as_int(self._mqtt_battery)
+        return value if value is not None and 0 <= value <= 100 else None
+
+    def _fresh_mqtt_progress_values(self) -> dict[str, int | None]:
+        age = self._age_since(self._mqtt_progress_last_update)
+        if age is None or age > MQTT_TELEMETRY_STALE_SECONDS:
+            return {
+                "mowing_percentage": None,
+                "work_progress": None,
+                "route_progress": None,
+            }
+        mqtt = self._mqtt_location or {}
+        return {
+            "mowing_percentage": _progress_percent(mqtt.get("mowing_percentage")),
+            "work_progress": _progress_percent(mqtt.get("work_progress")),
+            "route_progress": _progress_percent(mqtt.get("mow_progress")),
+        }
+
+    def _mark_display_cycle_reset(
+        self,
+        reason: str,
+        previous: dict[str, Any] | None = None,
+    ) -> None:
+        """Hold public counters clear until new-cycle values reach the cloud."""
+        prior = previous or self.data or {}
+        self._progress_reset_pending = True
+        self._coverage_reset_pending = True
+        self._area_reset_pending = True
+        self._cycle_reset_started_mono = time.monotonic()
+        self._cycle_reset_reason = reason
+        self._cycle_reset_previous_area = _as_float(prior.get("session_area"))
+
+    def _cycle_reset_guard_active(self) -> bool:
+        age = self._age_since(self._cycle_reset_started_mono)
+        return age is not None and age <= CYCLE_RESET_STALE_GUARD_SECONDS
+
+    @staticmethod
+    def _zero_coverage(coverage: dict[str, Any] | None) -> dict[str, Any]:
+        base = dict(coverage or {})
+        base["overall_pct"] = 0
+        base["finished_area"] = 0.0
+        base["zones"] = [
+            {
+                **dict(item),
+                "pct": 0,
+                "finished": 0.0,
+            }
+            for item in base.get("zones") or []
+            if isinstance(item, dict)
+        ]
+        return base
+
+    def _stabilize_telemetry(
+        self,
+        snapshot: dict[str, Any],
+        previous_snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        """Resolve telemetry by freshness and keep one logical cycle monotonic."""
+        previous = previous_snapshot or self.data or {}
+        activity = str(snapshot.get("activity") or "")
+        previous_activity = str(previous.get("activity") or "")
+        active = activity in {
+            ACTIVITY_MOWING,
+            ACTIVITY_PAUSED,
+            ACTIVITY_RETURNING,
+        }
+
+        previous_coverage = previous.get("coverage")
+        previous_coverage_pct = _progress_percent(
+            (previous_coverage or {}).get("overall_pct")
+            if isinstance(previous_coverage, dict)
+            else None
+        )
+        previous_progress = _progress_percent(previous.get("mowing_progress"))
+        completed_before_restart = bool(
+            previous_activity
+            not in {ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING}
+            and activity == ACTIVITY_MOWING
+            and (
+                (
+                    previous_coverage_pct is not None
+                    and previous_coverage_pct >= VENDOR_COMPLETION_PROGRESS_MIN
+                )
+                or (
+                    previous_coverage_pct is None
+                    and previous_progress is not None
+                    and previous_progress >= VENDOR_COMPLETION_PROGRESS_MIN
+                )
+            )
+        )
+        reset_marked = bool(snapshot.get("cycle_reset_detected"))
+        if reset_marked:
+            self._mark_display_cycle_reset(
+                str(snapshot.get("cycle_reset_reason") or "vendor_cycle_reset"),
+                previous,
+            )
+        elif completed_before_restart:
+            self._mark_display_cycle_reset("completed_cycle_restart", previous)
+            reset_marked = True
+
+        reset_guard = self._cycle_reset_guard_active()
+
+        # Battery: MQTT is the dense source while active; the private cloud is
+        # retained as the preferred charging source because it already reports
+        # smooth one-percent increments on the dock.
+        private_battery = _as_int(snapshot.get("battery_private_cloud"))
+        if private_battery is not None and not 0 <= private_battery <= 100:
+            private_battery = None
+        mqtt_battery = self._fresh_mqtt_battery()
+        previous_battery = _as_int(previous.get("battery"))
+        charging_context = bool(snapshot.get("docked")) or activity == ACTIVITY_DOCKED
+        battery_candidates = (
+            [("private_cloud", private_battery), ("mqtt_state", mqtt_battery)]
+            if charging_context
+            else [("mqtt_state", mqtt_battery), ("private_cloud", private_battery)]
+        )
+        battery = None
+        battery_source = None
+        for source, value in battery_candidates:
+            if value is not None:
+                battery = value
+                battery_source = source
+                break
+        if battery is None and previous_battery is not None:
+            battery = previous_battery
+            battery_source = "last_known"
+        if battery is not None and previous_battery is not None:
+            if charging_context and battery < previous_battery:
+                battery = previous_battery
+                battery_source = "last_known"
+            elif active and battery > previous_battery + 1:
+                battery = previous_battery
+                battery_source = "last_known"
+        snapshot["battery"] = battery
+        snapshot["battery_source"] = battery_source
+        snapshot["battery_private_cloud"] = private_battery
+        snapshot["battery_mqtt"] = self._mqtt_battery
+        snapshot["battery_mqtt_age"] = self._age_since(
+            self._mqtt_battery_last_update
+        )
+        snapshot["battery_source_age"] = (
+            snapshot["battery_mqtt_age"]
+            if battery_source == "mqtt_state"
+            else self._private_endpoint_age("index2", "auth_list")
+            if battery_source == "private_cloud"
+            else None
+        )
+
+        # Public mowing progress uses the freshest overall MQTT fields first.
+        # Route progress remains a fallback because it is planned-path progress,
+        # not always identical to area coverage.
+        mqtt_progress = self._fresh_mqtt_progress_values()
+        raw_coverage = snapshot.get("coverage")
+        raw_coverage_pct = _progress_percent(
+            (raw_coverage or {}).get("overall_pct")
+            if isinstance(raw_coverage, dict)
+            else None
+        )
+        private_progress = _progress_percent(
+            snapshot.get("mowing_progress_private_cloud")
+        )
+        private_work_progress = _progress_percent(snapshot.get("work_progress"))
+        progress_candidates = (
+            [
+                ("mqtt_mowing_percentage", mqtt_progress["mowing_percentage"]),
+                ("mqtt_work_progress", mqtt_progress["work_progress"]),
+                ("mqtt_route_progress", mqtt_progress["route_progress"]),
+                ("private_coverage", raw_coverage_pct),
+                ("private_work_progress", private_work_progress),
+                ("private_cloud", private_progress),
+            ]
+            if active
+            else [
+                ("private_cloud", private_progress),
+                ("private_coverage", raw_coverage_pct),
+                ("private_work_progress", private_work_progress),
+                ("mqtt_mowing_percentage", mqtt_progress["mowing_percentage"]),
+                ("mqtt_work_progress", mqtt_progress["work_progress"]),
+                ("mqtt_route_progress", mqtt_progress["route_progress"]),
+            ]
+        )
+        progress = None
+        progress_source = None
+        for source, value in progress_candidates:
+            if value is not None:
+                progress = value
+                progress_source = source
+                break
+        progress_was_pending = self._progress_reset_pending
+        if progress_was_pending and reset_guard:
+            if progress is not None and progress <= 25:
+                self._progress_reset_pending = False
+            else:
+                progress = 0
+                progress_source = "cycle_reset_hold"
+        elif self._progress_reset_pending:
+            self._progress_reset_pending = False
+        if (
+            not progress_was_pending
+            and not reset_marked
+            and active
+            and previous_progress is not None
+            and progress is not None
+            and progress < previous_progress
+        ):
+            progress = previous_progress
+            progress_source = "last_known_monotonic"
+        if progress is None and previous_progress is not None:
+            progress = previous_progress
+            progress_source = "last_known"
+        snapshot["mowing_progress"] = progress
+        snapshot["mowing_progress_source"] = progress_source
+        snapshot["mowing_progress_source_age"] = (
+            self._age_since(self._mqtt_progress_last_update)
+            if str(progress_source or "").startswith("mqtt_")
+            else self._private_endpoint_age("location", "path_info_time")
+            if str(progress_source or "").startswith("private_")
+            or progress_source == "private_cloud"
+            else None
+        )
+        snapshot["mowing_progress_mqtt"] = mqtt_progress
+        snapshot["mowing_progress_private_cloud"] = private_progress
+
+        # Coverage is monotonic inside one cycle. A confirmed reset clears it
+        # immediately and ignores the old cloud row until a low value arrives.
+        coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else None
+        coverage_was_pending = self._coverage_reset_pending
+        if coverage_was_pending and reset_guard:
+            if raw_coverage_pct is not None and raw_coverage_pct <= 25:
+                self._coverage_reset_pending = False
+            else:
+                coverage = self._zero_coverage(coverage)
+        elif self._coverage_reset_pending:
+            self._coverage_reset_pending = False
+        if (
+            not coverage_was_pending
+            and not reset_marked
+            and active
+            and previous_coverage_pct is not None
+            and raw_coverage_pct is not None
+            and raw_coverage_pct < previous_coverage_pct
+        ):
+            coverage = dict(previous_coverage) if isinstance(previous_coverage, dict) else coverage
+        if coverage is None and isinstance(previous_coverage, dict):
+            coverage = dict(previous_coverage)
+        snapshot["coverage"] = coverage
+        snapshot["coverage_source"] = (
+            "cycle_reset_hold"
+            if self._coverage_reset_pending and reset_guard
+            else "private_cloud"
+            if coverage is not None
+            else None
+        )
+
+        # Session area can arrive both in the official location stream and the
+        # private cloud. Reject transient zero/regressions unless a cycle reset
+        # has been confirmed.
+        mqtt_area_age = self._age_since(self._mqtt_area_last_update)
+        mqtt_area = (
+            _as_float((self._mqtt_location or {}).get("subtotal_area"))
+            if mqtt_area_age is not None
+            and mqtt_area_age <= MQTT_TELEMETRY_STALE_SECONDS
+            else None
+        )
+        private_area = _as_float(snapshot.get("session_area_private_cloud"))
+        area_candidates = (
+            [("mqtt_location", mqtt_area), ("private_cloud", private_area)]
+            if active
+            else [("private_cloud", private_area), ("mqtt_location", mqtt_area)]
+        )
+        session_area = None
+        session_area_source = None
+        for source, value in area_candidates:
+            if value is not None and value >= 0:
+                session_area = value
+                session_area_source = source
+                break
+        previous_area = _as_float(previous.get("session_area"))
+        area_was_pending = self._area_reset_pending
+        if area_was_pending and reset_guard:
+            reset_reference = self._cycle_reset_previous_area or previous_area or 0.0
+            acceptable = max(250.0, reset_reference * 0.25)
+            low_progress = any(
+                value is not None and value <= 25
+                for value in (
+                    _progress_percent(snapshot.get("mowing_progress")),
+                    _progress_percent((snapshot.get("coverage") or {}).get("overall_pct")),
+                )
+            )
+            if session_area is not None and (
+                session_area <= acceptable
+                or (low_progress and session_area <= max(500.0, reset_reference * 0.5))
+            ):
+                self._area_reset_pending = False
+            else:
+                session_area = 0.0
+                session_area_source = "cycle_reset_hold"
+        elif self._area_reset_pending:
+            self._area_reset_pending = False
+        if (
+            not area_was_pending
+            and not reset_marked
+            and active
+            and previous_area is not None
+            and session_area is not None
+            and session_area < previous_area
+        ):
+            session_area = previous_area
+            session_area_source = "last_known_monotonic"
+        if session_area is None and previous_area is not None:
+            session_area = previous_area
+            session_area_source = "last_known"
+        snapshot["session_area"] = session_area
+        snapshot["session_area_source"] = session_area_source
+        snapshot["session_area_mqtt"] = mqtt_area
+        snapshot["session_area_private_cloud"] = private_area
+        snapshot["session_area_source_age"] = (
+            mqtt_area_age
+            if session_area_source == "mqtt_location"
+            else self._private_endpoint_age("location")
+            if session_area_source == "private_cloud"
+            else None
+        )
+
+        private_total = _as_float(snapshot.get("total_area_private_cloud"))
+        map_total = _as_float((snapshot.get("map") or {}).get("area"))
+        previous_total = _as_float(previous.get("total_area"))
+        restored_total = _as_float(self._restored_telemetry.get("total_area"))
+        if private_total is not None and private_total > 0:
+            total_area = private_total
+            total_area_source = "private_cloud"
+        elif map_total is not None and map_total > 0:
+            total_area = map_total
+            total_area_source = "map_cache"
+        elif previous_total is not None and previous_total > 0:
+            total_area = previous_total
+            total_area_source = "last_known"
+        elif restored_total is not None and restored_total > 0:
+            total_area = restored_total
+            total_area_source = "persisted_last_known"
+        else:
+            total_area = None
+            total_area_source = None
+        snapshot["total_area"] = total_area
+        snapshot["total_area_source"] = total_area_source
+
+        snapshot["cycle_value_reset_pending"] = bool(
+            self._progress_reset_pending
+            or self._coverage_reset_pending
+            or self._area_reset_pending
+        )
+        snapshot["cycle_value_reset_reason"] = self._cycle_reset_reason
+        snapshot["cycle_value_reset_age"] = self._age_since(
+            self._cycle_reset_started_mono
+        )
+
+    def _schedule_state_save(
+        self, snapshot: dict[str, Any] | None = None
+    ) -> None:
+        cached = self._state_store_data(snapshot)
+        self._state_store.async_delay_save(
+            lambda: cached, MQTT_HISTORY_SAVE_DELAY_SECONDS
+        )
 
     def _fresh_mqtt_position(self) -> dict[str, float] | None:
         if self._mqtt_location is None or self._mqtt_last_update is None:
@@ -2533,17 +2965,50 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             physical_source = "pose_unavailable"
 
         target_state = ", ".join(target_names) if target_names else "No active target"
-        if tunnel is not None:
-            tunnel_state = str(
-                tunnel.get("name")
-                or (
-                    f"Channel {tunnel.get('id')}"
-                    if tunnel.get("id") is not None
-                    else "Channel"
+        live_tunnel_id = _as_int((tunnel or {}).get("id"))
+        live_tunnel_distance = _as_float((tunnel or {}).get("distance"))
+        if pose_valid:
+            if tunnel is not None:
+                tunnel_state = str(
+                    tunnel.get("name")
+                    or (
+                        f"Channel {tunnel.get('id')}"
+                        if tunnel.get("id") is not None
+                        else "Channel"
+                    )
                 )
-            )
+            else:
+                tunnel_state = "Not in channel"
+            tunnel_source = "live_pose"
+            tunnel_stale = False
+            self._last_channel_state = tunnel_state
+            self._last_channel_id = live_tunnel_id
+            self._last_channel_connection = list(tunnel_connection)
+            self._last_channel_distance = live_tunnel_distance
+        elif docked_confirmed:
+            # A confirmed dock is physically outside a mapped transit Channel.
+            # Do not alternate to Position unavailable when the idle pose ages.
+            tunnel_state = "Not in channel"
+            tunnel_source = "confirmed_docked"
+            tunnel_stale = False
+            live_tunnel_id = None
+            tunnel_connection = []
+            live_tunnel_distance = None
+            self._last_channel_state = tunnel_state
+            self._last_channel_id = None
+            self._last_channel_connection = []
+            self._last_channel_distance = None
+        elif self._last_channel_state is not None:
+            tunnel_state = self._last_channel_state
+            tunnel_source = "last_known_stale_pose"
+            tunnel_stale = True
+            live_tunnel_id = self._last_channel_id
+            tunnel_connection = list(self._last_channel_connection)
+            live_tunnel_distance = self._last_channel_distance
         else:
-            tunnel_state = "Not in channel" if pose_valid else "Position unavailable"
+            tunnel_state = "Position unavailable"
+            tunnel_source = "pose_unavailable"
+            tunnel_stale = True
 
         if not pose_valid:
             transition: bool | None = False if docked_confirmed else None
@@ -2724,9 +3189,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "target_zone_age_seconds": command_target_age,
             "command_target_active": command_fresh,
             "current_channel": tunnel_state,
-            "current_channel_id": _as_int((tunnel or {}).get("id")),
+            "current_channel_id": live_tunnel_id,
             "current_channel_connection": tunnel_connection,
-            "current_channel_distance": (tunnel or {}).get("distance"),
+            "current_channel_distance": live_tunnel_distance,
+            "current_channel_source": tunnel_source,
+            "current_channel_stale": tunnel_stale,
+            "current_channel_pose_valid": pose_valid,
+            "current_channel_pose_age": self.pose_age(),
             "dock_zone_id": dock_zone_id,
             "zone_transition": transition,
             "gate_states": gate_states,
@@ -2888,6 +3357,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.async_set_updated_data(snapshot)
 
     def _apply_mqtt_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        previous_snapshot = dict(self.data or {})
         position = self._fresh_mqtt_position()
         mqtt_state = self._fresh_mqtt_vehicle_state()
         mqtt_action = self._fresh_mqtt_action()
@@ -2926,6 +3396,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         # contributes a lower-frequency point when no fresh MQTT pose exists.
         history_position = None if position is not None else snapshot.get("position")
         self._update_history(snapshot, history_position, mqtt_state, mqtt_action)
+        self._stabilize_telemetry(snapshot, previous_snapshot)
         snapshot["trail"] = self.history.active_points_xy()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
@@ -2957,6 +3428,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """Merge one official MQTT update and persist the live session path."""
         if not isinstance(location, dict):
             return
+        previous_snapshot = dict(self.data or {})
         previous_activity = (self.data or {}).get("activity")
         previous_pose_valid = self._fresh_mqtt_position() is not None
         now_monotonic = time.monotonic()
@@ -2977,6 +3449,30 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._mqtt_state_last_update = now_monotonic
         if location.get("action") is not None:
             self._mqtt_action_last_update = now_monotonic
+        if bool(location.get("_battery_updated")) or (
+            self._mqtt_battery_last_update is None
+            and location.get("battery") is not None
+        ):
+            battery = _as_int(location.get("battery"))
+            if battery is not None and 0 <= battery <= 100:
+                self._mqtt_battery = battery
+                self._mqtt_battery_last_update = now_monotonic
+        if bool(location.get("_progress_updated")) or (
+            self._mqtt_progress_last_update is None
+            and any(
+                location.get(key) is not None
+                for key in ("mow_progress", "work_progress", "mowing_percentage")
+            )
+        ):
+            self._mqtt_progress_last_update = now_monotonic
+        if bool(location.get("_area_updated")) or (
+            self._mqtt_area_last_update is None
+            and any(
+                location.get(key) is not None
+                for key in ("subtotal_area", "mowing_week_area")
+            )
+        ):
+            self._mqtt_area_last_update = now_monotonic
         self._mqtt_connected = True
 
         position = self._fresh_mqtt_position()
@@ -3046,10 +3542,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._update_history(
             snapshot, position if pose_updated else None, mqtt_state, mqtt_action
         )
+        self._stabilize_telemetry(snapshot, previous_snapshot)
         snapshot["trail"] = self.history.active_points_xy()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
         snapshot["sessions"] = self.history.session_summaries(include_points=False)
+        self._schedule_state_save(snapshot)
         self.async_set_updated_data(snapshot)
         new_activity = snapshot.get("activity")
         if new_activity != previous_activity:
@@ -3058,6 +3556,23 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             )
         elif pose_updated and not previous_pose_valid:
             self.request_fast_refresh("MQTT pose stream became live")
+
+    def ingest_mqtt_state(self, state: dict[str, Any]) -> None:
+        """Merge the official MQTT state packet used for dense battery data."""
+        if not isinstance(state, dict):
+            return
+        battery = _as_int(state.get("battery"))
+        if battery is None or not 0 <= battery <= 100:
+            return
+        previous_snapshot = dict(self.data or {})
+        self._mqtt_battery = battery
+        self._mqtt_battery_last_update = time.monotonic()
+        self._mqtt_connected = True
+        snapshot = dict(self.data or self._bootstrap_snapshot())
+        self._stabilize_telemetry(snapshot, previous_snapshot)
+        snapshot.update(self._connectivity_fields())
+        self._schedule_state_save(snapshot)
+        self.async_set_updated_data(snapshot)
 
     def start_new_mowing_cycle(
         self,
@@ -3072,6 +3587,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             reason=source,
         )
         if self.data:
+            previous_snapshot = dict(self.data)
+            self._mark_display_cycle_reset(source, previous_snapshot)
             snapshot = dict(self.data)
             snapshot["cycle_reset_detected"] = changed
             snapshot["cycle_reset_reason"] = source
@@ -3079,6 +3596,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["trail_session"] = self.history.active_session_no
             snapshot["trail_started_at"] = self.history.active_started_at()
             snapshot["sessions"] = self.history.session_summaries(include_points=False)
+            self._stabilize_telemetry(snapshot, previous_snapshot)
+            self._schedule_state_save(snapshot)
             self.async_set_updated_data(snapshot)
         return changed
 

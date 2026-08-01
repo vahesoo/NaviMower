@@ -22,6 +22,47 @@ from __future__ import annotations
 from typing import Any
 
 
+def extract_mqtt_battery(data: Any) -> int | None:
+    """Extract a trustworthy 0..100 battery percentage from MQTT payloads."""
+    if not isinstance(data, dict):
+        return None
+
+    def normalize(value: Any) -> int | None:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if 0 <= parsed <= 100 else None
+
+    direct = normalize(data.get("battery"))
+    if direct is not None:
+        return direct
+
+    capacity = data.get("capacityRemaining")
+    if isinstance(capacity, list):
+        fallback = None
+        for item in capacity:
+            if not isinstance(item, dict):
+                continue
+            value = normalize(item.get("rawValue"))
+            if value is None:
+                continue
+            if str(item.get("unit") or "").upper() == "PERCENTAGE":
+                return value
+            if fallback is None:
+                fallback = value
+        if fallback is not None:
+            return fallback
+
+    descriptive = data.get("descriptiveCapacityRemaining")
+    if isinstance(descriptive, dict):
+        for key in ("rawValue", "value", "percentage"):
+            value = normalize(descriptive.get(key))
+            if value is not None:
+                return value
+    return normalize(descriptive)
+
+
 def location_topic(device_id: str) -> str:
     """Cloud MQTT topic that carries real-time pose/zone for a device."""
     return f"/downlink/vehicle/{device_id}/realtimeDate/location"
@@ -103,6 +144,9 @@ def parse_location_payload(
     # messages may carry the last cached X/Y but must not make an old pose look
     # fresh to gate logic or pose-age diagnostics.
     loc["_pose_updated"] = False
+    loc["_progress_updated"] = False
+    loc["_area_updated"] = False
+    loc["_battery_updated"] = False
     changed = False
     for item in data:
         if not isinstance(item, dict):
@@ -119,6 +163,9 @@ def parse_location_payload(
                 loc["vehicle_state"] = item["vehicleState"]
             if "time" in item:
                 loc["pose_time"] = item["time"]
+            if (battery := extract_mqtt_battery(item)) is not None:
+                loc["battery"] = battery
+                loc["_battery_updated"] = True
             loc["_pose_updated"] = True
             changed = True
         elif t == 2:
@@ -130,6 +177,7 @@ def parse_location_payload(
                 loc["mow_boundary"] = item.get("currentMowBoundary")
             if "currentMowProgress" in item:
                 loc["mow_progress"] = item.get("currentMowProgress")
+                loc["_progress_updated"] = True
             if "action" in item:
                 loc["action"] = item.get("action")
             if "subAction" in item:
@@ -143,6 +191,7 @@ def parse_location_payload(
                     loc["work_mode"] = decoded["mode"]
                     loc["work_target_zone"] = decoded["target_zone"]
                     loc["work_progress"] = decoded["progress"]
+                    loc["_progress_updated"] = True
                     # Prefer explicit fields from this message; otherwise the
                     # packed words must replace a stale cached action during
                     # transit between selected zones.
@@ -154,10 +203,16 @@ def parse_location_payload(
                 loc["mow_start_type"] = item.get("mowStartType")
             if "mowingPercentage" in item:
                 loc["mowing_percentage"] = item.get("mowingPercentage")
+                loc["_progress_updated"] = True
             if "subtotalArea" in item:
                 loc["subtotal_area"] = item.get("subtotalArea")
+                loc["_area_updated"] = True
             if "mowingWeekArea" in item:
                 loc["mowing_week_area"] = item.get("mowingWeekArea")
+                loc["_area_updated"] = True
+            if (battery := extract_mqtt_battery(item)) is not None:
+                loc["battery"] = battery
+                loc["_battery_updated"] = True
             changed = True
         elif t == 3:
             pids = item.get("partitionIds")

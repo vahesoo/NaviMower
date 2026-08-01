@@ -61,6 +61,10 @@ MQTT_PASSWORD: Final | None = None
 MQTT_POSE_STALE_SECONDS: Final = 20
 # Vehicle state/action packets can remain authoritative without a fresh pose.
 MQTT_STATE_STALE_SECONDS: Final = 90
+# Battery/progress state packets are normally slower than the live pose stream.
+# Keep them authoritative for three minutes so a short MQTT gap does not make
+# the public sensors fall back to a much older private-cloud snapshot.
+MQTT_TELEMETRY_STALE_SECONDS: Final = 180
 # A live stream can be stale while the broker connection itself remains up.
 # The bridge starts recovery a little after the entity freshness threshold so a
 # single delayed packet does not cause needless reconnects.
@@ -137,6 +141,10 @@ GATE_ARRIVAL_GUARD_SECONDS: Final = 120
 # Optimistic command activity prevents short transition/unknown states from
 # being exposed as Docked while pause/start/dock is still being acknowledged.
 COMMAND_ACTIVITY_TTL_SECONDS: Final = 30
+# After a confirmed new mowing cycle, old private-cloud counters may linger for
+# tens of minutes. Hold the public cycle values at zero/last-good until a low
+# value confirms that the vendor counters have actually reset.
+CYCLE_RESET_STALE_GUARD_SECONDS: Final = 3600
 
 # --- Coverage / rendered trail --------------------------------------------
 SWATH_WIDTH_M: Final = 0.25

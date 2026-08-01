@@ -52,6 +52,13 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda d: d.get("battery"),
+        attrs_fn=lambda d: {
+            "source": d.get("battery_source"),
+            "source_age": d.get("battery_source_age"),
+            "mqtt_battery": d.get("battery_mqtt"),
+            "mqtt_age": d.get("battery_mqtt_age"),
+            "private_cloud_battery": d.get("battery_private_cloud"),
+        },
     ),
     NavimowSensorDescription(
         key="state",
@@ -74,6 +81,14 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: d.get("mowing_progress"),
+        attrs_fn=lambda d: {
+            "source": d.get("mowing_progress_source"),
+            "source_age": d.get("mowing_progress_source_age"),
+            "mqtt": d.get("mowing_progress_mqtt"),
+            "private_cloud": d.get("mowing_progress_private_cloud"),
+            "cycle_reset_pending": d.get("cycle_value_reset_pending"),
+            "cycle_reset_reason": d.get("cycle_value_reset_reason"),
+        },
     ),
     NavimowSensorDescription(
         key="cutting_height",
@@ -230,6 +245,10 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "tunnel_id": d.get("current_channel_id"),
             "connection": d.get("current_channel_connection"),
             "distance_m": d.get("current_channel_distance"),
+            "source": d.get("current_channel_source"),
+            "stale": d.get("current_channel_stale"),
+            "pose_valid": d.get("current_channel_pose_valid"),
+            "pose_age": d.get("current_channel_pose_age"),
         },
     ),
     NavimowSensorDescription(
@@ -244,6 +263,8 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             {
                 "total_area": (d.get("coverage") or {}).get("total_area"),
                 "finished_area": (d.get("coverage") or {}).get("finished_area"),
+                "source": d.get("coverage_source"),
+                "cycle_reset_pending": d.get("cycle_value_reset_pending"),
                 "zones": [
                     {
                         "name": z.get("name"),
@@ -265,6 +286,13 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: d.get("session_area"),
+        attrs_fn=lambda d: {
+            "source": d.get("session_area_source"),
+            "source_age": d.get("session_area_source_age"),
+            "mqtt_area": d.get("session_area_mqtt"),
+            "private_cloud_area": d.get("session_area_private_cloud"),
+            "cycle_reset_pending": d.get("cycle_value_reset_pending"),
+        },
     ),
     NavimowSensorDescription(
         key="weekly_area",
@@ -281,6 +309,7 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: d.get("total_area"),
+        attrs_fn=lambda d: {"source": d.get("total_area_source")},
     ),
     NavimowSensorDescription(
         key="next_mow",

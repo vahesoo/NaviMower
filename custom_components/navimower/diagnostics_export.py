@@ -440,6 +440,52 @@ async def async_export_diagnostics(
             "target_zone_source": data.get("target_zone_source"),
             "target_zone_command_source": data.get("target_zone_command_source"),
             "current_channel_id": data.get("current_channel_id"),
+            "current_channel_name": data.get("current_channel"),
+            "current_channel_source": data.get("current_channel_source"),
+            "current_channel_stale": data.get("current_channel_stale"),
+            "current_channel_pose_valid": data.get("current_channel_pose_valid"),
+            "current_channel_pose_age": data.get("current_channel_pose_age"),
+            "telemetry": sanitize(
+                {
+                    "battery": data.get("battery"),
+                    "battery_source": data.get("battery_source"),
+                    "battery_source_age": data.get("battery_source_age"),
+                    "battery_mqtt": data.get("battery_mqtt"),
+                    "battery_mqtt_age": data.get("battery_mqtt_age"),
+                    "battery_private_cloud": data.get("battery_private_cloud"),
+                    "mowing_progress": data.get("mowing_progress"),
+                    "mowing_progress_source": data.get("mowing_progress_source"),
+                    "mowing_progress_source_age": data.get(
+                        "mowing_progress_source_age"
+                    ),
+                    "mowing_progress_mqtt": data.get("mowing_progress_mqtt"),
+                    "mowing_progress_private_cloud": data.get(
+                        "mowing_progress_private_cloud"
+                    ),
+                    "coverage": data.get("coverage"),
+                    "coverage_source": data.get("coverage_source"),
+                    "session_area": data.get("session_area"),
+                    "session_area_source": data.get("session_area_source"),
+                    "session_area_source_age": data.get(
+                        "session_area_source_age"
+                    ),
+                    "session_area_mqtt": data.get("session_area_mqtt"),
+                    "session_area_private_cloud": data.get(
+                        "session_area_private_cloud"
+                    ),
+                    "total_area": data.get("total_area"),
+                    "total_area_source": data.get("total_area_source"),
+                    "cycle_value_reset_pending": data.get(
+                        "cycle_value_reset_pending"
+                    ),
+                    "cycle_value_reset_reason": data.get(
+                        "cycle_value_reset_reason"
+                    ),
+                    "cycle_value_reset_age": data.get(
+                        "cycle_value_reset_age"
+                    ),
+                }
+            ),
             "gate_states": sanitize(deepcopy(data.get("gate_states") or {})),
             "gate_arrival_guards": sanitize(
                 deepcopy(data.get("gate_arrival_guards") or {})
