@@ -1,4 +1,32 @@
 # Changelog
+
+## 0.2.9 — dense telemetry and stable public counters
+
+- Uses the official MQTT state stream as the preferred battery source while the
+  mower is active, producing denser discharge updates without inventing
+  interpolated percentages. Private-cloud SOC remains preferred while charging.
+- Adds battery-source freshness, raw MQTT/private values and anti-oscillation
+  filtering so source handovers do not create false charge/discharge bounces.
+- Resolves public mowing progress from fresh MQTT overall/work/route progress
+  before slower private-cloud values and keeps progress monotonic within one
+  confirmed mowing cycle.
+- Clears progress, coverage and session area immediately after an explicit or
+  detected new cycle, then rejects stale values from the previous cycle until
+  low new-cycle telemetry arrives. Brief zeroes and regressions inside the same
+  cycle are retained as last-known-good instead of being published.
+- Retains Total area through endpoint gaps and Home Assistant restarts using the
+  decoded map cache and persisted last-known telemetry.
+- Keeps Current channel at the last confirmed value when the MQTT pose becomes
+  stale, and reports `Not in channel` while docking is confirmed. Gate and Gate
+  area safety still require a fresh MQTT position and never act on the retained
+  display value.
+- Tracks per-message MQTT freshness separately for pose, progress, area and
+  battery so cached fields in a later location packet do not look newly updated.
+- Extends sensor attributes and exported diagnostics with telemetry source, age,
+  raw candidate, stale-channel and cycle-reset context.
+- Adds dependency-free regression tests for battery source selection, cycle
+  reset holds, transient regressions, MQTT field freshness and channel stability.
+
 ## 0.2.7 — state consistency and cycle reset reliability
 
 - Makes a successful `navimower.mow` `reset: true` command an immediate history

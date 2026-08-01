@@ -7,9 +7,9 @@ Navimower combines two cloud connections in one config entry:
 - **Private app cloud** — map geometry, real zone names and IDs, Off-limit and
   VF-off areas, mapped Channels, settings, schedules, commands, maintenance and
   stable cloud state.
-- **Official Smart Home OAuth + MQTT** — dense local `X`, `Y`, heading and live
-  mower events used for exact route history, physical-zone detection and gate
-  automations.
+- **Official Smart Home OAuth + MQTT** — dense local `X`, `Y`, heading, battery
+  and live mower events used for exact route history, physical-zone detection,
+  stable progress and gate automations.
 
 Navimower does **not** require the older NavimowHA integration from v0.2.0
 onward.
@@ -157,10 +157,15 @@ mower reaches the destination zone and the configured close delay expires.
 
 Normal empty navigation states are exposed as readable values (`No active
 target`, `Not in channel`, or a last-known/stale physical zone) rather than
-generic `unknown`. During a brief start, pause or dock acknowledgement, the
-lawn-mower entity preserves the explicit command activity instead of falling
-back to a false Docked state. Target and gate attributes include the chosen
-source, command age, direction and pose validity for troubleshooting.
+generic `unknown`. Current channel keeps its last confirmed display value when
+the pose stream ages instead of alternating with `Position unavailable`; a
+confirmed dock is reported as `Not in channel`. The sensor exposes source,
+staleness and pose age, while all Gate and Gate-area safety decisions continue
+to require a fresh MQTT position. During a brief start, pause or dock
+acknowledgement, the lawn-mower entity preserves the explicit command activity
+instead of falling back to a false Docked state. Target and gate attributes
+include the chosen source, command age, direction and pose validity for
+troubleshooting.
 
 ### Mower entities and controls
 
@@ -243,8 +248,13 @@ stay loaded during recovery.
 | --- | --- | --- |
 | X/Y, heading and exact route | official MQTT | private-cloud location |
 | live activity changes | official MQTT | private-cloud `index2` |
-| coverage, areas and zone progress | private cloud | last-good cache |
+| battery while mowing/returning | fresh official MQTT state | private-cloud SOC, then last-known |
+| battery while docked/charging | private-cloud SOC | fresh MQTT state, then last-known |
+| public mowing progress while active | fresh MQTT overall/work/route progress | private coverage/work/progress, then last-known |
+| coverage and session area | cycle-filtered private/MQTT values | last-known-good; stale prior-cycle values are held clear |
+| total mapped area | private/map cache | persisted last-known |
 | map, zones, settings and schedule | private cloud | persisted/local cache |
+| Current channel display | fresh MQTT pose | confirmed dock or last-known display value |
 | physical Gate-area/gate safety | fresh MQTT only | unavailable, never stale X/Y |
 
 Private-cloud polling is currently intentionally aggressive while field testing:
@@ -256,10 +266,18 @@ Private-cloud polling is currently intentionally aggressive while field testing:
   downloaded on every cycle.
 
 A failure from one private endpoint keeps its previous value and does not erase
-other entity states. Reauthentication is started only for a real authentication
-rejection. The diagnostic `Position source` sensor shows whether current X/Y came
-from `mqtt` or `private_cloud`; `MQTT position stream` shows states such as
-`live`, `resubscribing`, `rebuilding` or `backoff`.
+other entity states. Battery, mowing progress, session area and total area keep
+last-known-good values through short gaps and are checkpointed for restart
+recovery. A confirmed new mowing cycle immediately clears progress, coverage and
+session area; old cloud counters are ignored until low new-cycle values confirm
+the reset. The integration does not interpolate synthetic battery percentages.
+
+Reauthentication is started only for a real authentication rejection. The
+diagnostic `Position source` sensor shows whether current X/Y came from `mqtt`
+or `private_cloud`; `MQTT position stream` shows states such as `live`,
+`resubscribing`, `rebuilding` or `backoff`. Battery, progress, area and Current
+channel entities expose their selected source and freshness context as
+attributes.
 
 ## Navimower Map Card
 
@@ -366,6 +384,22 @@ steps. They can describe a gate passage or any other area that needs exact
 physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
+
+### From v0.2.8 to v0.2.9
+
+- Active battery discharge now prefers fresh official MQTT state packets; docked
+  charging remains private-cloud-first. No synthetic/interpolated percentages
+  are created.
+- Mowing progress, coverage and session area use freshness-aware, cycle-aware
+  last-known-good filtering. A confirmed new cycle clears the old values
+  immediately and waits for low new-cycle telemetry.
+- Current channel no longer alternates with `Position unavailable` only because
+  the idle pose exceeded its freshness window. Gate safety remains fresh-pose
+  only.
+- Total area and the main public telemetry values survive short source outages
+  and Home Assistant restarts.
+- No configuration migration or Map API change is required. Restart Home
+  Assistant after updating.
 
 ### From v0.2.6 to v0.2.7
 
