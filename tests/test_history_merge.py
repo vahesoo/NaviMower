@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import importlib.util
 from pathlib import Path
 import sys
@@ -17,11 +18,19 @@ def module(name: str) -> types.ModuleType:
     return value
 
 
-module("homeassistant")
+homeassistant = module("homeassistant")
+homeassistant.__path__ = []
 core = module("homeassistant.core")
 core.HomeAssistant = object
-module("homeassistant.helpers")
+helpers = module("homeassistant.helpers")
+helpers.__path__ = []
 storage = module("homeassistant.helpers.storage")
+util = module("homeassistant.util")
+util.__path__ = []
+dt = module("homeassistant.util.dt")
+dt.now = lambda: datetime.now(UTC)
+dt.as_local = lambda value: value.astimezone()
+util.dt = dt
 
 
 class Store:
@@ -308,6 +317,16 @@ async def cycle_reset_split_test() -> None:
     )
     first_id = manager._active_id
     assert first_id
+    manager.process_pose(
+        position={"x": 1.05, "y": 1.05},
+        pose_time=2_200_000_005,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
 
     high = {
         "coverage": {
@@ -357,6 +376,54 @@ async def cycle_reset_split_test() -> None:
 asyncio.run(cycle_reset_split_test())
 
 
+async def provisional_cycle_reset_stub_test() -> None:
+    """An immediate reset must discard a non-drawable startup stub."""
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-provisional", "TEST")
+    manager.process_pose(
+        position={"x": 4.0, "y": 4.0},
+        pose_time=2_250_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    stub_id = manager._active_id
+    assert stub_id
+    high = {
+        "coverage": {"zones": [{"id": 24, "name": "Yard", "pct": 98}]},
+        "zone_details": [{"id": 24, "name": "Yard", "progress": 98}],
+    }
+    low = {
+        "coverage": {"zones": [{"id": 24, "name": "Yard", "pct": 4}]},
+        "zone_details": [{"id": 24, "name": "Yard", "progress": 4}],
+    }
+    assert manager.prepare_cycle(high, pose_time=2_250_000_010) is False
+    assert manager.prepare_cycle(low, pose_time=2_250_000_020) is True
+    assert manager._active_id is None
+    assert stub_id not in manager._cache
+    assert manager._sessions == []
+    manager.process_pose(
+        position={"x": 4.1, "y": 4.1},
+        pose_time=2_250_000_021,
+        heading=0.1,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
+    assert len(manager._sessions) == 1
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+
+asyncio.run(provisional_cycle_reset_stub_test())
+
+
 def practical_completion_threshold_test() -> None:
     Store.values.clear()
     manager = history.NavimowerHistory(FakeHass(), "entry-threshold", "TEST")
@@ -369,10 +436,12 @@ def practical_completion_threshold_test() -> None:
         docked=False,
         returning=False,
         zone_ids=[13],
+        physical_zone_id=13,
     )
     manager.update_zone_history(
         {"zones": [{"id": 13, "pct": 97}]},
         [{"id": 13, "name": "Street", "percentage": 97}],
+        active_zone_progress=97,
     )
     active = manager.active_session
     assert active is not None
@@ -397,10 +466,12 @@ async def dock_completion_history_test() -> None:
         docked=False,
         returning=False,
         zone_ids=[24],
+        physical_zone_id=24,
     )
     manager.update_zone_history(
         {"zones": [{"id": 24, "pct": 97}]},
         [{"id": 24, "name": "Yard", "progress": 97, "percentage": 23}],
+        active_zone_progress=97,
     )
     manager.prepare_cycle(
         {
@@ -451,6 +522,16 @@ async def explicit_partial_reset_test() -> None:
     )
     first_id = manager._active_id
     assert first_id
+    manager.process_pose(
+        position={"x": 2.05, "y": 2.05},
+        pose_time=2_500_000_005,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[24],
+    )
     fifty = {
         "coverage": {"zones": [{"id": 24, "name": "Yard", "pct": 50}]},
         "zone_details": [{"id": 24, "name": "Yard", "progress": 50}],
@@ -499,6 +580,16 @@ async def vendor_partial_reset_test() -> None:
     manager.process_pose(
         position={"x": 3.0, "y": 3.0},
         pose_time=2_600_000_000,
+        heading=0.0,
+        activity="mowing",
+        cutting=True,
+        docked=False,
+        returning=False,
+        zone_ids=[13],
+    )
+    manager.process_pose(
+        position={"x": 3.05, "y": 3.05},
+        pose_time=2_600_000_005,
         heading=0.0,
         activity="mowing",
         cutting=True,
