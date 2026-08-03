@@ -11,13 +11,14 @@
 - Uses one authoritative integration-side zone model for Home Assistant sensors
   and the Map API, including stable zone IDs, cycle IDs, weighted m²/progress,
   source details and persistent timestamps.
-- Calculates Task progress from only the currently selected zones, weighted by
-  area. Selected zones not yet entered in the task count as zero, while their
-  previous value remains available for Map coverage.
+- Uses vendor `mowingPercentage` as whole selected Task progress and
+  `subtotalArea` as Task mowed area. The integration-side area-weighted selected
+  zone model remains a fallback instead of being mixed with route progress.
 - Calculates Map coverage and Map mowed area from the latest retained value of
   every mapped zone, and renames Total area to the unambiguous Map area.
-- Keeps the vendor Route progress counter as a disabled diagnostic entity rather
-  than presenting it as area coverage.
+- Keeps packed `mapWorkPosition.progress` as active-zone/work progress and the
+  vendor Route progress counter as a disabled diagnostic entity. Neither can
+  replace the whole-task percentage.
 - Bumps the authenticated Map API to schema v5 and adds prepared `zone_states`,
   `totals`, independent revisions, and latest same-day `daily_trails` per zone.
 - Stores the physical zone ID with new route points, falls back to zone polygon
@@ -25,8 +26,9 @@
   preparation by date/map/route revision.
 - Discards provisional zero/one-point start-reset sessions and removes existing
   completed empty stubs, preventing duplicate non-clickable history rows.
-- Adds regression tests for weighted task/map calculations, per-zone daily trail
-  replacement, empty-session filtering and the clean v0.3 sensor architecture.
+- Adds regression tests for whole-task/active-zone source separation, weighted
+  fallback calculations, per-zone daily trail replacement, empty-session
+  filtering and the clean v0.3 sensor architecture.
 
 ## 0.2.9 — dense telemetry and stable public counters
 

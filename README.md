@@ -261,8 +261,9 @@ stay loaded during recovery.
 | live activity changes | official MQTT | private-cloud `index2` |
 | battery while mowing/returning | fresh official MQTT state | private-cloud SOC, then last-known |
 | battery while docked/charging | private-cloud SOC | fresh MQTT state, then last-known |
-| per-zone coverage and mowed area | private-cloud per-zone area/coverage, densified for the active zone by fresh MQTT progress | persisted per-zone last-known |
-| Task progress / Task mowed area | integration-side area-weighted selected-zone model | persisted active-session zone state |
+| per-zone coverage and mowed area | private-cloud `partitionPercentage` / `finishedArea`, densified for the active zone by packed `mapWorkPosition.progress` and then route progress | persisted per-zone last-known |
+| Task progress | overall vendor `mowingPercentage` for the selected task | integration-side area-weighted selected-zone model, then persisted last-known |
+| Task mowed area | vendor `subtotalArea` for the selected task | Task area × Task progress, then area-weighted zone state |
 | Map coverage / Map mowed area | integration-side area-weighted latest value for every zone | persisted zone history |
 | Map area | decoded map-zone geometry | persisted map cache |
 | Route progress | official MQTT/vendor route counter | unavailable; diagnostic only |
@@ -350,7 +351,9 @@ The map payload uses `schema_version: 5` and contains:
 - links to the complete session index/detail APIs.
 
 `zone_states` is the same authoritative model used by Home Assistant entities.
-The card therefore does not need to calculate area-weighted progress, detect
+Whole-task `mowingPercentage`, active-zone `mapWorkPosition.progress`, per-zone
+`partitionPercentage` and route progress remain separate fields instead of being
+used interchangeably. The card therefore does not need to calculate progress, detect
 zone-cycle boundaries or classify daily route points during dashboard loading.
 A new cycle replaces only the entered zone's same-day trail; other zone trails
 remain available until their own next cycle or the local calendar day changes.
