@@ -30,6 +30,8 @@ from .map_identifiers import resolve_map_identifiers
 
 _KEYWORDS = (
     "angle",
+    "battery",
+    "charge",
     "boundary",
     "camera",
     "cbox",
@@ -37,6 +39,7 @@ _KEYWORDS = (
     "direction",
     "doodle",
     "edge",
+    "firmware",
     "height",
     "image",
     "img",
@@ -44,9 +47,12 @@ _KEYWORDS = (
     "lidar",
     "map",
     "mow",
+    "network",
     "oauth",
     "path",
     "resource",
+    "rtk",
+    "signal",
     "scene",
     "session",
     "sha",
@@ -265,6 +271,230 @@ def rtk_diagnostics(location: Any) -> dict[str, Any]:
     return result
 
 
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _first_value(mapping: Any, *keys: str) -> Any:
+    source = _as_mapping(mapping)
+    for key in keys:
+        if key in source and source.get(key) is not None:
+            return source.get(key)
+    return None
+
+
+def _opaque_metadata(value: Any) -> dict[str, Any]:
+    """Describe an opaque vendor field without publishing its raw value."""
+    if value is None:
+        return {"present": False}
+    encoded = _rtk_value_bytes(value)
+    return {
+        "present": True,
+        "type": _value_type(value),
+        "length": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _firmware_summary(device_info: Any) -> dict[str, Any]:
+    info = _as_mapping(device_info)
+    nonstandard = _as_mapping(info.get("nonstandardVehicleConfig"))
+    versions = _as_mapping(nonstandard.get("firmwareVersion"))
+    return {
+        "model": info.get("model"),
+        "versions": sanitize(dict(versions)),
+        "has_screen": nonstandard.get("hasScreen"),
+    }
+
+
+def _battery_summary(index2: Any, device_info: Any, set_list: Any, maintenance: Any) -> dict[str, Any]:
+    status = _as_mapping(index2)
+    settings = _as_mapping(set_list)
+    info = _as_mapping(device_info)
+    nonstandard = _as_mapping(info.get("nonstandardVehicleConfig"))
+    battery_config = _as_mapping(nonstandard.get("batteryConfig"))
+    maintenance_data = _as_mapping(maintenance)
+    maintenance_battery = _as_mapping(maintenance_data.get("battery"))
+    return {
+        "soc_pct": _first_value(status, "soc"),
+        "soh_pct": _first_value(status, "soh"),
+        "battery_status_raw": _first_value(status, "batteryStatus"),
+        "charge_remaining_time_raw": _first_value(status, "chgRemainTimeUser"),
+        "reported_max_capacity": _first_value(maintenance_battery, "maxCapacity"),
+        "charging_limit_pct": _first_value(settings, "chargingLimit"),
+        "return_battery_level_pct": _first_value(settings, "returnBatteryLevel"),
+        "recommended_charging_limit_pct": _first_value(battery_config, "chargingLimitRecommend"),
+        "recommended_return_battery_level_pct": _first_value(battery_config, "returnBatteryLevelRecommend"),
+        "charging_limit_min_pct": _first_value(battery_config, "chargingLimitMin"),
+        "charging_limit_max_pct": _first_value(battery_config, "chargingLimitMax"),
+        "return_battery_level_min_pct": _first_value(battery_config, "returnBatteryLevelMin"),
+        "return_battery_level_max_pct": _first_value(battery_config, "returnBatteryLevelMax"),
+    }
+
+
+def _connectivity_summary(index2: Any, auth_list: Any, coordinator_data: Any, vehicle_type: Any) -> dict[str, Any]:
+    status = _as_mapping(index2)
+    data = _as_mapping(coordinator_data)
+    own_auth: Mapping[str, Any] = {}
+    auth_rows = auth_list if isinstance(auth_list, list) else []
+    for row in auth_rows:
+        if not isinstance(row, Mapping):
+            continue
+        if vehicle_type is not None and str(row.get("vehicle_type")) == str(vehicle_type):
+            own_auth = row
+            break
+    return {
+        "network_type": _first_value(status, "networkType"),
+        "network_status": _first_value(status, "network_status"),
+        "signal_raw": _first_value(status, "network_signal"),
+        "signal_4g_raw": _first_value(status, "network_signal_4G"),
+        "signal_wifi_raw": _first_value(status, "network_signal_wifi"),
+        "auth_signal_raw": _first_value(own_auth, "network_signal"),
+        "auth_network_type": _first_value(own_auth, "networkType"),
+        "mqtt_connected": data.get("mqtt_connected"),
+        "mqtt_stream_state": data.get("mqtt_stream_state"),
+        "mqtt_pose_age_s": data.get("mqtt_pose_age"),
+        "mqtt_state_age_s": data.get("mqtt_state_age"),
+        "mqtt_action_age_s": data.get("mqtt_action_age"),
+        "mqtt_recovery_count": data.get("mqtt_recovery_count"),
+        "private_poll_age_s": data.get("private_poll_age"),
+        "private_poll_profile": data.get("private_poll_profile"),
+    }
+
+
+def _positioning_summary(location: Any, device_info: Any, set_list: Any, coordinator_data: Any) -> dict[str, Any]:
+    info = _as_mapping(device_info)
+    settings = _as_mapping(set_list)
+    switch_extend = _as_mapping(info.get("switchExtend"))
+    data = _as_mapping(coordinator_data)
+    return {
+        "position_source": data.get("pose_source"),
+        "pose_age_s": data.get("mqtt_pose_age"),
+        "pose_stream_state": data.get("mqtt_stream_state"),
+        "sensor_type": info.get("sensor_type"),
+        "antenna_support_num": info.get("antennaSupportNum"),
+        "rtk_switch": _first_value(settings, "rtkSwitch"),
+        "rtk_switch_capability": _first_value(switch_extend, "rtkSwitch"),
+        "rtk_data_source": _first_value(settings, "rtkDataSource"),
+        "rtk_visible": _first_value(settings, "rtkVisible"),
+        "rtk_visible_country": _first_value(settings, "rtkVisibleCountry"),
+        "slam_switch": _first_value(settings, "slamSwitch"),
+        "rtk_payload": rtk_diagnostics(location),
+    }
+
+
+def _capability_summary(device_info: Any, set_list: Any) -> dict[str, Any]:
+    info = _as_mapping(device_info)
+    settings = _as_mapping(set_list)
+    mowing = _as_mapping(info.get("mowingExtend"))
+    return {
+        "map_area_limit_m2": _first_value(info, "map_area_limit"),
+        "map_max_area_limit_m2": _first_value(info, "map_max_area_limit"),
+        "sub_map_limit": _first_value(info, "sub_map_limit"),
+        "vision_off_area_limit": _first_value(info, "visionoff_limit"),
+        "mowing_path_width_raw": _first_value(mowing, "mowingPathWidth"),
+        "supported_cutting_heights_mm": sanitize(info.get("mowingHeightList")),
+        "default_line_speed": _first_value(info, "default_line_speed"),
+        "default_rotation_speed": _first_value(info, "default_rotation_speed"),
+        "low_cutting_kit_switch": _first_value(_as_mapping(info.get("switchExtend")), "lowCuttingKitSwitch"),
+        "terrain_adapt_switch": _first_value(settings, "terrainAdaptSwitch"),
+        "traction_control": _first_value(settings, "tractionControl", "tcsSwitch"),
+        "narrow_zone_adapt_switch": _first_value(settings, "narrowZoneAdaptSwitch"),
+        "edge_sense": _first_value(settings, "edgeSense"),
+        "edge_sense_level": _first_value(settings, "edgeSenselevel"),
+    }
+
+
+def _maintenance_summary(maintenance: Any) -> dict[str, Any]:
+    source = _as_mapping(maintenance)
+    result: dict[str, Any] = {"update_time": source.get("updateTime")}
+    for key in ("knife", "chassis"):
+        item = _as_mapping(source.get(key))
+        result[key] = {
+            "default_duration_raw": item.get(f"{key}DefaultDuration"),
+            "set_time_raw": item.get("setTime"),
+            "used_time_raw": item.get("usedTime"),
+            "duration_option_count": len(item.get(f"{key}DurationList") or []),
+        }
+    return result
+
+
+def _schedule_summary(set_list: Any, today_plan: Any) -> dict[str, Any]:
+    settings = _as_mapping(set_list)
+    today = _as_mapping(today_plan)
+    plan = settings.get("plan") if isinstance(settings.get("plan"), list) else []
+    plan_v2 = settings.get("plan_v2") if isinstance(settings.get("plan_v2"), list) else []
+    open_days = sum(1 for row in plan if isinstance(row, Mapping) and row.get("open") in (1, "1", True))
+    v2_periods = 0
+    v2_periods_with_zones = 0
+    for row in plan_v2:
+        if not isinstance(row, Mapping):
+            continue
+        periods = row.get("period") if isinstance(row.get("period"), list) else []
+        v2_periods += len(periods)
+        for period in periods:
+            if isinstance(period, Mapping) and period.get("partition_ids"):
+                v2_periods_with_zones += 1
+    return {
+        "global_enabled_raw": _first_value(settings, "startPlan"),
+        "timezone_raw": _first_value(settings, "timezone"),
+        "timezone_code_raw": _first_value(settings, "timezoneCode"),
+        "dst_switch": _first_value(settings, "dstSwitch"),
+        "is_dst": _first_value(settings, "isDst"),
+        "plan_day_count": len(plan),
+        "open_day_count": open_days,
+        "plan_v2_day_count": len(plan_v2),
+        "plan_v2_period_count": v2_periods,
+        "plan_v2_periods_with_zones": v2_periods_with_zones,
+        "today_weekday_raw": _first_value(today, "weekDay"),
+        "today_plan_status_raw": _first_value(today, "c_plan_status"),
+        "today_task_status_raw": _first_value(today, "m_task_status"),
+        "today_start_raw": _first_value(today, "c_plan_s_time"),
+        "today_end_raw": _first_value(today, "c_plan_e_time"),
+        "today_partition_length_raw": _first_value(today, "partition_length"),
+    }
+
+
+def _environment_summary(set_list: Any) -> dict[str, Any]:
+    settings = _as_mapping(set_list)
+    keys = (
+        "animalProtection",
+        "nightAnimalProtection",
+        "rainDetectionSwitch",
+        "rainSensor",
+        "rainSensitivity",
+        "weatherSwitch",
+        "weatherSensitivity",
+        "frostSwitch",
+        "frostDelayTime",
+        "snowSwitch",
+        "snowDelayTime",
+        "stormSwitch",
+        "highTempSwitch",
+        "allowMaxTemp",
+        "childLock",
+        "liftSwitch",
+        "guard",
+        "dndModeSwitch",
+        "powerSaveShutdownSwitch",
+    )
+    return {key: settings.get(key) for key in keys if key in settings}
+
+
+def _opaque_vendor_summary(index2: Any, location: Any) -> dict[str, Any]:
+    status = _as_mapping(index2)
+    position = _as_mapping(location)
+    return {
+        "bool_state": _opaque_metadata(status.get("boolState")),
+        "feature_bitmap": _opaque_metadata(status.get("fun_support")),
+        "index_map_work_position": _opaque_metadata(status.get("map_work_position")),
+        "location_map_work_position": _opaque_metadata(position.get("map_work_position")),
+        "partition_id_list": _opaque_metadata(status.get("partitionIdList")),
+        "permanent_data_count": len(status.get("permanent_data") or []),
+    }
+
+
 def sanitize(value: Any, *, key: str | None = None) -> Any:
     """Recursively sanitize account/location identifiers while retaining structure."""
     if key is not None and _is_sensitive_key(key):
@@ -418,15 +648,14 @@ async def async_build_diagnostics(
     )
 
     endpoints: dict[str, Any] = {}
-    raw_for_ids: dict[str, Any] = {}
+    raw_endpoint_data: dict[str, Any] = {}
     for name, func, args in endpoint_specs:
         result, raw = await _read(hass, func, *args)
         endpoints[name] = result
-        if name in {"location", "map_list"}:
-            raw_for_ids[name] = raw
+        raw_endpoint_data[name] = raw
 
     map_id, map_base_id, map_edit_time = resolve_map_identifiers(
-        raw_for_ids.get("location"), raw_for_ids.get("map_list")
+        raw_endpoint_data.get("location"), raw_endpoint_data.get("map_list")
     )
     if map_id and map_base_id:
         endpoints["map_detail_plain"], _ = await _read(
@@ -504,7 +733,42 @@ async def async_build_diagnostics(
             "data": sanitize(deepcopy(dict(coordinator.entry.data))),
             "options": sanitize(deepcopy(dict(coordinator.entry.options))),
         },
-        "rtk": rtk_diagnostics(raw_for_ids.get("location")),
+        "rtk": rtk_diagnostics(raw_endpoint_data.get("location")),
+        "diagnostic_summaries": {
+            "positioning": sanitize(_positioning_summary(
+                raw_endpoint_data.get("location"),
+                raw_endpoint_data.get("device_info"),
+                raw_endpoint_data.get("set_list"),
+                data,
+            )),
+            "connectivity": sanitize(_connectivity_summary(
+                raw_endpoint_data.get("index2"),
+                raw_endpoint_data.get("auth_list"),
+                data,
+                vehicle_type,
+            )),
+            "battery": sanitize(_battery_summary(
+                raw_endpoint_data.get("index2"),
+                raw_endpoint_data.get("device_info"),
+                raw_endpoint_data.get("set_list"),
+                raw_endpoint_data.get("maintenance"),
+            )),
+            "firmware": sanitize(_firmware_summary(raw_endpoint_data.get("device_info"))),
+            "capabilities": sanitize(_capability_summary(
+                raw_endpoint_data.get("device_info"),
+                raw_endpoint_data.get("set_list"),
+            )),
+            "maintenance": sanitize(_maintenance_summary(raw_endpoint_data.get("maintenance"))),
+            "schedule": sanitize(_schedule_summary(
+                raw_endpoint_data.get("set_list"),
+                raw_endpoint_data.get("today_plan"),
+            )),
+            "environment_and_safety": sanitize(_environment_summary(raw_endpoint_data.get("set_list"))),
+            "opaque_vendor_fields": sanitize(_opaque_vendor_summary(
+                raw_endpoint_data.get("index2"),
+                raw_endpoint_data.get("location"),
+            )),
+        },
         "authentication": {
             "private_cloud": (
                 "stored private app-cloud session; normal refresh may "
