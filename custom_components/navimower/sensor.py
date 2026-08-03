@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from homeassistant.util import dt as dt_util
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -75,19 +77,19 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         value_fn=lambda d: d.get("state_code"),
     ),
     NavimowSensorDescription(
-        key="mowing_progress",
-        translation_key="mowing_progress",
+        key="task_progress",
+        name="Task progress",
         icon="mdi:progress-check",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("mowing_progress"),
+        value_fn=lambda d: (d.get("totals") or {}).get("task_progress_pct"),
         attrs_fn=lambda d: {
-            "source": d.get("mowing_progress_source"),
-            "source_age": d.get("mowing_progress_source_age"),
-            "mqtt": d.get("mowing_progress_mqtt"),
-            "private_cloud": d.get("mowing_progress_private_cloud"),
-            "cycle_reset_pending": d.get("cycle_value_reset_pending"),
-            "cycle_reset_reason": d.get("cycle_value_reset_reason"),
+            "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
+            "task_area_m2": (d.get("totals") or {}).get("task_area_m2"),
+            "task_mowed_area_m2": (d.get("totals") or {}).get("task_mowed_area_m2"),
+            "active_zone_id": (d.get("totals") or {}).get("active_zone_id"),
+            "cycle_id": d.get("active_cycle_id"),
+            "calculation": "area_weighted_selected_zones",
         },
     ),
     NavimowSensorDescription(
@@ -193,12 +195,18 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         },
     ),
     NavimowSensorDescription(
-        key="mow_route_progress",
-        name="Mow route progress",
-        icon="mdi:progress-check",
+        key="route_progress",
+        name="Route progress",
+        icon="mdi:routes",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda d: d.get("mow_route_progress"),
+        attrs_fn=lambda d: {
+            "meaning": "vendor_planned_route_progress",
+            "not_area_coverage": True,
+        },
     ),
     NavimowSensorDescription(
         key="current_zone",
@@ -252,64 +260,85 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         },
     ),
     NavimowSensorDescription(
-        key="coverage",
-        translation_key="coverage",
+        key="map_coverage",
+        name="Map coverage",
         icon="mdi:grid",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        # Overall mowed % of the current/last session (per-zone in attributes).
-        value_fn=lambda d: (d.get("coverage") or {}).get("overall_pct"),
-        attrs_fn=lambda d: (
-            {
-                "total_area": (d.get("coverage") or {}).get("total_area"),
-                "finished_area": (d.get("coverage") or {}).get("finished_area"),
-                "source": d.get("coverage_source"),
-                "cycle_reset_pending": d.get("cycle_value_reset_pending"),
-                "zones": [
-                    {
-                        "name": z.get("name"),
-                        "percentage": z.get("pct"),
-                        "finished_area": z.get("finished"),
-                        "area": z.get("area"),
-                    }
-                    for z in (d.get("coverage") or {}).get("zones") or []
-                ],
-            }
-            if d.get("coverage")
-            else None
-        ),
-    ),
-    NavimowSensorDescription(
-        key="session_area",
-        translation_key="session_area",
-        icon="mdi:texture-box",
-        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("session_area"),
+        value_fn=lambda d: (d.get("totals") or {}).get("map_coverage_pct"),
         attrs_fn=lambda d: {
-            "source": d.get("session_area_source"),
-            "source_age": d.get("session_area_source_age"),
-            "mqtt_area": d.get("session_area_mqtt"),
-            "private_cloud_area": d.get("session_area_private_cloud"),
-            "cycle_reset_pending": d.get("cycle_value_reset_pending"),
+            "map_area_m2": (d.get("totals") or {}).get("map_area_m2"),
+            "map_mowed_area_m2": (d.get("totals") or {}).get("map_mowed_area_m2"),
+            "zone_count": (d.get("totals") or {}).get("zone_count"),
+            "completed_zone_count": (d.get("totals") or {}).get("completed_zone_count"),
+            "calculation": "area_weighted_latest_zone_cycles",
+            "zone_states_revision": d.get("zone_states_revision"),
         },
     ),
     NavimowSensorDescription(
-        key="weekly_area",
-        translation_key="weekly_area",
+        key="task_mowed_area",
+        name="Task mowed area",
+        icon="mdi:texture-box",
+        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: (d.get("totals") or {}).get("task_mowed_area_m2"),
+        attrs_fn=lambda d: {
+            "task_area_m2": (d.get("totals") or {}).get("task_area_m2"),
+            "task_progress_pct": (d.get("totals") or {}).get("task_progress_pct"),
+            "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="map_mowed_area",
+        name="Map mowed area",
+        icon="mdi:map-check",
+        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: (d.get("totals") or {}).get("map_mowed_area_m2"),
+        attrs_fn=lambda d: {
+            "map_area_m2": (d.get("totals") or {}).get("map_area_m2"),
+            "map_coverage_pct": (d.get("totals") or {}).get("map_coverage_pct"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="weekly_mowed_area",
+        name="Weekly mowed area",
         icon="mdi:calendar-week",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda d: d.get("weekly_area"),
     ),
     NavimowSensorDescription(
-        key="total_area",
-        translation_key="total_area",
+        key="map_area",
+        name="Map area",
         icon="mdi:ruler-square",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.get("total_area"),
-        attrs_fn=lambda d: {"source": d.get("total_area_source")},
+        value_fn=lambda d: (d.get("totals") or {}).get("map_area_m2"),
+        attrs_fn=lambda d: {
+            "zone_count": (d.get("totals") or {}).get("zone_count"),
+            "source": "decoded_map_zones",
+        },
+    ),
+    NavimowSensorDescription(
+        key="last_map_mowed",
+        name="Last map mowed",
+        icon="mdi:clock-check-outline",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
+        value_fn=lambda d: dt_util.parse_datetime(d.get("last_map_mowed_at"))
+        if d.get("last_map_mowed_at")
+        else None,
+    ),
+    NavimowSensorDescription(
+        key="last_map_completed",
+        name="Last map completed",
+        icon="mdi:map-check-outline",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
+        value_fn=lambda d: dt_util.parse_datetime(d.get("last_map_completed_at"))
+        if d.get("last_map_completed_at")
+        else None,
     ),
     NavimowSensorDescription(
         key="next_mow",
@@ -376,6 +405,115 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ZoneMetricDescription:
+    key: str
+    label: str
+    icon: str
+    value_key: str
+    unit: str | None = None
+    device_class: SensorDeviceClass | None = None
+    state_class: SensorStateClass | None = None
+    enabled_default: bool = False
+
+
+ZONE_METRICS: tuple[ZoneMetricDescription, ...] = (
+    ZoneMetricDescription(
+        key="coverage",
+        label="coverage",
+        icon="mdi:progress-check",
+        value_key="coverage_pct",
+        unit=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        enabled_default=True,
+    ),
+    ZoneMetricDescription(
+        key="area",
+        label="area",
+        icon="mdi:ruler-square",
+        value_key="area_m2",
+        unit=UnitOfArea.SQUARE_METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    ZoneMetricDescription(
+        key="mowed_area",
+        label="mowed area",
+        icon="mdi:map-check",
+        value_key="mowed_area_m2",
+        unit=UnitOfArea.SQUARE_METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    ZoneMetricDescription(
+        key="last_mowed",
+        label="last mowed",
+        icon="mdi:clock-outline",
+        value_key="last_mowed_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+    ),
+    ZoneMetricDescription(
+        key="last_completed",
+        label="last completed",
+        icon="mdi:check-circle-outline",
+        value_key="last_completed_at",
+        device_class=SensorDeviceClass.TIMESTAMP,
+    ),
+)
+
+
+class NavimowerZoneSensor(NavimowEntity, SensorEntity):
+    """One zone metric backed by the central integration zone model."""
+
+    def __init__(
+        self,
+        coordinator: NavimowCoordinator,
+        zone_id: int,
+        metric: ZoneMetricDescription,
+    ) -> None:
+        super().__init__(coordinator, f"zone_{zone_id}_{metric.key}")
+        self._zone_id = zone_id
+        self._metric = metric
+        self._attr_icon = metric.icon
+        self._attr_native_unit_of_measurement = metric.unit
+        self._attr_device_class = metric.device_class
+        self._attr_state_class = metric.state_class
+        self._attr_entity_registry_enabled_default = metric.enabled_default
+
+    @property
+    def name(self) -> str:
+        """Follow zone renames without changing the stable unique ID."""
+        return f"{self._zone_name()} {self._metric.label}"
+
+    def _row(self) -> dict[str, Any]:
+        return next(
+            (
+                row
+                for row in self.data.get("zone_states") or []
+                if str(row.get("id")) == str(self._zone_id)
+            ),
+            {},
+        )
+
+    def _zone_name(self) -> str:
+        row = self._row()
+        return str(row.get("name") or f"Zone {self._zone_id}")
+
+    @property
+    def native_value(self) -> Any:
+        value = self._row().get(self._metric.value_key)
+        if self._metric.device_class == SensorDeviceClass.TIMESTAMP:
+            return dt_util.parse_datetime(value) if value else None
+        return value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        row = dict(self._row())
+        row.pop(self._metric.value_key, None)
+        row["zone_id"] = self._zone_id
+        row["zone_name"] = self._zone_name()
+        row["zone_states_revision"] = self.data.get("zone_states_revision")
+        return row
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -383,6 +521,28 @@ async def async_setup_entry(
     entities = [NavimowSensor(coordinator, desc) for desc in SENSORS]
     entities.append(NavimowerMapDataSensor(coordinator, entry.entry_id))
     async_add_entities(entities)
+
+    known_zone_ids: set[int] = set()
+
+    def _add_new_zone_entities() -> None:
+        new_entities: list[SensorEntity] = []
+        for row in coordinator.data.get("zone_states") or []:
+            try:
+                zone_id = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if zone_id in known_zone_ids:
+                continue
+            known_zone_ids.add(zone_id)
+            new_entities.extend(
+                NavimowerZoneSensor(coordinator, zone_id, metric)
+                for metric in ZONE_METRICS
+            )
+        if new_entities:
+            async_add_entities(new_entities)
+
+    _add_new_zone_entities()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_zone_entities))
 
 
 class NavimowSensor(NavimowEntity, SensorEntity):
@@ -446,6 +606,12 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "map_modified_count": map_data.get("modified_count"),
             "cut_height": (self.data.get("settings") or {}).get("cut_height"),
             "zone_detail_count": len(self.data.get("zone_details") or []),
+            "zone_state_count": len(self.data.get("zone_states") or []),
+            "zone_states_revision": self.data.get("zone_states_revision"),
+            "daily_trails_revision": self.coordinator.history.trail_revision,
+            "map_area_m2": (self.data.get("totals") or {}).get("map_area_m2"),
+            "map_coverage_pct": (self.data.get("totals") or {}).get("map_coverage_pct"),
+            "task_progress_pct": (self.data.get("totals") or {}).get("task_progress_pct"),
             "trail_session": self.coordinator.trail_session,
             "trail_started_at": self.coordinator.history.active_started_at(),
             "trail_points": len(self.data.get("trail") or []),

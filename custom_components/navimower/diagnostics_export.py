@@ -462,8 +462,11 @@ async def async_export_diagnostics(
                     "mowing_progress_private_cloud": data.get(
                         "mowing_progress_private_cloud"
                     ),
-                    "coverage": data.get("coverage"),
+                    "coverage_raw": data.get("coverage"),
                     "coverage_source": data.get("coverage_source"),
+                    "zone_states_revision": data.get("zone_states_revision"),
+                    "zone_states": data.get("zone_states"),
+                    "totals": data.get("totals"),
                     "session_area": data.get("session_area"),
                     "session_area_source": data.get("session_area_source"),
                     "session_area_source_age": data.get(
@@ -504,6 +507,10 @@ async def async_export_diagnostics(
             "global_cutting_height_raw": (data.get("settings") or {}).get("cut_height_raw"),
             "cutting_height_supported": data.get("cutting_height_supported"),
             "zone_details": sanitize(deepcopy(data.get("zone_details") or [])),
+            "zone_states_revision": data.get("zone_states_revision"),
+            "zone_states": sanitize(deepcopy(data.get("zone_states") or [])),
+            "totals": sanitize(deepcopy(data.get("totals") or {})),
+            "daily_trails_revision": coordinator.history.trail_revision,
             "doodles": sanitize(deepcopy(map_data.get("doodles") or [])),
             "map_api_path": f"/api/navimower/map/{coordinator.entry.entry_id}",
             "sessions_api_path": (

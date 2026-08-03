@@ -30,6 +30,7 @@ from .history import (
     NavimowerHistory,
 )
 from .location import decode_map_work_position
+from .zone_state import build_zone_model, zone_model_signature
 from .const import (
     ACTIVE_STATES,
     ACTIVITY_DOCKED,
@@ -1062,6 +1063,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._private_reauth_started = False
         self._gate_release_tasks: dict[str, Any] = {}
         self._shutdown_complete = False
+        self._zone_states_revision = 0
+        self._zone_states_signature: tuple[Any, ...] | None = None
+        self._daily_trails_cache_key: tuple[Any, ...] | None = None
+        self._daily_trails_cache: dict[str, Any] | None = None
 
     async def async_load_persistent_state(self) -> None:
         """Restore retained sessions and the last decoded map."""
@@ -1152,15 +1157,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "battery": _as_int(self._restored_telemetry.get("battery")),
             "battery_source": self._restored_telemetry.get("battery_source")
             or "persisted_last_known",
+            # Legacy raw fields remain internal fallbacks for one release cycle,
+            # but restored public values use the v0.3 zone/task terminology.
             "mowing_progress": _progress_percent(
-                self._restored_telemetry.get("mowing_progress")
+                self._restored_telemetry.get("task_progress")
             ),
             "session_area": _as_float(
-                self._restored_telemetry.get("session_area")
+                self._restored_telemetry.get("task_mowed_area")
             ),
             "total_area": (
-                _as_float(self._restored_telemetry.get("total_area"))
-                if _as_float(self._restored_telemetry.get("total_area")) is not None
+                _as_float(self._restored_telemetry.get("map_area"))
+                if _as_float(self._restored_telemetry.get("map_area")) is not None
                 else _as_float(map_geometry.get("area"))
             ),
             "zones": zones,
@@ -1179,6 +1186,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "zone_details": self._merge_zone_history(
                 self._build_zone_details(None, None, cached_height_supported)
             ),
+            "zone_states": [],
+            "zone_states_revision": 0,
+            "totals": {},
             "trail": self.history.active_points_xy(),
             "sessions": self.history.session_summaries(include_points=False),
             "trail_active": self.history.active_session is not None,
@@ -1188,6 +1198,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         }
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
+        self._refresh_zone_model(snapshot)
         return snapshot
 
     async def async_shutdown(self) -> None:
@@ -1225,9 +1236,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "telemetry": {
                 "battery": data.get("battery"),
                 "battery_source": data.get("battery_source"),
-                "mowing_progress": data.get("mowing_progress"),
-                "session_area": data.get("session_area"),
-                "total_area": data.get("total_area"),
+                "task_progress": (data.get("totals") or {}).get("task_progress_pct"),
+                "task_mowed_area": (data.get("totals") or {}).get("task_mowed_area_m2"),
+                "map_coverage": (data.get("totals") or {}).get("map_coverage_pct"),
+                "map_mowed_area": (data.get("totals") or {}).get("map_mowed_area_m2"),
+                "map_area": (data.get("totals") or {}).get("map_area_m2"),
             },
         }
 
@@ -1268,6 +1281,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["zone_details"] = self._merge_zone_history(
             snapshot.get("zone_details") or []
         )
+        self._refresh_zone_model(snapshot)
         snapshot["trail"] = self.history.active_points_xy()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
@@ -1321,6 +1335,50 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             result.append(merged)
         return result
 
+    def _refresh_zone_model(self, snapshot: dict[str, Any]) -> None:
+        """Build the one authoritative zone/totals model used by HA and the card."""
+        map_data = snapshot.get("map") or self._map_snapshot(
+            self._map_geometry or {},
+            cutting_height_supported=snapshot.get("cutting_height_supported"),
+        )
+        map_zones = [
+            dict(item) for item in (map_data or {}).get("zones") or []
+            if isinstance(item, dict)
+        ]
+        active_zone_id = _as_int(snapshot.get("current_physical_zone_id"))
+        if active_zone_id is None:
+            candidates = snapshot.get("current_zone_ids") or []
+            if len(candidates) == 1:
+                active_zone_id = _as_int(candidates[0])
+        zone_states, totals = build_zone_model(
+            map_zones=map_zones,
+            zone_details=[
+                dict(item) for item in snapshot.get("zone_details") or []
+                if isinstance(item, dict)
+            ],
+            coverage=snapshot.get("coverage"),
+            zone_history=self.history.zone_history(),
+            active_session=self.history.active_session,
+            active_zone_id=active_zone_id,
+        )
+        signature = zone_model_signature(zone_states, totals)
+        if signature != self._zone_states_signature:
+            self._zone_states_signature = signature
+            self._zone_states_revision += 1
+        snapshot["zone_states"] = zone_states
+        snapshot["zone_states_revision"] = self._zone_states_revision
+        snapshot["totals"] = totals
+        # Named top-level aliases make diagnostics/templates readable while all
+        # public entities are still sourced from the same totals object.
+        snapshot["task_progress"] = totals.get("task_progress_pct")
+        snapshot["task_mowed_area"] = totals.get("task_mowed_area_m2")
+        snapshot["map_coverage"] = totals.get("map_coverage_pct")
+        snapshot["map_mowed_area"] = totals.get("map_mowed_area_m2")
+        snapshot["map_area"] = totals.get("map_area_m2")
+        snapshot["last_map_mowed_at"] = totals.get("last_map_mowed_at")
+        snapshot["last_map_completed_at"] = totals.get("last_map_completed_at")
+        snapshot["active_cycle_id"] = (self.history.active_session or {}).get("id")
+
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
         active = self.history.active_session
         if not active:
@@ -1330,6 +1388,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             for value in active.get("zone_ids") or []
             if (parsed := _as_int(value)) is not None
         }
+        task_progress = active.get("task_zone_progress") or {}
+        if selected and task_progress:
+            values = [_progress_percent(task_progress.get(str(zone_id))) for zone_id in selected]
+            known = [value for value in values if value is not None]
+            if len(known) == len(selected):
+                return all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known)
         percentages = {
             _as_int(item.get("id")): _progress_percent(
                 item.get("progress")
@@ -1388,15 +1452,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         returning = self._is_returning_state(
             snapshot.get("state_code"), mqtt_state
         )
-        zone_ids = [
-            parsed
-            for value in (
-                snapshot.get("target_zone_ids")
-                or snapshot.get("current_zone_ids")
-                or []
+        zone_ids = list(
+            dict.fromkeys(
+                parsed
+                for value in [
+                    *(snapshot.get("current_zone_ids") or []),
+                    *(snapshot.get("target_zone_ids") or []),
+                ]
+                if (parsed := _as_int(value)) is not None
             )
-            if (parsed := _as_int(value)) is not None
-        ]
+        )
         active_height = self._active_cutting_height(snapshot)
         snapshot["active_cutting_height_mm"] = active_height
         cycle_reset = self.history.prepare_cycle(
@@ -1417,6 +1482,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             mode=str(snapshot.get("mow_mode") or "mowing"),
             mqtt_vehicle_state=mqtt_state,
             mqtt_action=mqtt_action,
+            physical_zone_id=_as_int(snapshot.get("current_physical_zone_id")),
             completed=self._session_completed(snapshot) if docked else None,
         )
 
@@ -2287,7 +2353,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """Hold public counters clear until new-cycle values reach the cloud."""
         prior = previous or self.data or {}
         self._progress_reset_pending = True
-        self._coverage_reset_pending = True
+        self._coverage_reset_pending = False
         self._area_reset_pending = True
         self._cycle_reset_started_mono = time.monotonic()
         self._cycle_reset_reason = reason
@@ -2486,34 +2552,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
         # Coverage is monotonic inside one cycle. A confirmed reset clears it
         # immediately and ignores the old cloud row until a low value arrives.
+        # Coverage is intentionally not globally reset or forced monotonic.
+        # It represents the latest per-zone values and can legitimately fall
+        # when a new cycle begins in one zone while the other zones retain their
+        # latest completed values.  The central zone model performs the weighted
+        # map/task calculations without mixing these meanings.
         coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else None
-        coverage_was_pending = self._coverage_reset_pending
-        if coverage_was_pending and reset_guard:
-            if raw_coverage_pct is not None and raw_coverage_pct <= 25:
-                self._coverage_reset_pending = False
-            else:
-                coverage = self._zero_coverage(coverage)
-        elif self._coverage_reset_pending:
-            self._coverage_reset_pending = False
-        if (
-            not coverage_was_pending
-            and not reset_marked
-            and active
-            and previous_coverage_pct is not None
-            and raw_coverage_pct is not None
-            and raw_coverage_pct < previous_coverage_pct
-        ):
-            coverage = dict(previous_coverage) if isinstance(previous_coverage, dict) else coverage
         if coverage is None and isinstance(previous_coverage, dict):
             coverage = dict(previous_coverage)
         snapshot["coverage"] = coverage
-        snapshot["coverage_source"] = (
-            "cycle_reset_hold"
-            if self._coverage_reset_pending and reset_guard
-            else "private_cloud"
-            if coverage is not None
-            else None
-        )
+        snapshot["coverage_source"] = "private_cloud" if coverage is not None else None
+        self._coverage_reset_pending = False
 
         # Session area can arrive both in the official location stream and the
         # private cloud. Reject transient zero/regressions unless a cycle reset
@@ -3397,6 +3446,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         history_position = None if position is not None else snapshot.get("position")
         self._update_history(snapshot, history_position, mqtt_state, mqtt_action)
         self._stabilize_telemetry(snapshot, previous_snapshot)
+        self.history.update_from_snapshot(snapshot)
+        snapshot["zone_details"] = self._merge_zone_history(
+            snapshot.get("zone_details") or []
+        )
+        self._refresh_zone_model(snapshot)
         snapshot["trail"] = self.history.active_points_xy()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
@@ -3543,6 +3597,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot, position if pose_updated else None, mqtt_state, mqtt_action
         )
         self._stabilize_telemetry(snapshot, previous_snapshot)
+        self.history.update_from_snapshot(snapshot)
+        snapshot["zone_details"] = self._merge_zone_history(
+            snapshot.get("zone_details") or []
+        )
+        self._refresh_zone_model(snapshot)
         snapshot["trail"] = self.history.active_points_xy()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
@@ -3597,6 +3656,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["trail_started_at"] = self.history.active_started_at()
             snapshot["sessions"] = self.history.session_summaries(include_points=False)
             self._stabilize_telemetry(snapshot, previous_snapshot)
+            self.history.update_from_snapshot(snapshot)
+            snapshot["zone_details"] = self._merge_zone_history(
+                snapshot.get("zone_details") or []
+            )
+            self._refresh_zone_model(snapshot)
             self._schedule_state_save(snapshot)
             self.async_set_updated_data(snapshot)
         return changed
@@ -3612,7 +3676,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return channel.contains(position.get("x"), position.get("y"))
 
     def _map_payload_with_sessions(
-        self, sessions: list[dict[str, Any]]
+        self, sessions: list[dict[str, Any]], daily_trails: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Build the versioned payload consumed by Navimower Map Card."""
         data = self.data or self._bootstrap_snapshot()
@@ -3636,6 +3700,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     "zone_ids",
                     "cutting_height_mm",
                     "completed",
+                    "visited_zone_ids",
+                    "task_zone_progress",
                 )
             }
             active_meta["point_count"] = len(active.get("points") or [])
@@ -3648,6 +3714,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "map": map_data,
             "coverage": data.get("coverage"),
             "zone_details": data.get("zone_details") or [],
+            "zone_states": data.get("zone_states") or [],
+            "zone_states_revision": data.get("zone_states_revision", 0),
+            "totals": data.get("totals") or {},
+            "daily_trails": daily_trails or {
+                "date": dt_util.now().date().isoformat(),
+                "revision": self.history.trail_revision,
+                "zones": [],
+            },
+            "daily_trails_revision": (daily_trails or {}).get(
+                "revision", self.history.trail_revision
+            ),
             "cut_height": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_supported": bool(data.get("cutting_height_supported")),
@@ -3686,9 +3763,34 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
 
     async def async_map_payload(self) -> dict[str, Any]:
-        """Return the live map plus every session retained by the user policy."""
+        """Return map/card data already prepared by the integration."""
         sessions = await self.history.async_card_sessions()
-        return self._map_payload_with_sessions(sessions)
+        map_data = (self.data or {}).get("map") or self._map_snapshot(
+            self._map_geometry or {},
+            cutting_height_supported=(self.data or {}).get("cutting_height_supported"),
+        )
+        today = dt_util.now().date().isoformat()
+        daily_cache_key = (
+            today,
+            self.history.trail_revision,
+            self._map_cache_key,
+        )
+        if (
+            self._daily_trails_cache_key == daily_cache_key
+            and self._daily_trails_cache is not None
+        ):
+            daily_trails = self._daily_trails_cache
+        else:
+            daily_trails = await self.history.async_daily_zone_trails(
+                [
+                    dict(item)
+                    for item in (map_data or {}).get("zones") or []
+                    if isinstance(item, dict)
+                ]
+            )
+            self._daily_trails_cache_key = daily_cache_key
+            self._daily_trails_cache = daily_trails
+        return self._map_payload_with_sessions(sessions, daily_trails)
 
     def sessions_payload(self) -> dict[str, Any]:
         """Return lightweight retained-session metadata."""

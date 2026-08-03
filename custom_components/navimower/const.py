@@ -118,7 +118,7 @@ PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
 }
 
 # --- Map/history API -------------------------------------------------------
-MAP_API_SCHEMA_VERSION: Final = 4
+MAP_API_SCHEMA_VERSION: Final = 5
 # Cached reduced map geometry has its own version. Bump this whenever the
 # persisted geometry keys or semantics change without changing the public API.
 MAP_GEOMETRY_SCHEMA_VERSION: Final = 3

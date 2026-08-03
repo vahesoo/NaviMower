@@ -17,6 +17,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DEFAULT_INCLUDE_RETURN_TRAIL,
@@ -27,6 +28,7 @@ from .const import (
     SESSION_MERGE_GAP_SECONDS,
     VENDOR_COMPLETION_PROGRESS_MIN,
 )
+from .zone_state import build_daily_trails
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ SESSION_DETAIL_POINT_FORMAT = [
     "activity",
     "mqtt_vehicle_state",
     "mqtt_action",
+    "zone_id",
 ]
 SESSION_CARD_POINT_FORMAT = ["x", "y"]
 
@@ -356,6 +359,7 @@ class NavimowerHistory:
         # not hundreds of independent scheduled writes.
         self._session_stores: dict[str, Store] = {}
         self._zone_history: dict[str, dict[str, Any]] = {}
+        self._trail_revision = 0
         # Last observed vendor progress per zone. This is persisted so a cycle
         # restart can still be recognized after a Home Assistant restart.
         self._zone_progress_state: dict[str, dict[str, Any]] = {}
@@ -428,7 +432,13 @@ class NavimowerHistory:
                 await self._index_store.async_save(self._index_data())
 
         await self._async_merge_adjacent_sessions()
+        await self._async_remove_empty_completed_sessions()
         await self._async_migrate_legacy_store()
+        with self._lock:
+            self._trail_revision = max(
+                self._sequence,
+                sum(_as_int(item.get("point_count")) or 0 for item in self._sessions),
+            )
         _LOGGER.debug(
             "Loaded %d Navimower session records (%d cached), active=%s",
             len(self._sessions),
@@ -526,6 +536,34 @@ class NavimowerHistory:
                     "Could not persist the merged Navimower session index",
                     exc_info=True,
                 )
+
+    async def _async_remove_empty_completed_sessions(self) -> None:
+        """Delete persisted zero/one-point stubs created by older start/reset races."""
+        removable = [
+            str(item.get("id"))
+            for item in self._sessions
+            if item.get("id")
+            and str(item.get("id")) != str(self._active_id or "")
+            and (_as_int(item.get("point_count")) or 0) < 2
+        ]
+        if not removable:
+            return
+        with self._lock:
+            remove_set = set(removable)
+            self._sessions = [
+                item for item in self._sessions
+                if str(item.get("id") or "") not in remove_set
+            ]
+            for session_id in removable:
+                self._cache.pop(session_id, None)
+        for session_id in removable:
+            try:
+                await self._session_store_for(session_id).async_remove()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Could not remove empty session %s", session_id, exc_info=True)
+            self._session_stores.pop(session_id, None)
+        await self._index_store.async_save(self._index_data())
+        _LOGGER.info("Removed %d empty Navimower session stub(s)", len(removable))
 
     async def _async_migrate_legacy_store(self) -> None:
         if self._sessions or self._active_id:
@@ -648,6 +686,7 @@ class NavimowerHistory:
         mode: str | None = None,
         mqtt_vehicle_state: int | None = None,
         mqtt_action: int | None = None,
+        physical_zone_id: int | None = None,
         completed: bool | None = None,
     ) -> None:
         """Observe one state/pose update and maintain the active session.
@@ -657,10 +696,14 @@ class NavimowerHistory:
         state. Only an exactly repeated full pose/context sample is discarded.
         """
         with self._lock:
+            observed_zone_ids = _unique_ints(
+                zone_ids or [],
+                [physical_zone_id] if physical_zone_id is not None else [],
+            )
             if cutting and self._active_id is None:
                 self._start_session_locked(
                     pose_time=pose_time,
-                    zone_ids=zone_ids or [],
+                    zone_ids=observed_zone_ids,
                     cutting_height_mm=cutting_height_mm,
                     mode=mode,
                 )
@@ -669,10 +712,38 @@ class NavimowerHistory:
             if active is None:
                 return
 
-            if zone_ids:
+            if observed_zone_ids:
                 active["zone_ids"] = list(
-                    dict.fromkeys([*(active.get("zone_ids") or []), *zone_ids])
+                    dict.fromkeys(
+                        [*(active.get("zone_ids") or []), *observed_zone_ids]
+                    )
                 )
+                task_progress = active.setdefault("task_zone_progress", {})
+                for zone_id in active["zone_ids"]:
+                    task_progress.setdefault(str(zone_id), 0)
+            if physical_zone_id is not None:
+                visited = active.setdefault("visited_zone_ids", [])
+                first_visit = physical_zone_id not in visited
+                if first_visit:
+                    visited.append(physical_zone_id)
+                if cutting:
+                    observed_ms = _timestamp_ms(pose_time)
+                    observed_iso = _iso(observed_ms)
+                    record = dict(
+                        self._zone_history.get(str(physical_zone_id)) or {}
+                    )
+                    record.update(
+                        {
+                            "id": physical_zone_id,
+                            "name": record.get("name")
+                            or f"Zone {physical_zone_id}",
+                            "cycle_id": active.get("id"),
+                            "last_mowed_at": observed_iso,
+                        }
+                    )
+                    if first_visit:
+                        record["last_started_at"] = observed_iso
+                    self._zone_history[str(physical_zone_id)] = record
             if active.get("cutting_height_mm") is None and cutting_height_mm is not None:
                 active["cutting_height_mm"] = cutting_height_mm
             if mode and not active.get("mode"):
@@ -686,6 +757,7 @@ class NavimowerHistory:
                 (not returning and not docked) or self.include_return_trail
             )
             if position is not None and should_store_pose:
+                before_count = len(active.get("points") or [])
                 self._append_point_locked(
                     active,
                     position=position,
@@ -694,7 +766,10 @@ class NavimowerHistory:
                     activity=activity,
                     mqtt_vehicle_state=mqtt_vehicle_state,
                     mqtt_action=mqtt_action,
+                    physical_zone_id=physical_zone_id,
                 )
+                if len(active.get("points") or []) > before_count:
+                    self._trail_revision += 1
 
             if docked and not cutting:
                 if active.get("completed") is True:
@@ -766,6 +841,8 @@ class NavimowerHistory:
             "completed": None,
             "completion_reason": None,
             "final_progress": {},
+            "visited_zone_ids": [],
+            "task_zone_progress": {str(value): 0 for value in zone_ids},
             "segment_starts_ms": [start_ms],
             "points": [],
         }
@@ -773,6 +850,7 @@ class NavimowerHistory:
         self._cache[session_id] = session
         self._sessions.append(_metadata(session))
         self._trim_cache_locked()
+        self._trail_revision += 1
         self._schedule_index_save()
         _LOGGER.debug("Started Navimower session %s", session_id)
 
@@ -805,9 +883,13 @@ class NavimowerHistory:
         previous["completed"] = None
         previous["completion_reason"] = None
         previous["final_progress"] = {}
+        previous.setdefault("visited_zone_ids", [])
+        previous.setdefault("task_zone_progress", {})
         previous["zone_ids"] = _unique_ints(
             previous.get("zone_ids"), zone_ids
         )
+        for zone_id in previous["zone_ids"]:
+            previous["task_zone_progress"].setdefault(str(zone_id), 0)
         if previous.get("cutting_height_mm") is None:
             previous["cutting_height_mm"] = cutting_height_mm
         if not previous.get("mode"):
@@ -839,6 +921,7 @@ class NavimowerHistory:
         activity: str,
         mqtt_vehicle_state: int | None,
         mqtt_action: int | None,
+        physical_zone_id: int | None,
     ) -> None:
         x = _as_float(position.get("x"))
         y = _as_float(position.get("y"))
@@ -854,6 +937,7 @@ class NavimowerHistory:
             str(activity or "unknown"),
             mqtt_vehicle_state,
             mqtt_action,
+            physical_zone_id,
         ]
         points = session.setdefault("points", [])
         if points:
@@ -864,6 +948,9 @@ class NavimowerHistory:
             if isinstance(previous, list) and previous == sample:
                 return
         points.append(sample)
+        # Instance-level revision lets the map API cache daily trails while still
+        # changing on every genuinely retained live point.
+        # This is a static method, so the caller increments the owner revision.
 
     def _update_active_metadata_locked(self, active: dict[str, Any]) -> None:
         meta = _metadata(active)
@@ -871,6 +958,32 @@ class NavimowerHistory:
             if existing.get("id") == active.get("id"):
                 self._sessions[index] = meta
                 return
+
+    @staticmethod
+    def _is_provisional_session(session: dict[str, Any] | None) -> bool:
+        """Return whether a just-created session has no drawable route yet."""
+        if not isinstance(session, dict):
+            return False
+        points = session.get("points") or []
+        return len(points) < 2
+
+    def _discard_active_locked(self) -> None:
+        """Remove an empty start/reset stub instead of publishing it as history."""
+        session_id = self._active_id
+        if session_id is None:
+            return
+        self._active_id = None
+        self._cache.pop(session_id, None)
+        self._sessions = [row for row in self._sessions if row.get("id") != session_id]
+        store = self._session_stores.pop(session_id, None)
+        if store is not None:
+            self.hass.async_create_task(
+                store.async_remove(),
+                f"Remove provisional Navimower session {session_id}",
+            )
+        self._trail_revision += 1
+        self._schedule_index_save()
+        _LOGGER.debug("Discarded provisional Navimower session %s", session_id)
 
     def _finish_active_locked(self, pose_time: Any) -> None:
         session_id = self._active_id
@@ -892,6 +1005,7 @@ class NavimowerHistory:
         )
         self._update_active_metadata_locked(active)
         self._active_id = None
+        self._trail_revision += 1
         self.hass.async_create_task(
             self._async_finalize_session(session_id, deepcopy(active)),
             f"Finalize Navimower session {session_id}",
@@ -1000,7 +1114,10 @@ class NavimowerHistory:
                 active["completion_reason"] = reason
                 active["final_progress"] = final_progress
                 self._update_active_metadata_locked(active)
-                self._finish_active_locked(boundary_ms)
+                if self._is_provisional_session(active):
+                    self._discard_active_locked()
+                else:
+                    self._finish_active_locked(boundary_ms)
             if completed:
                 for zone_id in relevant:
                     progress = final_progress.get(str(zone_id))
@@ -1107,7 +1224,10 @@ class NavimowerHistory:
                 active["final_progress"] = final_progress
                 self._update_active_metadata_locked(active)
                 self._force_new_session_once = True
-                self._finish_active_locked(pose_time)
+                if self._is_provisional_session(active):
+                    self._discard_active_locked()
+                else:
+                    self._finish_active_locked(pose_time)
                 self._last_cycle_event = {
                     "reason": active["completion_reason"],
                     "at_ms": completion_ms,
@@ -1164,6 +1284,9 @@ class NavimowerHistory:
         self,
         coverage: dict[str, Any] | None,
         zone_details: list[dict[str, Any]],
+        *,
+        active_task_progress: Any = None,
+        cycle_reset_pending: bool = False,
     ) -> None:
         """Persist the latest known timestamps/progress for every zone."""
         coverage_by_id = {
@@ -1213,11 +1336,49 @@ class NavimowerHistory:
                         # values are normalized UTC ISO strings.
                         previous = record.get(key)
                         record[key] = max(str(previous or ""), str(value))
+                active = self._cache.get(self._active_id or "")
+                if active is not None and zone_id in set(active.get("visited_zone_ids") or []):
+                    record["cycle_id"] = active.get("id")
                 self._zone_history[str(zone_id)] = record
                 changed = True
 
             active = self._cache.get(self._active_id or "")
             if active is not None:
+                task_progress = active.setdefault("task_zone_progress", {})
+                for zone_id in active.get("zone_ids") or []:
+                    task_progress.setdefault(str(zone_id), 0)
+                active_zone_id = None
+                if active.get("visited_zone_ids"):
+                    active_zone_id = _as_int(active.get("visited_zone_ids")[-1])
+                if active_zone_id is not None:
+                    active_detail = next(
+                        (
+                            item
+                            for item in zone_details
+                            if _as_int(item.get("id")) == active_zone_id
+                        ),
+                        None,
+                    )
+                    if active_detail is not None:
+                        # Use the coordinator's freshness/cycle-filtered public
+                        # progress for the physical active zone. During the brief
+                        # new-cycle hold this remains 0, preventing a stale 95/100
+                        # route or cloud value from completing the new task before
+                        # the first low counter arrives.
+                        progress = _as_int(active_task_progress)
+                        if progress is None and not cycle_reset_pending:
+                            progress = _as_int(
+                                active_detail.get("progress")
+                                if active_detail.get("progress") is not None
+                                else active_detail.get("percentage")
+                            )
+                        if progress is not None:
+                            previous_progress = (
+                                _as_int(task_progress.get(str(active_zone_id))) or 0
+                            )
+                            task_progress[str(active_zone_id)] = max(
+                                previous_progress, progress
+                            )
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])
                     candidates = [
@@ -1228,30 +1389,20 @@ class NavimowerHistory:
                     known = [value for value in candidates if value is not None]
                     if len(set(known)) == 1:
                         active["cutting_height_mm"] = known[0]
-                relevant = [
-                    item
-                    for item in zone_details
-                    if not active.get("zone_ids")
-                    or _as_int(item.get("id")) in set(active.get("zone_ids") or [])
-                ]
                 percentages = [
-                    _as_int(
-                        item.get("progress")
-                        if item.get("progress") is not None
-                        else item.get("percentage")
-                    )
-                    for item in relevant
-                    if _as_int(
-                        item.get("progress")
-                        if item.get("progress") is not None
-                        else item.get("percentage")
-                    ) is not None
+                    _as_int(task_progress.get(str(zone_id)))
+                    for zone_id in active.get("zone_ids") or []
+                    if _as_int(task_progress.get(str(zone_id))) is not None
                 ]
-                if percentages and all(
-                    value >= VENDOR_COMPLETION_PROGRESS_MIN for value in percentages
+                if (
+                    percentages
+                    and len(percentages) == len(active.get("zone_ids") or [])
+                    and all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in percentages)
                 ):
                     active["completed"] = True
-                    active["completion_reason"] = active.get("completion_reason") or "vendor_progress"
+                    active["completion_reason"] = (
+                        active.get("completion_reason") or "vendor_progress"
+                    )
                 self._update_active_metadata_locked(active)
                 changed = True
 
@@ -1261,13 +1412,21 @@ class NavimowerHistory:
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.update_zone_history(
-            snapshot.get("coverage"), snapshot.get("zone_details") or []
+            snapshot.get("coverage"),
+            snapshot.get("zone_details") or [],
+            active_task_progress=snapshot.get("mowing_progress"),
+            cycle_reset_pending=bool(snapshot.get("cycle_value_reset_pending")),
         )
 
     # --------------------------------------------------------------- payload
     @property
     def active_session(self) -> dict[str, Any] | None:
         return self._active_snapshot()
+
+    @property
+    def trail_revision(self) -> int:
+        with self._lock:
+            return self._trail_revision
 
     @property
     def active_session_no(self) -> int:
@@ -1323,6 +1482,40 @@ class NavimowerHistory:
     def zone_history(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return deepcopy(self._zone_history)
+
+    async def async_full_sessions(self) -> list[dict[str, Any]]:
+        """Load full retained sessions for integration-side route processing."""
+        with self._lock:
+            metadata = deepcopy(self._sessions)
+            cache = deepcopy(self._cache)
+        result: list[dict[str, Any]] = []
+        for meta in metadata:
+            session_id = str(meta.get("id") or "")
+            full = cache.get(session_id)
+            if full is None and session_id:
+                full = await self._async_load_session_file(session_id)
+            if isinstance(full, dict):
+                result.append(full)
+        return result
+
+    async def async_daily_zone_trails(
+        self, map_zones: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Return today's latest cycle trail per zone, ready for the map card."""
+        sessions = await self.async_full_sessions()
+        today = dt_util.now().date()
+
+        def _local_date(timestamp_ms: int):
+            value = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=UTC)
+            return dt_util.as_local(value).date()
+
+        return build_daily_trails(
+            sessions=sessions,
+            map_zones=map_zones,
+            local_date=today,
+            to_local_date=_local_date,
+            revision=self.trail_revision,
+        )
 
     def session_summaries(self, *, include_points: bool = False) -> list[dict[str, Any]]:
         """Return retained session metadata, and cached points when requested."""
