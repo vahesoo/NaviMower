@@ -42,4 +42,29 @@ def test_schedule_translation_exists() -> None:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.1"
+    assert manifest["version"] == "0.3.2"
+
+
+def test_diagnostics_redacts_oauth_device_id_and_summarizes_rtk() -> None:
+    source = (COMPONENT / "diagnostics_export.py").read_text()
+    assert '"oauth_device_id"' in source
+    assert "def rtk_diagnostics" in source
+    assert '"rtk": rtk_diagnostics(raw_endpoint_data.get("location"))' in source
+    assert '"quality_fields_found"' in source
+
+
+def test_v032_diagnostic_summaries_exist() -> None:
+    source = (COMPONENT / "diagnostics_export.py").read_text()
+    assert '"diagnostic_summaries"' in source
+    for name in (
+        '"positioning"',
+        '"connectivity"',
+        '"battery"',
+        '"firmware"',
+        '"capabilities"',
+        '"maintenance"',
+        '"schedule"',
+        '"environment_and_safety"',
+        '"opaque_vendor_fields"',
+    ):
+        assert name in source
