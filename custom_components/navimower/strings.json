@@ -233,6 +233,7 @@
       "pose_valid": { "name": "Live position valid" }
     },
     "switch": {
+      "mowing_schedule_enabled": { "name": "Mowing schedule enabled" },
       "night_mow": { "name": "Night mowing" },
       "rain_sensor": { "name": "Rain sensor" },
       "rain_detection": { "name": "Rain detection" },

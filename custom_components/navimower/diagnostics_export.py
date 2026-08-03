@@ -25,6 +25,7 @@ from .const import (
     OPT_DIAGNOSTICS_DETAIL,
 )
 from .history import SESSION_DETAIL_POINT_FORMAT
+from .map_identifiers import resolve_map_identifiers
 
 
 _KEYWORDS = (
@@ -261,25 +262,6 @@ async def _read(
     )
 
 
-def _first_map_ids(location: Any, map_list: Any) -> tuple[str | None, str | None]:
-    candidates: list[dict[str, Any]] = []
-    if isinstance(location, dict):
-        candidates.append(location)
-    if isinstance(map_list, list):
-        candidates.extend(item for item in map_list if isinstance(item, dict))
-    elif isinstance(map_list, dict):
-        candidates.append(map_list)
-        rows = map_list.get("list")
-        if isinstance(rows, list):
-            candidates.extend(item for item in rows if isinstance(item, dict))
-    for item in candidates:
-        map_id = item.get("map_id") or item.get("mapId")
-        base_id = item.get("map_base_id") or item.get("mapBaseId")
-        if map_id is not None and base_id is not None:
-            return str(map_id), str(base_id)
-    return None, None
-
-
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -289,13 +271,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
 
 
-async def async_export_diagnostics(
+async def async_build_diagnostics(
     hass: HomeAssistant,
     coordinator: Any,
     *,
     include_compressed_map: bool = True,
-) -> str:
-    """Collect all known read endpoints and write a sanitized JSON export."""
+) -> dict[str, Any]:
+    """Collect and return sanitized read-only diagnostics in memory."""
     client = coordinator.client
     sn = coordinator.sn
     vehicle_type = coordinator.vehicle_type
@@ -322,7 +304,7 @@ async def async_export_diagnostics(
         if name in {"location", "map_list"}:
             raw_for_ids[name] = raw
 
-    map_id, map_base_id = _first_map_ids(
+    map_id, map_base_id, map_edit_time = resolve_map_identifiers(
         raw_for_ids.get("location"), raw_for_ids.get("map_list")
     )
     if map_id and map_base_id:
@@ -397,6 +379,10 @@ async def async_export_diagnostics(
         "created_utc": now.isoformat(),
         "read_only": True,
         "diagnostics_detail": diagnostics_detail,
+        "entry": {
+            "data": sanitize(deepcopy(dict(coordinator.entry.data))),
+            "options": sanitize(deepcopy(dict(coordinator.entry.options))),
+        },
         "authentication": {
             "private_cloud": (
                 "stored private app-cloud session; normal refresh may "
@@ -503,6 +489,9 @@ async def async_export_diagnostics(
                     "cycle_value_reset_age": data.get(
                         "cycle_value_reset_age"
                     ),
+                    "schedule_enabled": (data.get("settings") or {}).get(
+                        "schedule_enabled"
+                    ),
                 }
             ),
             "gate_states": sanitize(deepcopy(data.get("gate_states") or {})),
@@ -512,6 +501,9 @@ async def async_export_diagnostics(
         },
         "map_api": {
             "schema_version": MAP_API_SCHEMA_VERSION,
+            "resolved_map_id": map_id,
+            "resolved_map_base_id": map_base_id,
+            "resolved_map_edit_time": map_edit_time,
             "map_loaded": bool(map_data),
             "map_version": map_data.get("version"),
             "map_modified_count": map_data.get("modified_count"),
@@ -559,6 +551,22 @@ async def async_export_diagnostics(
         ],
     }
 
+    return document
+
+
+async def async_export_diagnostics(
+    hass: HomeAssistant,
+    coordinator: Any,
+    *,
+    include_compressed_map: bool = True,
+) -> str:
+    """Write the same sanitized diagnostics used by Home Assistant's UI."""
+    document = await async_build_diagnostics(
+        hass,
+        coordinator,
+        include_compressed_map=include_compressed_map,
+    )
+    now = datetime.now(timezone.utc)
     folder = Path(hass.config.path("navimower_diagnostics"))
     stamp = now.strftime("%Y%m%d_%H%M%S")
     path = folder / f"navimower_diagnostics_{stamp}.json"

@@ -30,6 +30,7 @@ from .history import (
     NavimowerHistory,
 )
 from .location import decode_map_work_position
+from .map_identifiers import resolve_map_identifiers
 from .zone_state import build_zone_model, zone_model_signature
 from .const import (
     ACTIVE_STATES,
@@ -923,6 +924,10 @@ def _compute_next_mow(set_list: Any, now: Any) -> str | None:
     open day+start relative to ``now`` (searching a full week including today),
     or ``None`` if nothing is scheduled.
     """
+    # startPlan is the app's global schedule master switch. The weekly plan is
+    # retained when disabled, but no next event should be advertised.
+    if _as_bool(_find(set_list, "startPlan", "start_plan")) is False:
+        return None
     plan = _schedule_source(set_list)
     if not isinstance(plan, list):
         return None
@@ -1175,6 +1180,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "current_zone_ids": [],
             "coverage": None,
             "settings": {
+                "schedule_enabled": None,
                 "cut_height": None,
                 "cut_height_raw": None,
                 "cutting_height_supported": cached_height_supported,
@@ -1721,17 +1727,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     def _maybe_fetch_map(self, raw: dict) -> None:
         """Fetch + decode the map once, then only when the map version changes."""
         location = raw.get("location") or {}
-        map_id = location.get("map_id")
-        map_base_id = location.get("map_base_id")
-        edit_time = location.get("map_edit_time")
-        # Fall back to map-list if get-location didn't carry the ids.
-        if map_id is None:
-            map_list = raw.get("map_list")
-            first = map_list[0] if isinstance(map_list, list) and map_list else {}
-            if isinstance(first, dict):
-                map_id = first.get("map_id")
-                map_base_id = first.get("map_base_id")
-                edit_time = first.get("edittime")
+        map_id, map_base_id, edit_time = resolve_map_identifiers(
+            location, raw.get("map_list")
+        )
         if map_id is None or map_base_id is None:
             return
 
@@ -2086,6 +2084,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._last_docked_source = docked_source
 
         # --- settings (MowerSettingBean; snake_case in set-list, camelCase in bean)
+        schedule_enabled = _as_bool(_find(set_list, "startPlan", "start_plan"))
         night_mow = _as_bool(_find(set_list, "night_mow_switch", "nightMowSwitch"))
         rain_sensor = _as_bool(_find(set_list, "rainSensor", "rain_sensor"))
         rain_detection = _as_bool(_find(set_list, "rainDetectionSwitch", "rain_detection_switch"))
@@ -2152,6 +2151,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
 
         settings = {
+            "schedule_enabled": schedule_enabled,
             "night_mow": night_mow,
             "rain_sensor": rain_sensor,
             "rain_detection": rain_detection,
@@ -3832,6 +3832,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "cut_height": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_mm": (data.get("settings") or {}).get("cut_height"),
             "cutting_height_supported": bool(data.get("cutting_height_supported")),
+            "schedule_enabled": (data.get("settings") or {}).get("schedule_enabled"),
             "doodles": (map_data or {}).get("doodles") or [],
             # Flat trail is retained for older cards; trail_segments is the
             # gap-aware representation used by map-card v0.1.10 and later.
