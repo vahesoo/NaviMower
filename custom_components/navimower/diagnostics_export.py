@@ -81,6 +81,7 @@ _EXACT_SENSITIVE_KEYS = {
     "serial_number",
     "sn",
     "device_id",
+    "oauth_device_id",
     "client_id",
     "ssid",
     "bssid",
@@ -142,6 +143,126 @@ def _large_value_summary(value: str) -> dict[str, Any]:
         "length": len(value),
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
+
+
+_RTK_SAFE_KEYWORDS = (
+    "satellite",
+    "satellites",
+    "sat_count",
+    "satellite_count",
+    "fix",
+    "quality",
+    "hdop",
+    "pdop",
+    "vdop",
+    "snr",
+    "accuracy",
+    "status",
+    "state",
+    "mode",
+    "source",
+    "solution",
+    "age",
+    "ratio",
+)
+
+_RTK_BLOCKED_KEYWORDS = (
+    "latitude",
+    "longitude",
+    "lat",
+    "lon",
+    "gps",
+    "coordinate",
+    "position",
+    "point",
+    "anchor",
+    "base",
+    "origin",
+    "northing",
+    "easting",
+    "altitude",
+)
+
+
+def _rtk_value_bytes(value: Any) -> bytes:
+    """Return stable bytes for RTK metadata hashing without exposing its value."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace")
+    try:
+        rendered = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, default=repr
+        )
+    except (TypeError, ValueError):
+        rendered = repr(value)
+    return rendered.encode("utf-8", errors="replace")
+
+
+def _safe_rtk_fields(value: Any) -> dict[str, Any]:
+    """Extract only non-location RTK quality/status scalar fields."""
+    found: dict[str, Any] = {}
+
+    def walk(current: Any, path: str = "") -> None:
+        if isinstance(current, Mapping):
+            for raw_key, child in current.items():
+                key = str(raw_key)
+                child_path = f"{path}.{key}" if path else key
+                normalized = key.strip().lower().replace("-", "_")
+                blocked = any(token in normalized for token in _RTK_BLOCKED_KEYWORDS)
+                allowed = any(token in normalized for token in _RTK_SAFE_KEYWORDS)
+                if (
+                    allowed
+                    and not blocked
+                    and (child is None or isinstance(child, (bool, int, float, str)))
+                ):
+                    found[child_path] = child
+                elif isinstance(child, (Mapping, list, tuple)):
+                    walk(child, child_path)
+            return
+
+        if isinstance(current, (list, tuple)):
+            for index, child in enumerate(current[:25]):
+                child_path = f"{path}[{index}]" if path else f"[{index}]"
+                if isinstance(child, (Mapping, list, tuple)):
+                    walk(child, child_path)
+
+    walk(value)
+    return found
+
+
+def rtk_diagnostics(location: Any) -> dict[str, Any]:
+    """Describe the RTK payload while keeping coordinates and anchors private."""
+    if not isinstance(location, Mapping) or "rtk" not in location:
+        return {"present": False}
+
+    raw = location.get("rtk")
+    encoded = _rtk_value_bytes(raw)
+    result: dict[str, Any] = {
+        "present": raw is not None,
+        "raw_type": _value_type(raw),
+        "raw_length": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    if raw is None:
+        return result
+
+    decoded = raw
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped[:1] in ("{", "["):
+            try:
+                decoded = json.loads(stripped)
+            except (TypeError, ValueError):
+                decoded = raw
+
+    result["decoded_type"] = _value_type(decoded)
+    if isinstance(decoded, Mapping):
+        result["decoded_keys"] = sorted(str(key) for key in decoded)
+    safe_fields = _safe_rtk_fields(decoded)
+    result["safe_fields"] = sanitize(safe_fields)
+    result["quality_fields_found"] = bool(safe_fields)
+    return result
 
 
 def sanitize(value: Any, *, key: str | None = None) -> Any:
@@ -383,6 +504,7 @@ async def async_build_diagnostics(
             "data": sanitize(deepcopy(dict(coordinator.entry.data))),
             "options": sanitize(deepcopy(dict(coordinator.entry.options))),
         },
+        "rtk": rtk_diagnostics(raw_for_ids.get("location")),
         "authentication": {
             "private_cloud": (
                 "stored private app-cloud session; normal refresh may "
@@ -545,6 +667,7 @@ async def async_build_diagnostics(
         "notes": [
             "Account, mower, network and physical GPS identifiers are redacted.",
             "PIN, RTK anchor, ICCID and anti-theft location fields are redacted.",
+            "The RTK summary exposes only metadata and quality/status candidates, never coordinates.",
             "Large binary/base64 resources are represented by length and SHA-256 only.",
             "Local map X/Y coordinates and vendor doodle SVG are retained for geometry analysis.",
             "Full retained routes remain in authenticated session APIs and HA storage.",
