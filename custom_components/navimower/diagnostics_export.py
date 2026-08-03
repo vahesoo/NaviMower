@@ -462,6 +462,22 @@ async def async_export_diagnostics(
                     "mowing_progress_private_cloud": data.get(
                         "mowing_progress_private_cloud"
                     ),
+                    "task_progress_private_cloud": data.get(
+                        "task_progress_private_cloud"
+                    ),
+                    "task_progress_source": data.get("task_progress_source"),
+                    "active_zone_progress": data.get("active_zone_progress"),
+                    "active_zone_progress_source": data.get(
+                        "active_zone_progress_source"
+                    ),
+                    "active_zone_progress_zone_id": data.get(
+                        "active_zone_progress_zone_id"
+                    ),
+                    "active_zone_progress_source_age": data.get(
+                        "active_zone_progress_source_age"
+                    ),
+                    "work_progress_raw": data.get("work_progress"),
+                    "route_progress_raw": data.get("mow_route_progress"),
                     "coverage_raw": data.get("coverage"),
                     "coverage_source": data.get("coverage_source"),
                     "zone_states_revision": data.get("zone_states_revision"),

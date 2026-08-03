@@ -1285,7 +1285,7 @@ class NavimowerHistory:
         coverage: dict[str, Any] | None,
         zone_details: list[dict[str, Any]],
         *,
-        active_task_progress: Any = None,
+        active_zone_progress: Any = None,
         cycle_reset_pending: bool = False,
     ) -> None:
         """Persist the latest known timestamps/progress for every zone."""
@@ -1360,12 +1360,11 @@ class NavimowerHistory:
                         None,
                     )
                     if active_detail is not None:
-                        # Use the coordinator's freshness/cycle-filtered public
-                        # progress for the physical active zone. During the brief
-                        # new-cycle hold this remains 0, preventing a stale 95/100
-                        # route or cloud value from completing the new task before
-                        # the first low counter arrives.
-                        progress = _as_int(active_task_progress)
+                        # Use only the coordinator's active-zone/work counter
+                        # here. The separate overall task percentage must never be
+                        # assigned to a zone. During a confirmed new-cycle hold the
+                        # zone value remains low instead of reviving stale coverage.
+                        progress = _as_int(active_zone_progress)
                         if progress is None and not cycle_reset_pending:
                             progress = _as_int(
                                 active_detail.get("progress")
@@ -1414,7 +1413,7 @@ class NavimowerHistory:
         self.update_zone_history(
             snapshot.get("coverage"),
             snapshot.get("zone_details") or [],
-            active_task_progress=snapshot.get("mowing_progress"),
+            active_zone_progress=snapshot.get("active_zone_progress"),
             cycle_reset_pending=bool(snapshot.get("cycle_value_reset_pending")),
         )
 

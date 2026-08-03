@@ -84,6 +84,10 @@ def build_zone_model(
     zone_history: dict[str, dict[str, Any]],
     active_session: dict[str, Any] | None,
     active_zone_id: int | None,
+    task_progress_pct: Any = None,
+    task_mowed_area_m2: Any = None,
+    task_progress_source: str | None = None,
+    task_area_source: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return one authoritative state row per zone and weighted totals."""
     map_by_id = {
@@ -249,12 +253,46 @@ def build_zone_model(
 
     task_rows = [row for row in rows if row.get("selected_in_task")]
     task_area = sum(float(row.get("area_m2") or 0.0) for row in task_rows)
-    task_mowed = 0.0
+
+    # Per-zone progress is retained for zone entities and map markers. The
+    # mower's own overall task percentage is a different counter and is the
+    # authoritative Task progress whenever available. This prevents an active
+    # zone/route counter from being mistaken for whole-task progress.
+    weighted_task_mowed = 0.0
     for row in task_rows:
         area = as_float(row.get("area_m2")) or 0.0
         progress = as_float(row.get("task_progress_pct")) or 0.0
-        task_mowed += area * progress / 100.0
-    task_pct = 100.0 * task_mowed / task_area if task_area > 0 else None
+        weighted_task_mowed += area * progress / 100.0
+    weighted_task_pct = (
+        100.0 * weighted_task_mowed / task_area if task_area > 0 else None
+    )
+
+    direct_task_pct = clamp_pct(task_progress_pct)
+    direct_task_mowed = as_float(task_mowed_area_m2)
+    if direct_task_mowed is not None and direct_task_mowed < 0:
+        direct_task_mowed = None
+    if task_area > 0 and direct_task_mowed is not None:
+        direct_task_mowed = min(task_area, direct_task_mowed)
+
+    if direct_task_pct is not None:
+        task_pct = direct_task_pct
+        task_progress_resolved_source = task_progress_source or "vendor_overall"
+        if direct_task_mowed is not None:
+            task_mowed = direct_task_mowed
+            task_area_resolved_source = task_area_source or "vendor_subtotal"
+        else:
+            task_mowed = task_area * direct_task_pct / 100.0 if task_area > 0 else None
+            task_area_resolved_source = "task_progress_calculated"
+    elif direct_task_mowed is not None and task_area > 0:
+        task_mowed = direct_task_mowed
+        task_pct = 100.0 * direct_task_mowed / task_area
+        task_progress_resolved_source = task_area_source or "vendor_subtotal"
+        task_area_resolved_source = task_area_source or "vendor_subtotal"
+    else:
+        task_mowed = weighted_task_mowed if task_area > 0 else None
+        task_pct = weighted_task_pct
+        task_progress_resolved_source = "area_weighted_zone_progress"
+        task_area_resolved_source = "area_weighted_zone_progress"
 
     completed_values = [row.get("last_completed_at") for row in rows]
     last_map_completed = (
@@ -267,8 +305,15 @@ def build_zone_model(
         "map_mowed_area_m2": round(map_mowed, 2) if map_area > 0 else None,
         "map_coverage_pct": round(map_coverage, 1) if map_coverage is not None else None,
         "task_area_m2": round(task_area, 2) if task_area > 0 else None,
-        "task_mowed_area_m2": round(task_mowed, 2) if task_area > 0 else None,
+        "task_mowed_area_m2": (
+            round(task_mowed, 2) if task_mowed is not None else None
+        ),
         "task_progress_pct": round(task_pct, 1) if task_pct is not None else None,
+        "task_progress_source": task_progress_resolved_source,
+        "task_mowed_area_source": task_area_resolved_source,
+        "task_zone_progress_weighted_pct": (
+            round(weighted_task_pct, 1) if weighted_task_pct is not None else None
+        ),
         "task_zone_ids": sorted(task_zone_ids),
         "active_zone_id": active_zone_id,
         "zone_count": len(rows),
@@ -318,6 +363,9 @@ def zone_model_signature(
                 "task_area_m2",
                 "task_mowed_area_m2",
                 "task_progress_pct",
+                "task_progress_source",
+                "task_mowed_area_source",
+                "task_zone_progress_weighted_pct",
                 "active_zone_id",
                 "zone_count",
                 "completed_zone_count",

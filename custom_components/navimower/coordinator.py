@@ -1360,6 +1360,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             zone_history=self.history.zone_history(),
             active_session=self.history.active_session,
             active_zone_id=active_zone_id,
+            task_progress_pct=snapshot.get("mowing_progress"),
+            task_mowed_area_m2=snapshot.get("session_area"),
+            task_progress_source=snapshot.get("mowing_progress_source"),
+            task_area_source=snapshot.get("session_area_source"),
         )
         signature = zone_model_signature(zone_states, totals)
         if signature != self._zone_states_signature:
@@ -2197,9 +2201,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 zone_details,
                 zone_id=active_progress_zone,
                 progress_candidates=[
-                    ("mqtt_route", mqtt_route_progress),
-                    ("work_progress", work_progress),
-                    ("mowing_progress", private_mowing_progress),
+                    ("map_work_position", work_progress),
                 ],
             )
 
@@ -2229,8 +2231,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "error": has_error,
             "error_text": error_text,
             # progress / areas
+            # The cloud exposes separate counters: mowing_percentage is the
+            # whole selected task; map_work_position.progress is the immediate
+            # active zone/work segment. Keep both meanings explicit.
             "mowing_progress": private_mowing_progress,
             "mowing_progress_private_cloud": private_mowing_progress,
+            "task_progress_private_cloud": private_mowing_progress,
+            "active_zone_progress": work_progress,
+            "active_zone_progress_source": (
+                "map_work_position" if work_progress is not None else None
+            ),
+            "active_zone_progress_zone_id": active_progress_zone,
             "session_area": _as_float(location.get("subtotal_area")),
             "session_area_private_cloud": _as_float(location.get("subtotal_area")),
             "weekly_area": _as_float(location.get("mowing_week_area")),
@@ -2254,6 +2265,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "work_sub_action": _as_int((packed_work or {}).get("sub_action")),
             "work_mode": _as_int((packed_work or {}).get("mode")),
             "work_progress": work_progress,
+            "mow_route_progress": mqtt_route_progress,
             # weekly mowing schedule (days -> periods -> zones)
             "schedule": _parse_schedule(set_list, zone_names),
             # connectivity
@@ -2475,37 +2487,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             else None
         )
 
-        # Public mowing progress uses the freshest overall MQTT fields first.
-        # Route progress remains a fallback because it is planned-path progress,
-        # not always identical to area coverage.
+        # Task progress and active-zone progress are separate vendor counters.
+        # ``mowingPercentage`` describes the whole selected task. Packed
+        # ``mapWorkPosition.progress`` and ``currentMowProgress`` describe the
+        # current zone/work route and must never replace the overall task value.
         mqtt_progress = self._fresh_mqtt_progress_values()
         raw_coverage = snapshot.get("coverage")
-        raw_coverage_pct = _progress_percent(
-            (raw_coverage or {}).get("overall_pct")
-            if isinstance(raw_coverage, dict)
-            else None
-        )
         private_progress = _progress_percent(
-            snapshot.get("mowing_progress_private_cloud")
+            snapshot.get("task_progress_private_cloud")
+            if snapshot.get("task_progress_private_cloud") is not None
+            else snapshot.get("mowing_progress_private_cloud")
         )
-        private_work_progress = _progress_percent(snapshot.get("work_progress"))
         progress_candidates = (
             [
-                ("mqtt_mowing_percentage", mqtt_progress["mowing_percentage"]),
-                ("mqtt_work_progress", mqtt_progress["work_progress"]),
-                ("mqtt_route_progress", mqtt_progress["route_progress"]),
-                ("private_coverage", raw_coverage_pct),
-                ("private_work_progress", private_work_progress),
-                ("private_cloud", private_progress),
+                ("mqtt_task_percentage", mqtt_progress["mowing_percentage"]),
+                ("private_task_percentage", private_progress),
             ]
             if active
             else [
-                ("private_cloud", private_progress),
-                ("private_coverage", raw_coverage_pct),
-                ("private_work_progress", private_work_progress),
-                ("mqtt_mowing_percentage", mqtt_progress["mowing_percentage"]),
-                ("mqtt_work_progress", mqtt_progress["work_progress"]),
-                ("mqtt_route_progress", mqtt_progress["route_progress"]),
+                ("private_task_percentage", private_progress),
+                ("mqtt_task_percentage", mqtt_progress["mowing_percentage"]),
             ]
         )
         progress = None
@@ -2539,16 +2540,103 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             progress_source = "last_known"
         snapshot["mowing_progress"] = progress
         snapshot["mowing_progress_source"] = progress_source
+        snapshot["task_progress_source"] = progress_source
         snapshot["mowing_progress_source_age"] = (
             self._age_since(self._mqtt_progress_last_update)
-            if str(progress_source or "").startswith("mqtt_")
-            else self._private_endpoint_age("location", "path_info_time")
-            if str(progress_source or "").startswith("private_")
-            or progress_source == "private_cloud"
+            if progress_source == "mqtt_task_percentage"
+            else self._private_endpoint_age("location")
+            if progress_source == "private_task_percentage"
             else None
         )
         snapshot["mowing_progress_mqtt"] = mqtt_progress
         snapshot["mowing_progress_private_cloud"] = private_progress
+        snapshot["task_progress_private_cloud"] = private_progress
+
+        def _valid_zone_id(value: Any) -> int | None:
+            parsed = _as_int(value)
+            return parsed if parsed is not None and parsed > 0 else None
+
+        mqtt_zone_id = _valid_zone_id(
+            (self._mqtt_location or {}).get("work_target_zone")
+        )
+        cloud_zone_id = _valid_zone_id(snapshot.get("work_target_zone"))
+        physical_zone_id = _valid_zone_id(
+            snapshot.get("current_physical_zone_id")
+        )
+        active_progress_zone = mqtt_zone_id or cloud_zone_id or physical_zone_id
+        private_zone_progress = _progress_percent(snapshot.get("work_progress"))
+        zone_progress_candidates = (
+            [
+                ("mqtt_map_work_position", mqtt_progress["work_progress"]),
+                ("private_map_work_position", private_zone_progress),
+                ("mqtt_route_progress", mqtt_progress["route_progress"]),
+            ]
+            if active
+            else [
+                ("private_map_work_position", private_zone_progress),
+                ("mqtt_map_work_position", mqtt_progress["work_progress"]),
+                ("mqtt_route_progress", mqtt_progress["route_progress"]),
+            ]
+        )
+        active_zone_progress = None
+        active_zone_progress_source = None
+        for source, value in zone_progress_candidates:
+            if value is not None:
+                active_zone_progress = value
+                active_zone_progress_source = source
+                break
+        previous_zone_id = _valid_zone_id(
+            previous.get("active_zone_progress_zone_id")
+        )
+        previous_zone_progress = _progress_percent(
+            previous.get("active_zone_progress")
+        )
+        same_zone = (
+            active_progress_zone is not None
+            and active_progress_zone == previous_zone_id
+        )
+        if (
+            active
+            and same_zone
+            and not reset_marked
+            and not progress_was_pending
+            and previous_zone_progress is not None
+            and active_zone_progress is not None
+            and active_zone_progress < previous_zone_progress
+        ):
+            active_zone_progress = previous_zone_progress
+            active_zone_progress_source = "last_known_zone_monotonic"
+        if (
+            active_zone_progress is None
+            and same_zone
+            and previous_zone_progress is not None
+        ):
+            active_zone_progress = previous_zone_progress
+            active_zone_progress_source = "last_known_zone"
+        snapshot["active_zone_progress"] = active_zone_progress
+        snapshot["active_zone_progress_source"] = active_zone_progress_source
+        snapshot["active_zone_progress_zone_id"] = active_progress_zone
+        snapshot["active_zone_progress_source_age"] = (
+            self._age_since(self._mqtt_progress_last_update)
+            if str(active_zone_progress_source or "").startswith("mqtt_")
+            else self._private_endpoint_age("location", "index2")
+            if active_zone_progress_source == "private_map_work_position"
+            else None
+        )
+        if active and active_progress_zone is not None and active_zone_progress is not None:
+            zone_details = [
+                dict(item)
+                for item in snapshot.get("zone_details") or []
+                if isinstance(item, dict)
+            ]
+            self._apply_active_zone_progress(
+                zone_details,
+                zone_id=active_progress_zone,
+                progress_candidates=[
+                    (active_zone_progress_source or "active_zone", active_zone_progress)
+                ],
+            )
+            snapshot["zone_details"] = zone_details
 
         # Coverage is monotonic inside one cycle. A confirmed reset clears it
         # immediately and ignores the old cloud row until a low value arrives.
@@ -3569,29 +3657,45 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._last_docked_source = docked_source
 
         route_progress = _progress_percent(merged.get("mow_progress"))
+        work_zone_progress = _progress_percent(merged.get("work_progress"))
         snapshot["mow_route_progress"] = (
             route_progress if route_progress is not None
             else snapshot.get("mow_route_progress")
         )
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
-        if cutting and route_progress is not None:
-            zone_details = [
-                dict(item) for item in snapshot.get("zone_details") or []
-                if isinstance(item, dict)
+        if cutting:
+            active_zone_id = _as_int(merged.get("work_target_zone"))
+            if active_zone_id is None or active_zone_id <= 0:
+                active_zone_id = _as_int(merged.get("mow_boundary"))
+            if active_zone_id is None or active_zone_id <= 0:
+                active_zone_id = _as_int(snapshot.get("current_physical_zone_id"))
+            progress_candidates = [
+                ("mqtt_map_work_position", work_zone_progress),
+                ("mqtt_route_progress", route_progress),
             ]
-            active_zone_ids = (
-                snapshot.get("target_zone_ids")
-                or snapshot.get("current_zone_ids")
-                or []
+            active_progress = next(
+                (value for _source, value in progress_candidates if value is not None),
+                None,
             )
-            active_zone_id = _as_int(active_zone_ids[0]) if len(active_zone_ids) == 1 else None
-            self._apply_active_zone_progress(
-                zone_details,
-                zone_id=active_zone_id,
-                progress_candidates=[("mqtt_route", route_progress)],
+            active_source = next(
+                (source for source, value in progress_candidates if value is not None),
+                None,
             )
-            snapshot["zone_details"] = zone_details
+            snapshot["active_zone_progress"] = active_progress
+            snapshot["active_zone_progress_source"] = active_source
+            snapshot["active_zone_progress_zone_id"] = active_zone_id
+            if active_zone_id is not None and active_progress is not None:
+                zone_details = [
+                    dict(item) for item in snapshot.get("zone_details") or []
+                    if isinstance(item, dict)
+                ]
+                self._apply_active_zone_progress(
+                    zone_details,
+                    zone_id=active_zone_id,
+                    progress_candidates=[(active_source or "active_zone", active_progress)],
+                )
+                snapshot["zone_details"] = zone_details
 
         self._update_history(
             snapshot, position if pose_updated else None, mqtt_state, mqtt_action

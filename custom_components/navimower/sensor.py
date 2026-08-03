@@ -89,7 +89,11 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "task_mowed_area_m2": (d.get("totals") or {}).get("task_mowed_area_m2"),
             "active_zone_id": (d.get("totals") or {}).get("active_zone_id"),
             "cycle_id": d.get("active_cycle_id"),
-            "calculation": "area_weighted_selected_zones",
+            "source": (d.get("totals") or {}).get("task_progress_source"),
+            "zone_weighted_fallback_pct": (d.get("totals") or {}).get(
+                "task_zone_progress_weighted_pct"
+            ),
+            "meaning": "vendor_overall_selected_task_progress",
         },
     ),
     NavimowSensorDescription(
@@ -286,6 +290,7 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "task_area_m2": (d.get("totals") or {}).get("task_area_m2"),
             "task_progress_pct": (d.get("totals") or {}).get("task_progress_pct"),
             "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
+            "source": (d.get("totals") or {}).get("task_mowed_area_source"),
         },
     ),
     NavimowSensorDescription(
