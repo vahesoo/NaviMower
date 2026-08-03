@@ -119,7 +119,7 @@ item._stabilize_telemetry(snapshot, previous)
 assert snapshot["battery"] == 58
 assert snapshot["battery_source"] == "private_cloud"
 
-# Starting after a practically completed cycle clears stale counters at once.
+# Starting a new cycle clears task counters, but raw per-zone map coverage is retained.
 item = mower()
 previous = {
     "activity": "docked",
@@ -140,7 +140,7 @@ snapshot = {
 }
 item._stabilize_telemetry(snapshot, previous)
 assert snapshot["mowing_progress"] == 0
-assert snapshot["coverage"]["overall_pct"] == 0
+assert snapshot["coverage"]["overall_pct"] == 95
 assert snapshot["session_area"] == 0.0
 assert snapshot["cycle_value_reset_pending"] is True
 
