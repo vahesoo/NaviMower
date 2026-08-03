@@ -235,3 +235,48 @@ def test_entered_new_cycle_ignores_stale_finished_area() -> None:
     assert street["mowed_area_m2"] == 0.0
     assert totals["map_mowed_area_m2"] == 1000.0
     assert totals["map_coverage_pct"] == 90.9
+
+
+def test_vendor_overall_task_progress_is_not_replaced_by_active_zone_progress() -> None:
+    zones, totals = module.build_zone_model(
+        map_zones=[
+            {"id": 170, "name": "Uusmaa2", "area": 902.2174},
+            {"id": 73, "name": "Plats 1", "area": 660.1573},
+        ],
+        zone_details=[
+            {"id": 170, "name": "Uusmaa2", "area_m2": 902.2174, "percentage": 100},
+            {
+                "id": 73,
+                "name": "Plats 1",
+                "area_m2": 660.1573,
+                "percentage": 56,
+                "progress": 56,
+                "progress_source": "map_work_position",
+            },
+        ],
+        coverage={
+            "zones": [
+                {"id": 170, "area": 902.2174, "finished": 902.2174, "pct": 100},
+                {"id": 73, "area": 660.1573, "finished": 369.6881, "pct": 56},
+            ]
+        },
+        zone_history={},
+        active_session={
+            "id": "x390-task",
+            "zone_ids": [170, 73],
+            "visited_zone_ids": [170, 73],
+            "task_zone_progress": {"170": 100, "73": 56},
+        },
+        active_zone_id=73,
+        task_progress_pct=48,
+        task_mowed_area_m2=750.0,
+        task_progress_source="private_task_percentage",
+        task_area_source="private_cloud",
+    )
+    active = next(row for row in zones if row["id"] == 73)
+    assert active["coverage_pct"] == 56.0
+    assert active["task_progress_pct"] == 56.0
+    assert totals["task_progress_pct"] == 48.0
+    assert totals["task_mowed_area_m2"] == 750.0
+    assert totals["task_progress_source"] == "private_task_percentage"
+    assert totals["task_zone_progress_weighted_pct"] != totals["task_progress_pct"]

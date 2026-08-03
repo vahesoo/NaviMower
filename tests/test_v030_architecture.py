@@ -61,7 +61,20 @@ def test_zone_sensor_defaults_and_api_payload() -> None:
 def test_history_filters_stale_progress_and_empty_stubs() -> None:
     source = (COMPONENT / "history.py").read_text()
     assert "cycle_reset_pending" in source
-    assert "active_task_progress" in source
+    assert "active_zone_progress" in source
+    assert "active_task_progress" not in source
     assert "_is_provisional_session" in source
     assert "_discard_active_locked" in source
     assert "_async_remove_empty_completed_sessions" in source
+
+
+def test_task_and_active_zone_progress_are_kept_separate() -> None:
+    coordinator_source = (COMPONENT / "coordinator.py").read_text()
+    assert '("mqtt_task_percentage", mqtt_progress["mowing_percentage"])' in coordinator_source
+    assert '("mqtt_map_work_position", mqtt_progress["work_progress"])' in coordinator_source
+    assert '("mqtt_route_progress", mqtt_progress["route_progress"])' in coordinator_source
+    task_block = coordinator_source.split(
+        "# Task progress and active-zone progress are separate vendor counters.", 1
+    )[1].split("def _valid_zone_id", 1)[0]
+    assert 'mqtt_progress["work_progress"]' not in task_block
+    assert 'mqtt_progress["route_progress"]' not in task_block
