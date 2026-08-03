@@ -591,3 +591,16 @@ repository. The user interface is developed separately in
 
 See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). The project is distributed
 under the MIT License.
+
+
+## Native diagnostics
+
+Navimower supports Home Assistant's native **Download diagnostics** action from the integration's device/config-entry menu. The generated file is read-only and uses the same redaction rules as `navimower.export_diagnostics`. The manual action remains available when a timestamped file under `/config/navimower_diagnostics/` is preferred.
+
+## Global schedule master
+
+Mowers that report the `startPlan` setting receive a **Mowing schedule enabled** switch. Turning it off preserves the configured weekday periods but prevents the weekly plan from starting. Navimower Map Card v0.2.0 and newer can use this entity as the Schedule master state.
+
+## First-generation H-series maps
+
+Some H1 mowers report zero map identifiers from the live location endpoint while docked. Navimower treats those values as unavailable and resolves the actual map through `map_list`, allowing map geometry and named zones to remain available before mowing starts.

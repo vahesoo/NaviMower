@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — H1 map recovery, native diagnostics and global schedule control
+
+- Treat empty and zero location map identifiers as unavailable and fall back to `map_list`, restoring H1/H1500 maps and zone names while docked.
+- Share one map identifier resolver between the coordinator and diagnostics exporter.
+- Add Home Assistant native **Download diagnostics** support using the existing sanitized read-only diagnostics document.
+- Add a feature-detected **Mowing schedule enabled** switch backed by `startPlan`.
+- Suppress `Next mow` while the global schedule master is disabled.
+- Expose `schedule_enabled` in Map API schema v5 without changing the schema version.
+
 ## 0.3.0 — zone-first progress and lightweight map data
 
 - Replaces the ambiguous shared progress/area entities with explicit Task, Map
