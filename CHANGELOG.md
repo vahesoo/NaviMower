@@ -1,3 +1,9 @@
+## 0.3.2
+
+- Redact `oauth_device_id` from native diagnostics.
+- Add safe RTK metadata and quality-field extraction.
+- Add structured summaries for positioning, connectivity, battery health, firmware, capabilities, maintenance, schedule, environmental settings and opaque vendor fields.
+
 # Changelog
 
 ## 0.3.1 — H1 map recovery, native diagnostics and global schedule control
