@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — zone-first progress and lightweight map data
+
+- Replaces the ambiguous shared progress/area entities with explicit Task, Map
+  and Route sensors. This is an intentional clean entity break: old entity IDs
+  are not migrated and can be removed from the Home Assistant entity registry.
+- Creates one enabled Coverage sensor per mowing zone. Zone area, mowed area,
+  last-mowed and last-completed entities are also created but disabled by
+  default.
+- Uses one authoritative integration-side zone model for Home Assistant sensors
+  and the Map API, including stable zone IDs, cycle IDs, weighted m²/progress,
+  source details and persistent timestamps.
+- Calculates Task progress from only the currently selected zones, weighted by
+  area. Selected zones not yet entered in the task count as zero, while their
+  previous value remains available for Map coverage.
+- Calculates Map coverage and Map mowed area from the latest retained value of
+  every mapped zone, and renames Total area to the unambiguous Map area.
+- Keeps the vendor Route progress counter as a disabled diagnostic entity rather
+  than presenting it as area coverage.
+- Bumps the authenticated Map API to schema v5 and adds prepared `zone_states`,
+  `totals`, independent revisions, and latest same-day `daily_trails` per zone.
+- Stores the physical zone ID with new route points, falls back to zone polygon
+  classification for older history records, and caches unchanged daily-trail
+  preparation by date/map/route revision.
+- Discards provisional zero/one-point start-reset sessions and removes existing
+  completed empty stubs, preventing duplicate non-clickable history rows.
+- Adds regression tests for weighted task/map calculations, per-zone daily trail
+  replacement, empty-session filtering and the clean v0.3 sensor architecture.
+
 ## 0.2.9 — dense telemetry and stable public counters
 
 - Uses the official MQTT state stream as the preferred battery source while the

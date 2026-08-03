@@ -172,7 +172,13 @@ troubleshooting.
 Depending on mower model and firmware, Navimower provides:
 
 - `lawn_mower` controls;
-- battery, state, progress, area, coverage and maintenance sensors;
+- battery, state and maintenance sensors;
+- explicit Task progress, Map coverage, Task/Map mowed area and Map area
+  sensors;
+- one enabled Coverage sensor per mapped mowing zone;
+- optional per-zone Area, Mowed area, Last mowed and Last completed sensors,
+  disabled by default;
+- a disabled diagnostic Route progress sensor for the vendor route counter;
 - global cutting height on supported models;
 - current physical zone, target zone and current Channel sensors;
 - local X/Y, heading, position-source and MQTT pose-age sensors;
@@ -181,6 +187,11 @@ Depending on mower model and firmware, Navimower provides:
 - zone selector, calendar/schedule and supported setting entities;
 - SVG map camera and a lightweight map-data sensor;
 - `navimower.mow`, `navimower.set_schedule` and diagnostics services.
+
+The zone Coverage entity is the normal per-zone entity. Its attributes include
+the zone area, mowed area, task membership, current cycle, source and retained
+timestamps. Supporting area/timestamp entities can be enabled from the entity
+registry when they are useful for dashboards, statistics or automations.
 
 Firmware-dependent settings are created only when the corresponding value is
 reported by the mower. Manual-height models do not expose encoded map values as
@@ -250,9 +261,11 @@ stay loaded during recovery.
 | live activity changes | official MQTT | private-cloud `index2` |
 | battery while mowing/returning | fresh official MQTT state | private-cloud SOC, then last-known |
 | battery while docked/charging | private-cloud SOC | fresh MQTT state, then last-known |
-| public mowing progress while active | fresh MQTT overall/work/route progress | private coverage/work/progress, then last-known |
-| coverage and session area | cycle-filtered private/MQTT values | last-known-good; stale prior-cycle values are held clear |
-| total mapped area | private/map cache | persisted last-known |
+| per-zone coverage and mowed area | private-cloud per-zone area/coverage, densified for the active zone by fresh MQTT progress | persisted per-zone last-known |
+| Task progress / Task mowed area | integration-side area-weighted selected-zone model | persisted active-session zone state |
+| Map coverage / Map mowed area | integration-side area-weighted latest value for every zone | persisted zone history |
+| Map area | decoded map-zone geometry | persisted map cache |
+| Route progress | official MQTT/vendor route counter | unavailable; diagnostic only |
 | map, zones, settings and schedule | private cloud | persisted/local cache |
 | Current channel display | fresh MQTT pose | confirmed dock or last-known display value |
 | physical Gate-area/gate safety | fresh MQTT only | unavailable, never stale X/Y |
@@ -266,11 +279,13 @@ Private-cloud polling is currently intentionally aggressive while field testing:
   downloaded on every cycle.
 
 A failure from one private endpoint keeps its previous value and does not erase
-other entity states. Battery, mowing progress, session area and total area keep
+other entity states. Battery, zone state, task totals and map totals retain
 last-known-good values through short gaps and are checkpointed for restart
-recovery. A confirmed new mowing cycle immediately clears progress, coverage and
-session area; old cloud counters are ignored until low new-cycle values confirm
-the reset. The integration does not interpolate synthetic battery percentages.
+recovery. A confirmed new mowing cycle resets task accounting only when that
+cycle enters a zone; other zones keep their latest Map coverage until a newer
+cycle reaches them. Pause/resume, charging continuation, Home Assistant restart
+and transient telemetry resets do not create a new zone cycle. The integration
+does not interpolate synthetic battery percentages.
 
 Reauthentication is started only for a real authentication rejection. The
 diagnostic `Position source` sensor shows whether current X/Y came from `mqtt`
@@ -294,8 +309,10 @@ type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.13 or later** with Navimower v0.2.7. The standalone
-card includes:
+Use **navimower-map-card v0.1.18 or later** with Navimower v0.3.0. The current
+card remains compatible through the legacy payload fields; a later card release
+can consume the prepared schema-v5 zone states and daily trails directly. The
+standalone card includes:
 
 - map, zones, Off-limit, VF-off, Channel and Gate-area layers;
 - a Today view plus the two preceding dates for three-day mowing history;
@@ -318,17 +335,27 @@ GET /api/navimower/sessions/<entry_id>
 GET /api/navimower/session/<entry_id>/<session_id>
 ```
 
-The map payload uses `schema_version: 4` and contains:
+The map payload uses `schema_version: 5` and contains:
 
 - map geometry, zones, Off-limit areas, VF-off areas, Channels and dock;
 - doodle metadata and original vendor SVG;
-- current coverage, app-like active-zone progress and persistent zone details;
+- prepared `zone_states`, weighted `totals` and independent revisions;
+- latest same-day `daily_trails` per zone, prepared by the integration;
+- legacy coverage and zone-detail fields for current card compatibility;
 - global/effective cutting heights when supported;
 - active cycle trail and every session retained by the selected history policy;
 - gap-aware `trail_segments` and per-session `segments`, while retaining flat
   `trail`/`points` arrays for older cards;
 - local Gate areas and zone-pair gates;
 - links to the complete session index/detail APIs.
+
+`zone_states` is the same authoritative model used by Home Assistant entities.
+The card therefore does not need to calculate area-weighted progress, detect
+zone-cycle boundaries or classify daily route points during dashboard loading.
+A new cycle replaces only the entered zone's same-day trail; other zone trails
+remain available until their own next cycle or the local calendar day changes.
+Prepared daily trails are cached by local date, map revision and retained-route
+revision so an unchanged dashboard reopen does not reprocess route history.
 
 The dedicated session detail endpoint returns exact timestamped points for any
 retained session. The main map response includes both a flat XY path and separate
@@ -384,6 +411,26 @@ steps. They can describe a gate passage or any other area that needs exact
 physical presence from fresh MQTT coordinates.
 
 ## Upgrade notes
+
+### From v0.2.9 to v0.3.0
+
+- This is an intentional clean entity break. Old `mowing_progress`,
+  `mow_route_progress`, `coverage`, `session_area`, `weekly_area` and
+  `total_area` entity IDs are not migrated. Delete their unavailable registry
+  entries after the restart.
+- New public entities use explicit Task, Map and Route terminology. Map area is
+  the static sum of mowing zones; Route progress is diagnostic and disabled by
+  default.
+- Every mapped zone receives one enabled Coverage entity. Per-zone Area, Mowed
+  area, Last mowed and Last completed entities are created but disabled by
+  default.
+- The same central zone model powers entities and the schema-v5 Map API. The API
+  also provides per-zone same-day trails and revisions for a lightweight card.
+- Provisional zero/one-point sessions are no longer published, and existing
+  completed empty stubs are removed while history loads.
+- No config-entry/options migration is required. Restart Home Assistant, remove
+  the old orphaned entities, then enable only the optional zone entities you
+  need.
 
 ### From v0.2.8 to v0.2.9
 
