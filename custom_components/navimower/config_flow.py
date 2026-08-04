@@ -21,7 +21,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
@@ -29,6 +29,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
+from .account import shared_private_device_id
 from .api import NavimowCloudClient, NavimowError, PassportAuthError, PassportError
 from .channel import NavimowerChannel, parse_channels
 from .const import (
@@ -117,7 +118,17 @@ class NavimowConfigFlow(
 
     # ------------------------------------------------------------- private auth
     async def _authenticate(self, email: str, password: str) -> list[dict[str, Any]]:
-        device_id = self._device_id or uuid.uuid4().hex
+        # The private cloud binds one app/device identity to an account. Reuse
+        # the identity already stored by another mower entry of this account so
+        # logging in one mower cannot invalidate the other mower's session.
+        device_id = (
+            shared_private_device_id(
+                self._async_current_entries(),
+                email,
+                self._device_id,
+            )
+            or uuid.uuid4().hex
+        )
         self._device_id = device_id
         client = NavimowCloudClient(device_id=device_id, language=DEFAULT_LANGUAGE)
 
@@ -182,8 +193,9 @@ class NavimowConfigFlow(
                 if not remaining:
                     return await self.async_step_manual()
                 self._vehicles = remaining
-                if len(remaining) == 1:
-                    return await self._prepare_vehicle(remaining[0])
+                # Always show the mower selector, even when only one unconfigured
+                # mower remains. The confirmation makes the selected private
+                # mower explicit before the separate official OAuth step starts.
                 return await self.async_step_select_vehicle()
 
         return self.async_show_form(
@@ -496,7 +508,7 @@ class NavimowConfigFlow(
         return NavimowOptionsFlow()
 
 
-class NavimowOptionsFlow(OptionsFlow):
+class NavimowOptionsFlow(OptionsFlowWithReload):
     """Manage general history, user-friendly gates and local channels."""
 
     def __init__(self) -> None:
