@@ -28,7 +28,7 @@ from .const import (
     SESSION_MERGE_GAP_SECONDS,
     VENDOR_COMPLETION_PROGRESS_MIN,
 )
-from .zone_state import build_daily_trails
+from .zone_state import build_daily_trails, simplify_xy_points
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,6 +133,7 @@ def _metadata(session: dict[str, Any]) -> dict[str, Any]:
         "completed": session.get("completed"),
         "completion_reason": session.get("completion_reason"),
         "final_progress": deepcopy(session.get("final_progress") or {}),
+        "cycle_reset_zone_ids": _unique_ints(session.get("cycle_reset_zone_ids")),
         "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
         "point_count": (
             len(session.get("points") or [])
@@ -143,11 +144,13 @@ def _metadata(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def _card_points(session: dict[str, Any]) -> list[list[float]]:
-    return [
-        [float(point[1]), float(point[2])]
-        for point in session.get("points") or []
-        if isinstance(point, list) and len(point) >= 3
-    ]
+    return simplify_xy_points(
+        [
+            [float(point[1]), float(point[2])]
+            for point in session.get("points") or []
+            if isinstance(point, list) and len(point) >= 3
+        ]
+    )
 
 
 def _card_segments(session: dict[str, Any]) -> list[list[list[float]]]:
@@ -188,12 +191,12 @@ def _card_segments(session: dict[str, Any]) -> list[list[list[float]]]:
             and stamp >= starts[next_start_index]
         ):
             if current:
-                segments.append(current)
+                segments.append(simplify_xy_points(current))
                 current = []
             next_start_index += 1
         current.append([float(point[1]), float(point[2])])
     if current:
-        segments.append(current)
+        segments.append(simplify_xy_points(current))
     return segments
 
 
@@ -236,8 +239,11 @@ def _sessions_can_merge(
         return False
     # A vendor progress reset is an intentional mowing-cycle boundary, not a
     # short interruption. Never repair or resume across it even when the gap is
-    # only a few seconds.
+    # only a few seconds. An explicit reset can also be recorded on the first
+    # session of the new cycle when there was no active previous session.
     if "reset" in str(previous.get("completion_reason") or ""):
+        return False
+    if _unique_ints(continuation.get("cycle_reset_zone_ids")):
         return False
     previous_end = _session_end_ms(previous)
     continuation_start = _as_int(continuation.get("started_at_ms"))
@@ -295,6 +301,10 @@ def _merge_session_records(
     final_progress = dict(previous.get("final_progress") or {})
     final_progress.update(continuation.get("final_progress") or {})
     merged["final_progress"] = final_progress
+    merged["cycle_reset_zone_ids"] = _unique_ints(
+        previous.get("cycle_reset_zone_ids"),
+        continuation.get("cycle_reset_zone_ids"),
+    )
 
     points = [
         list(point)
@@ -366,6 +376,11 @@ class NavimowerHistory:
         # A detected cycle restart must never be merged back into the previous
         # session by the normal five-minute interruption rule.
         self._force_new_session_once = False
+        # Zone ids whose previous same-day trail must be replaced when the next
+        # confirmed session first enters that zone. This is separate from the
+        # session id because a battery-charge continuation may legitimately use
+        # a new session without starting a new mowing cycle.
+        self._force_new_cycle_zone_ids: list[int] = []
         self._last_cycle_event: dict[str, Any] | None = None
 
     # ---------------------------------------------------------------- load
@@ -400,6 +415,18 @@ class NavimowerHistory:
                     for key, value in zone_progress_state.items()
                     if isinstance(value, dict)
                 }
+            self._force_new_session_once = bool(
+                data.get("force_new_session_once")
+            )
+            force_new_cycle_zone_ids = data.get("force_new_cycle_zone_ids")
+            if isinstance(force_new_cycle_zone_ids, list):
+                self._force_new_cycle_zone_ids = _unique_ints(
+                    force_new_cycle_zone_ids
+                )
+                self._force_new_session_once = bool(
+                    self._force_new_session_once
+                    or self._force_new_cycle_zone_ids
+                )
             last_cycle_event = data.get("last_cycle_event")
             if isinstance(last_cycle_event, dict):
                 self._last_cycle_event = dict(last_cycle_event)
@@ -641,6 +668,8 @@ class NavimowerHistory:
                 "sessions": deepcopy(self._sessions),
                 "zone_history": deepcopy(self._zone_history),
                 "zone_progress_state": deepcopy(self._zone_progress_state),
+                "force_new_session_once": self._force_new_session_once,
+                "force_new_cycle_zone_ids": list(self._force_new_cycle_zone_ids),
                 "last_cycle_event": deepcopy(self._last_cycle_event),
             }
 
@@ -814,7 +843,11 @@ class NavimowerHistory:
     ) -> None:
         start_ms = _timestamp_ms(pose_time)
         force_new = self._force_new_session_once
+        cycle_reset_zone_ids = (
+            list(self._force_new_cycle_zone_ids) if force_new else []
+        )
         self._force_new_session_once = False
+        self._force_new_cycle_zone_ids = []
         if not force_new and self._resume_recent_session_locked(
             start_ms=start_ms,
             zone_ids=zone_ids,
@@ -841,6 +874,7 @@ class NavimowerHistory:
             "completed": None,
             "completion_reason": None,
             "final_progress": {},
+            "cycle_reset_zone_ids": cycle_reset_zone_ids,
             "visited_zone_ids": [],
             "task_zone_progress": {str(value): 0 for value in zone_ids},
             "segment_starts_ms": [start_ms],
@@ -1130,6 +1164,7 @@ class NavimowerHistory:
                     })
                     self._zone_history[str(zone_id)] = record
             self._force_new_session_once = True
+            self._force_new_cycle_zone_ids = list(relevant)
             self._last_cycle_event = {
                 "reason": reason,
                 "at_ms": boundary_ms,
@@ -1223,7 +1258,13 @@ class NavimowerHistory:
                 )
                 active["final_progress"] = final_progress
                 self._update_active_metadata_locked(active)
+                reset_zone_ids = [
+                    _as_int(row.get("id"))
+                    for _previous, row, _peak in reset_rows
+                    if _as_int(row.get("id")) is not None
+                ]
                 self._force_new_session_once = True
+                self._force_new_cycle_zone_ids = _unique_ints(reset_zone_ids)
                 if self._is_provisional_session(active):
                     self._discard_active_locked()
                 else:
@@ -1232,10 +1273,7 @@ class NavimowerHistory:
                     "reason": active["completion_reason"],
                     "at_ms": completion_ms,
                     "at": _iso(completion_ms),
-                    "zone_ids": [
-                        _as_int(row.get("id")) for _previous, row, _peak in reset_rows
-                        if _as_int(row.get("id")) is not None
-                    ],
+                    "zone_ids": reset_zone_ids,
                     "completed": completed_cycle,
                     "final_progress": final_progress,
                     "source": "vendor_progress",
@@ -1277,6 +1315,7 @@ class NavimowerHistory:
                 "last_event": deepcopy(self._last_cycle_event),
                 "zone_progress_state": deepcopy(self._zone_progress_state),
                 "force_new_session_once": self._force_new_session_once,
+                "force_new_cycle_zone_ids": list(self._force_new_cycle_zone_ids),
             }
 
     # ----------------------------------------------------------- zone history

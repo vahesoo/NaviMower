@@ -46,6 +46,12 @@ DEFAULT_DIAGNOSTICS_DETAIL: Final = "standard"
 
 DEFAULT_LANGUAGE: Final = "en"
 
+# Map-card route payloads retain the exact stored history internally, but omit
+# intermediate XY samples that are less than this distance from the last
+# published point. Segment starts and final points are always preserved.
+MAP_CARD_MIN_POINT_DISTANCE_M: Final = 0.30
+
+
 # --- Official Smart Home OAuth / MQTT -------------------------------------
 OAUTH2_AUTHORIZE: Final = (
     "https://navimow-h5-fra.willand.com/smartHome/login?channel=homeassistant"

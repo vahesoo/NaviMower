@@ -103,25 +103,38 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         sel = [i for i in (self.coordinator.selected_zone_ids or []) if i in available_ids]
         region_ids = sel or available_ids
         partition_ids = encode_partition_ids(region_ids)
-        # A picked zone is a preference to honour; "all zones" is not, so let the
-        # robot choose its own route there.
+        # A picked zone sequence is sent in the clicked order. Selecting no
+        # zones means all zones with automatic routing.
+        ordered = bool(sel)
+        partition_setup = mow_setup(reset=True, ordered=ordered)
+        self.coordinator.begin_mow_command_trace(
+            source="lawn_mower.start_mowing",
+            requested_zone_ids=sel,
+            resolved_zone_ids=region_ids,
+            reset=True,
+            ordered=ordered,
+            partition_ids_hex=partition_ids,
+            partition_setup=partition_setup,
+        )
         self.coordinator.set_pending_activity(ACTIVITY_MOWING)
         self.coordinator.set_command_target(
-            sel if sel else [], source="lawn_mower.start_mowing"
+            sel if ordered else [], source="lawn_mower.start_mowing"
         )
         try:
-            await self.coordinator.async_send(
+            result = await self.coordinator.async_send(
                 client.mow_zones,
                 sn,
                 partition_ids,
-                mow_setup(reset=True, ordered=bool(sel)),
+                partition_setup,
             )
+            self.coordinator.record_mow_command_result(result)
             self.coordinator.start_new_mowing_cycle(
                 region_ids, source="lawn_mower.start_mowing_reset"
             )
-        except Exception:
+        except Exception as err:
+            self.coordinator.record_mow_command_error(err)
             self.coordinator.clear_pending_activity()
-            if sel:
+            if ordered:
                 self.coordinator.clear_command_target()
             raise
 

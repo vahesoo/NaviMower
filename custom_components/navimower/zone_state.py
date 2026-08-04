@@ -9,6 +9,8 @@ from copy import deepcopy
 from datetime import date, datetime
 from typing import Any, Iterable
 
+from .const import MAP_CARD_MIN_POINT_DISTANCE_M
+
 COMPLETION_THRESHOLD = 95
 
 
@@ -66,6 +68,32 @@ def _point_in_polygon(x: float, y: float, polygon: Any) -> bool:
             if x <= at_x:
                 inside = not inside
     return inside
+
+
+def simplify_xy_points(
+    points: list[list[float]],
+    *,
+    min_distance_m: float = MAP_CARD_MIN_POINT_DISTANCE_M,
+) -> list[list[float]]:
+    """Return a card-facing XY route with nearby intermediate points removed."""
+    valid: list[list[float]] = []
+    for point in points or []:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        x, y = as_float(point[0]), as_float(point[1])
+        if x is not None and y is not None:
+            valid.append([x, y])
+    if len(valid) <= 2 or min_distance_m <= 0:
+        return valid
+    threshold_sq = float(min_distance_m) ** 2
+    result = [valid[0]]
+    for point in valid[1:-1]:
+        dx = point[0] - result[-1][0]
+        dy = point[1] - result[-1][1]
+        if dx * dx + dy * dy >= threshold_sq:
+            result.append(point)
+    result.append(valid[-1])
+    return result
 
 
 def zone_id_for_point(x: float, y: float, map_zones: list[dict[str, Any]]) -> int | None:
@@ -384,12 +412,31 @@ def build_daily_trails(
     to_local_date,
     revision: int,
 ) -> dict[str, Any]:
-    """Keep only the latest same-day cycle trail for every mapped zone."""
+    """Keep today's route for the latest mowing cycle of every zone.
+
+    A persistent history *session* ends whenever the mower docks, but docking for
+    an intermediate charge does not start a new mowing *cycle*.  Therefore
+    consecutive incomplete sessions are accumulated for the same zone.  The old
+    daily route is replaced only when a confirmed cycle boundary reaches that
+    zone: practical completion, a vendor progress reset, or an explicit reset
+    command recorded on the first session of the new cycle.
+
+    The active session is rendered by the card's dedicated live-trail layer.  It
+    is intentionally not copied into ``daily_trails``.  During a charge-return
+    continuation the previous completed fragments remain visible underneath the
+    live route; at a real new-cycle boundary they are cleared as soon as the new
+    active session first enters that zone.
+    """
     by_zone: dict[int, dict[str, Any]] = {}
+    # A completed/reset session closes the current zone cycle.  The replacement
+    # is delayed until a later session actually enters that zone, matching the
+    # Navimow app and preserving unrelated zones.
+    boundary_before_next: set[int] = set()
     ordered = sorted(
         (item for item in sessions if isinstance(item, dict)),
         key=lambda item: as_int(item.get("started_at_ms")) or 0,
     )
+
     for session in ordered:
         session_id = str(session.get("id") or "")
         if not session_id:
@@ -397,19 +444,25 @@ def build_daily_trails(
         points = session.get("points") or []
         if not isinstance(points, list) or not points:
             continue
+
         starts = {
             value
-            for value in (as_int(item) for item in session.get("segment_starts_ms") or [])
+            for value in (
+                as_int(item) for item in session.get("segment_starts_ms") or []
+            )
             if value is not None
         }
-        encountered: set[int] = set()
+        session_by_zone: dict[int, dict[str, Any]] = {}
         current_zone: int | None = None
         current_segment: list[list[float]] = []
 
         def flush() -> None:
             nonlocal current_segment
             if current_zone is not None and current_segment:
-                by_zone[current_zone]["segments"].append(current_segment)
+                row = session_by_zone.setdefault(
+                    current_zone, {"segments": [], "point_count": 0}
+                )
+                row["segments"].append(simplify_xy_points(current_segment))
             current_segment = []
 
         for raw in points:
@@ -417,7 +470,12 @@ def build_daily_trails(
                 continue
             stamp = as_int(raw[0])
             x, y = as_float(raw[1]), as_float(raw[2])
-            if stamp is None or x is None or y is None or to_local_date(stamp) != local_date:
+            if (
+                stamp is None
+                or x is None
+                or y is None
+                or to_local_date(stamp) != local_date
+            ):
                 flush()
                 current_zone = None
                 continue
@@ -428,27 +486,92 @@ def build_daily_trails(
                 flush()
                 current_zone = None
                 continue
-            if zone_id not in encountered:
-                encountered.add(zone_id)
-                by_zone[zone_id] = {
-                    "zone_id": zone_id,
-                    "cycle_id": session_id,
-                    "active": bool(session.get("active")),
-                    "segments": [],
-                    "point_count": 0,
-                }
             boundary = stamp in starts and current_segment
             if zone_id != current_zone or boundary:
                 flush()
                 current_zone = zone_id
             current_segment.append([x, y])
-            by_zone[zone_id]["point_count"] += 1
+            session_by_zone.setdefault(
+                zone_id, {"segments": [], "point_count": 0}
+            )["point_count"] += 1
         flush()
+
+        explicit_reset_zones = {
+            value
+            for value in (
+                as_int(item) for item in session.get("cycle_reset_zone_ids") or []
+            )
+            if value is not None
+        }
+        active = bool(session.get("active"))
+        encountered_zones = set(session_by_zone)
+
+        for zone_id, session_row in session_by_zone.items():
+            if zone_id in boundary_before_next or zone_id in explicit_reset_zones:
+                by_zone.pop(zone_id, None)
+                boundary_before_next.discard(zone_id)
+
+            # The live layer already owns the active route. Keeping it out of the
+            # daily payload prevents duplicate drawing while allowing completed
+            # pre-charge fragments to remain visible.
+            if active:
+                continue
+
+            row = by_zone.get(zone_id)
+            if row is None:
+                row = {
+                    "zone_id": zone_id,
+                    "cycle_id": session_id,
+                    "active": False,
+                    "segments": [],
+                    "point_count": 0,
+                }
+                by_zone[zone_id] = row
+            row["segments"].extend(session_row["segments"])
+            row["point_count"] += int(session_row["point_count"])
+
+        reason = str(session.get("completion_reason") or "").lower()
+        final_progress_zone_ids = {
+            value
+            for value in (
+                as_int(item) for item in (session.get("final_progress") or {}).keys()
+            )
+            if value is not None
+        }
+        if "reset" in reason:
+            boundary_zones = (
+                final_progress_zone_ids
+                or encountered_zones
+                or {
+                    value
+                    for value in (
+                        as_int(item) for item in session.get("zone_ids") or []
+                    )
+                    if value is not None
+                }
+            )
+            boundary_before_next.update(boundary_zones)
+        elif session.get("completed") is True:
+            boundary_zones = (
+                final_progress_zone_ids
+                or encountered_zones
+                or {
+                    value
+                    for value in (
+                        as_int(item) for item in session.get("zone_ids") or []
+                    )
+                    if value is not None
+                }
+            )
+            boundary_before_next.update(boundary_zones)
 
     result = []
     for zone_id in sorted(by_zone):
         row = deepcopy(by_zone[zone_id])
-        row["segments"] = [segment for segment in row["segments"] if len(segment) >= 2]
+        row["segments"] = [
+            segment for segment in row["segments"] if len(segment) >= 2
+        ]
+        row["render_point_count"] = sum(len(segment) for segment in row["segments"])
         if row["segments"]:
             result.append(row)
     return {

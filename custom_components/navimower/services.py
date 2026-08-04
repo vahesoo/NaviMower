@@ -5,9 +5,8 @@
   save-set-data format.
 - ``navimower.mow`` starts mowing now: chosen zones and a ``reset`` flag
   (True = riparti da zero / clear progress, False = continua). Listing zones
-  explicitly also fixes the ORDER they are mowed in (like the app's "Personalizza
-  la sequenza di falciatura"); omitting them means all zones with the robot
-  choosing its own route.
+  explicitly also fixes the ORDER they are mowed in (like the app's zone-click
+  sequence); omitting them means all zones with the robot choosing its own route.
 
 These back the graphical cards (and automations).
 """
@@ -206,11 +205,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
         zones = list(requested_zones)
-        # An explicit list means "mow these, in this order"; omitting it means
-        # "all zones, no preference" -> let the robot route itself (see mow_setup).
+        # An explicit click sequence means "mow these zones in this order".
+        # Omitting zones means all known zones with the robot choosing the route.
         ordered = bool(zones)
         if not zones:
-            # All available zones (from the current snapshot).
             zones = [
                 z["id"]
                 for z in (coordinator.data or {}).get("zones") or []
@@ -223,22 +221,33 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
         partition_ids = encode_partition_ids(zones)
         partition_setup = mow_setup(reset=call.data["reset"], ordered=ordered)
+        coordinator.begin_mow_command_trace(
+            source="navimower.mow",
+            requested_zone_ids=requested_zones,
+            resolved_zone_ids=zones,
+            reset=call.data["reset"],
+            ordered=ordered,
+            partition_ids_hex=partition_ids,
+            partition_setup=partition_setup,
+        )
         coordinator.set_pending_activity(ACTIVITY_MOWING)
         coordinator.set_command_target(
             requested_zones if ordered else [], source="navimower.mow"
         )
         try:
-            await coordinator.async_send(
+            result = await coordinator.async_send(
                 coordinator.client.mow_zones,
                 coordinator.sn,
                 partition_ids,
                 partition_setup,
             )
+            coordinator.record_mow_command_result(result)
             if call.data["reset"]:
                 coordinator.start_new_mowing_cycle(
                     zones, source="navimower.mow_reset"
                 )
         except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
+            coordinator.record_mow_command_error(err)
             coordinator.clear_pending_activity()
             if ordered:
                 coordinator.clear_command_target()

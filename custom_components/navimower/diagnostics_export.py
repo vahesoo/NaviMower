@@ -688,6 +688,25 @@ async def async_build_diagnostics(
         else None
     )
 
+    last_mow_command = (
+        coordinator.mow_command_diagnostics()
+        if hasattr(coordinator, "mow_command_diagnostics")
+        else None
+    )
+    if isinstance(last_mow_command, dict):
+        cmd_num = last_mow_command.get("cmd_num")
+        if cmd_num:
+            command_status, _ = await _read(
+                hass, client.command_status, sn, str(cmd_num)
+            )
+            last_mow_command["command_status_at_export"] = command_status
+        else:
+            last_mow_command["command_status_at_export"] = {
+                "ok": False,
+                "error_type": "MissingCommandNumber",
+                "error": "The send response did not expose a command number.",
+            }
+
     now = datetime.now(timezone.utc)
     data = coordinator.data or {}
     map_data = data.get("map") or {}
@@ -780,6 +799,7 @@ async def async_build_diagnostics(
         },
         "commands_sent": False,
         "map_writes_performed": False,
+        "last_mow_command": sanitize(deepcopy(last_mow_command)),
         "mower": {
             "serial": f"{sn[:3]}***{sn[-4:]}" if len(sn) >= 8 else "***",
             "vehicle_type": vehicle_type,
@@ -935,6 +955,8 @@ async def async_build_diagnostics(
             "Large binary/base64 resources are represented by length and SHA-256 only.",
             "Local map X/Y coordinates and vendor doodle SVG are retained for geometry analysis.",
             "Full retained routes remain in authenticated session APIs and HA storage.",
+            "commands_sent=false refers to the diagnostics export itself; last_mow_command records the most recent earlier user command.",
+            "command_status_at_export is a read-only status lookup for the stored command number.",
         ],
     }
 

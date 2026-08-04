@@ -7,6 +7,7 @@ runs in one executor job per cycle so the event loop is never blocked.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import io
 import json
 import logging
@@ -236,6 +237,39 @@ def _dedupe_zone_ids(values: Any) -> list[int]:
         if value is not None and value > 0 and value not in result:
             result.append(value)
     return result
+
+
+def _extract_command_number(value: Any) -> str | None:
+    """Extract the vendor command number from any known response shape."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (str, int)):
+        text = str(value).strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in (
+            "cmd_num",
+            "cmdNum",
+            "command_num",
+            "commandNum",
+            "command_number",
+            "commandNumber",
+        ):
+            if key in value:
+                found = _extract_command_number(value.get(key))
+                if found is not None:
+                    return found
+        for nested in value.values():
+            if isinstance(nested, (dict, list, tuple)):
+                found = _extract_command_number(nested)
+                if found is not None:
+                    return found
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            found = _extract_command_number(nested)
+            if found is not None:
+                return found
+    return None
 
 
 def _command_target_is_fresh(
@@ -1050,6 +1084,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._command_target_zone_ids: list[int] = []
         self._command_target_set_at: float | None = None
         self._command_target_source: str | None = None
+        self._last_mow_command_trace: dict[str, Any] | None = None
         self._pending_activity: str | None = None
         self._pending_activity_set_at: float | None = None
         self._last_physical_zone_id: int | None = None
@@ -2905,6 +2940,126 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._command_target_zone_ids = []
         self._command_target_set_at = None
         self._command_target_source = None
+
+    def _mow_command_state_snapshot(self) -> dict[str, Any]:
+        """Return the small live-state subset useful for command debugging."""
+        data = self.data or {}
+        active_session = self.history.active_session
+        return {
+            "state_code": data.get("state_code"),
+            "activity": data.get("activity"),
+            "docked": data.get("docked"),
+            "mqtt_vehicle_state": data.get("mqtt_vehicle_state"),
+            "mqtt_action": data.get("mqtt_action"),
+            "current_physical_zone_id": data.get("current_physical_zone_id"),
+            "target_zone_ids": list(data.get("target_zone_ids") or []),
+            "target_zone_source": data.get("target_zone_source"),
+            "mowing_progress": data.get("mowing_progress"),
+            "work_progress_raw": data.get("work_progress"),
+            "route_progress_raw": data.get("mow_route_progress"),
+            "session_area": data.get("session_area"),
+            "active_session_id": (active_session or {}).get("id")
+            if isinstance(active_session, dict)
+            else None,
+        }
+
+    def begin_mow_command_trace(
+        self,
+        *,
+        source: str,
+        requested_zone_ids: list[int],
+        resolved_zone_ids: list[int],
+        reset: bool,
+        ordered: bool,
+        partition_ids_hex: str,
+        partition_setup: int,
+    ) -> None:
+        """Remember the exact last mowing command for a later diagnostics export."""
+        requested = _dedupe_zone_ids(requested_zone_ids)
+        resolved = _dedupe_zone_ids(resolved_zone_ids)
+        known_zones = [
+            {"id": _as_int(zone.get("id")), "name": zone.get("name")}
+            for zone in (self.data or {}).get("zones") or []
+            if isinstance(zone, dict) and _as_int(zone.get("id")) is not None
+        ]
+        names = {row["id"]: row.get("name") for row in known_zones}
+        big_endian_reference = "".join(
+            int(zone_id).to_bytes(2, "big", signed=False).hex()
+            for zone_id in resolved
+        )
+        self._last_mow_command_trace = {
+            "started_at_utc": datetime.now(UTC).isoformat(),
+            "_started_monotonic": time.monotonic(),
+            "source": str(source),
+            "model": (self.data or {}).get("model")
+            or self.entry.data.get("model"),
+            "vehicle_type": self.vehicle_type,
+            "explicit_zone_selection": bool(requested),
+            "requested_zone_ids": requested,
+            "requested_zone_names": [names.get(value) for value in requested],
+            "resolved_zone_ids": resolved,
+            "resolved_zone_names": [names.get(value) for value in resolved],
+            "known_zones": known_zones,
+            "reset": bool(reset),
+            "ordered": bool(ordered),
+            "partition_setup": int(partition_setup),
+            "partition_setup_hex": f"0x{int(partition_setup):02X}",
+            "partition_ids_hex_sent": str(partition_ids_hex).upper(),
+            "partition_ids_big_endian_reference": big_endian_reference.upper(),
+            "request_shape": {
+                "cmdCode": "s:mower",
+                "data": {
+                    "partitionSetup": int(partition_setup),
+                    "partitionIds": str(partition_ids_hex),
+                },
+            },
+            "send_response": None,
+            "cmd_num": None,
+            "send_error": None,
+            "state_before": self._mow_command_state_snapshot(),
+        }
+
+    def record_mow_command_result(self, result: Any) -> None:
+        """Attach the private-cloud acknowledgement to the active command trace."""
+        if self._last_mow_command_trace is None:
+            return
+        self._last_mow_command_trace["send_completed_at_utc"] = (
+            datetime.now(UTC).isoformat()
+        )
+        self._last_mow_command_trace["send_response"] = deepcopy(result)
+        self._last_mow_command_trace["cmd_num"] = _extract_command_number(result)
+        self._last_mow_command_trace["state_after_send"] = (
+            self._mow_command_state_snapshot()
+        )
+
+    def record_mow_command_error(self, error: BaseException) -> None:
+        """Preserve a failed send attempt instead of losing its payload details."""
+        if self._last_mow_command_trace is None:
+            return
+        self._last_mow_command_trace["send_completed_at_utc"] = (
+            datetime.now(UTC).isoformat()
+        )
+        self._last_mow_command_trace["send_error"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        self._last_mow_command_trace["state_after_send"] = (
+            self._mow_command_state_snapshot()
+        )
+
+    def mow_command_diagnostics(self) -> dict[str, Any] | None:
+        """Return a sanitized-ready copy of the last user-issued mowing command."""
+        if self._last_mow_command_trace is None:
+            return None
+        result = deepcopy(self._last_mow_command_trace)
+        started = _as_float(result.pop("_started_monotonic", None))
+        result["age_s"] = (
+            round(max(0.0, time.monotonic() - started), 3)
+            if started is not None
+            else None
+        )
+        result["state_at_diagnostics"] = self._mow_command_state_snapshot()
+        return result
 
     def _cancel_gate_release(self, slug: str) -> None:
         cancel = self._gate_release_tasks.pop(slug, None)
