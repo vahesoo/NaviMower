@@ -4,14 +4,12 @@ Two write families, both via ``/vehicle/set/save-set-data``:
 
 * legacy switches (nightMow/rain/sound/power-saving) use the *plain* form with a
   zero-padded boolean string ('01'/'00');
-* "modern" MowerSettingBean toggles (child lock, lift alarm, cyclic mowing, and
-  the frost/snow/storm/high-temp mow delays) use ``operation_type:"iot_set"``
-  with a per-key value encoding (some keys a JSON number ``1``/``0``, others a
-  string ``"1"``/``"0"``). The plain form is acked but NOT applied for these.
+* "modern" MowerSettingBean toggles use ``operation_type:"iot_set"`` with a
+  per-key value encoding and are sent to the robot first so the change applies.
 
-Both write shapes and the per-key encodings were captured live from the app.
-The modern toggles are feature-detected (created only when the robot actually
-reports the key) so a different model only sees what it has.
+Feature detection is based on the values reported by the mower. A few settings
+that are not copied into the coordinator settings snapshot are read directly
+from the sanitized private-cloud ``set_list`` payload.
 """
 from __future__ import annotations
 
@@ -19,10 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.switch import (
-    SwitchEntity,
-    SwitchEntityDescription,
-)
+from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -35,36 +30,22 @@ from .entity import NavimowEntity
 
 @dataclass(frozen=True, kw_only=True)
 class NavimowSwitchDescription(SwitchEntityDescription):
-    """Switch description mapping a snapshot key to a save-set-data write key."""
+    """Switch description mapping a reported value to a write key."""
 
     value_fn: Callable[[dict], bool | None]
     write_key: str
     proven: bool = False
-    # "modern" settings: write via save-set-data + operation_type:iot_set.
     iot: bool = False
-    # iot value encoding: True => JSON number (1/0), False => string ('1'/'0').
     numeric: bool = False
-    # Device command (cmdCode s:mower on /vehicle/set/send) fired alongside the
-    # cloud write so the robot actually applies it (the cloud copy alone reverts).
-    # robot_key defaults to write_key; override where they differ (e.g.
-    # tractionControl -> tcsSwitch). robot_numeric: True => JSON number 1/0,
-    # False => string "1"/"0" (robot encoding, may differ from the cloud one).
     robot_key: str | None = None
     robot_numeric: bool = True
-    # Registry enabled-by-default; None follows ``proven``.
     enabled_default: bool | None = None
-    # Write-only setting (robot never reports it back): use assumed_state and
-    # track the last commanded value optimistically.
     assumed: bool = False
-    # For write-only switches: settings key (of a readable "sibling" feature)
-    # whose presence gates creation, since the switch's own key can't be read.
     gate_key: str | None = None
+    raw_read_key: str | None = None
 
 
 SWITCHES: tuple[NavimowSwitchDescription, ...] = (
-    # App global schedule master. Turning it off keeps every weekday/period
-    # stored but prevents the weekly plan from starting the mower. Both cloud
-    # and robot channels use string "1"/"0" encoding.
     NavimowSwitchDescription(
         key="mowing_schedule_enabled",
         translation_key="mowing_schedule_enabled",
@@ -85,7 +66,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="nightMowSwitch",
         proven=True,
         iot=True,
-        numeric=True,  # cloud number 1/0 (captured live; app also fires s:mower)
+        numeric=True,
     ),
     NavimowSwitchDescription(
         key="rain_sensor",
@@ -94,7 +75,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("rain_sensor"),
         write_key="rainSensor",
-        proven=True,  # write verified live (flip+restore)
+        proven=True,
     ),
     NavimowSwitchDescription(
         key="rain_detection",
@@ -103,7 +84,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("rain_detection"),
         write_key="rainDetectionSwitch",
-        proven=True,  # write verified live (flip+restore)
+        proven=True,
     ),
     NavimowSwitchDescription(
         key="sound",
@@ -113,7 +94,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("sound"),
         write_key="soundSwitch",
         proven=True,
-        iot=True,  # cloud string "1"/"0" (captured live; app also fires s:mower)
+        iot=True,
     ),
     NavimowSwitchDescription(
         key="power_saving",
@@ -124,13 +105,8 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="lowPowerSet",
         proven=True,
         iot=True,
-        numeric=True,  # cloud number 1/0 (captured live; app also fires s:mower)
+        numeric=True,
     ),
-    # --- "modern" MowerSettingBean toggles -----------------------------------
-    # Write via save-set-data + operation_type:iot_set (the plain form is acked
-    # but NOT applied for these). Per-key value encoding captured live; a restore
-    # batch was verified applied on the owner account. Feature-detected (created
-    # only when the robot reports the key) but enabled by default once created.
     NavimowSwitchDescription(
         key="child_lock",
         translation_key="child_lock",
@@ -138,7 +114,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("child_lock"),
         write_key="childLock",
-        iot=True,  # string "1"/"0"
+        iot=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -148,7 +124,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("lift_alarm"),
         write_key="liftSwitch",
-        iot=True,  # string "1"/"0"
+        iot=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -158,8 +134,8 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("mowing_cycle"),
         write_key="mowingCycle",
-        iot=True,  # cloud string "1"/"0"
-        robot_numeric=False,  # robot also string "1"/"0"
+        iot=True,
+        robot_numeric=False,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -170,7 +146,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("frost_delay"),
         write_key="frostSwitch",
         iot=True,
-        numeric=True,  # JSON number 1/0
+        numeric=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -181,7 +157,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("snow_delay"),
         write_key="snowSwitch",
         iot=True,
-        numeric=True,  # JSON number 1/0
+        numeric=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -192,7 +168,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("storm_delay"),
         write_key="stormSwitch",
         iot=True,
-        numeric=True,  # JSON number 1/0
+        numeric=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
@@ -203,15 +179,11 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("high_temp_delay"),
         write_key="highTempSwitch",
         iot=True,
-        numeric=True,  # JSON number 1/0
+        numeric=True,
         enabled_default=True,
     ),
-    # --- vision / advanced toggles (captured live 2026-07-24, one-at-a-time) --
-    # save-set-data + iot_set, numeric 1/0. slam/cpt/traction are read-back;
-    # animalProtection and lightSwitch are NOT reported by the robot -> assumed
-    # state, and gated on a readable sibling so other models don't get a phantom.
     NavimowSwitchDescription(
-        key="efls",  # EFLS = camera-assisted positioning (slamSwitch)
+        key="efls",
         translation_key="efls",
         icon="mdi:cctv",
         entity_category=EntityCategory.CONFIG,
@@ -222,7 +194,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         enabled_default=True,
     ),
     NavimowSwitchDescription(
-        key="obstacle_avoidance",  # VisionFence obstacle avoidance (cptSwitch)
+        key="obstacle_avoidance",
         translation_key="obstacle_avoidance",
         icon="mdi:eye-off-outline",
         entity_category=EntityCategory.CONFIG,
@@ -238,42 +210,38 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         icon="mdi:car-traction-control",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("traction"),
-        write_key="tractionControl",  # cloud key
-        robot_key="tcsSwitch",  # robot key differs (captured live)
+        write_key="tractionControl",
+        robot_key="tcsSwitch",
         iot=True,
         numeric=True,
         enabled_default=True,
     ),
     NavimowSwitchDescription(
-        key="animal_protection",  # VisionFence animal-friendly (write-only)
+        key="animal_protection",
         translation_key="animal_protection",
         icon="mdi:paw",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: None,
+        raw_read_key="animalProtection",
         write_key="animalProtection",
         iot=True,
         numeric=True,
         enabled_default=True,
-        assumed=True,
-        gate_key="obstacle_avoid",  # part of VisionFence
     ),
     NavimowSwitchDescription(
-        key="night_light",  # night light on/off (write-only)
+        key="night_light",
         translation_key="night_light",
         icon="mdi:lightbulb-night-outline",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: None,
+        raw_read_key="lightSwitch",
         write_key="lightSwitch",
         iot=True,
         numeric=True,
         enabled_default=True,
-        assumed=True,
-        gate_key="night_light_level",
     ),
-    # --- rain / weather-forecast zone (captured live 2026-07-24) --------------
-    # Distinct from the physical rain sensor above. All robot+cloud, number 1/0.
     NavimowSwitchDescription(
-        key="weather_rain",  # weatherSwitch = master weather-forecast rain detection
+        key="weather_rain",
         translation_key="weather_rain",
         icon="mdi:weather-rainy",
         entity_category=EntityCategory.CONFIG,
@@ -284,7 +252,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         enabled_default=True,
     ),
     NavimowSwitchDescription(
-        key="rain_delay_mode",  # delayedPileSwitch: on=delay(1) / off=continue(0)
+        key="rain_delay_mode",
         translation_key="rain_delay_mode",
         icon="mdi:timer-sand",
         entity_category=EntityCategory.CONFIG,
@@ -297,11 +265,40 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
 )
 
 
-def _present(desc: NavimowSwitchDescription, settings: dict) -> bool:
-    """Whether to create the switch for this robot."""
+def _as_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "01", "true", "on", "yes"}:
+        return True
+    if text in {"0", "00", "false", "off", "no", ""}:
+        return False
+    return None
+
+
+def _raw_setting(data: dict, key: str) -> Any:
+    raw = data.get("raw") or {}
+    set_list = raw.get("set_list") or {}
+    return set_list.get(key) if isinstance(set_list, dict) else None
+
+
+def _read_value(desc: NavimowSwitchDescription, data: dict) -> bool | None:
+    if desc.raw_read_key is not None:
+        return _as_bool(_raw_setting(data, desc.raw_read_key))
+    return desc.value_fn(data.get("settings") or {})
+
+
+def _present(desc: NavimowSwitchDescription, data: dict) -> bool:
     if desc.proven:
         return True
-    if desc.gate_key is not None:  # write-only: gate on a readable sibling
+    settings = data.get("settings") or {}
+    if desc.raw_read_key is not None:
+        return _raw_setting(data, desc.raw_read_key) is not None
+    if desc.gate_key is not None:
         return settings.get(desc.gate_key) is not None
     return desc.value_fn(settings) is not None
 
@@ -310,9 +307,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    settings = (coordinator.data or {}).get("settings") or {}
+    data = coordinator.data or {}
     entities = [
-        NavimowSwitch(coordinator, desc) for desc in SWITCHES if _present(desc, settings)
+        NavimowSwitch(coordinator, desc) for desc in SWITCHES if _present(desc, data)
     ]
     async_add_entities(entities)
 
@@ -327,15 +324,11 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
     ) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
-        # Enabled-by-default: explicit override wins, else follow ``proven``
-        # (best-effort/non-proven legacy switches stay opt-in).
         self._attr_entity_registry_enabled_default = (
             description.enabled_default
             if description.enabled_default is not None
             else description.proven
         )
-        # Write-only settings have no read-back: show as assumed-state and
-        # remember the last command optimistically.
         self._attr_assumed_state = description.assumed
         self._optimistic: bool | None = None
 
@@ -343,21 +336,19 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         if self.entity_description.assumed:
             return self._optimistic
-        return self.entity_description.value_fn(self.data.get("settings") or {})
+        return _read_value(self.entity_description, self.data)
 
     async def _write(self, on: bool) -> None:
         desc = self.entity_description
         if desc.iot:
-            # 1) device command first -- makes the robot actually apply it (the
-            #    cloud copy alone is reverted by the robot). While mowing this is
-            #    refused and aborts before the cloud write, same as the app.
-            robot_val: Any = (1 if on else 0) if desc.robot_numeric else ("1" if on else "0")
+            robot_val: Any = (
+                (1 if on else 0) if desc.robot_numeric else ("1" if on else "0")
+            )
             await self.coordinator.async_send(
                 self.coordinator.client.send_setting_device,
                 self._sn,
                 {desc.robot_key or desc.write_key: robot_val},
             )
-            # 2) cloud persist (save-set-data + iot_set)
             await self.coordinator.async_send(
                 self.coordinator.client.set_iot_bool,
                 self._sn,
