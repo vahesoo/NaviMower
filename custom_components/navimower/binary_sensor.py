@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .channel import NavimowerChannel
 from .gate import NavimowerGate
-from .const import DOMAIN
+from .const import DOMAIN, MAP_EDIT_STATES
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
 
@@ -68,9 +68,6 @@ BINARY_SENSORS: tuple[NavimowBinaryDescription, ...] = (
         translation_key="pose_valid",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
-        # A docked/idle mower is not expected to publish a continuous pose. Keep
-        # this diagnostic unknown in that state instead of reporting a false
-        # disconnection while the MQTT broker and state stream remain healthy.
         value_fn=lambda d: (
             True
             if d.get("mqtt_pose_valid")
@@ -86,7 +83,11 @@ BINARY_SENSORS: tuple[NavimowBinaryDescription, ...] = (
         key="docked",
         translation_key="docked",
         icon="mdi:home-import-outline",
-        value_fn=lambda d: d.get("docked"),
+        value_fn=lambda d: (
+            None
+            if str(d.get("state_code") or "") in MAP_EDIT_STATES
+            else d.get("docked")
+        ),
     ),
     NavimowBinaryDescription(
         key="zone_transition",
@@ -149,8 +150,6 @@ class NavimowerChannelBinarySensor(NavimowEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        # Do not silently report OFF when the pose stream is stale. Gate
-        # automations can explicitly treat unavailable as a fail-safe condition.
         return super().available and self.coordinator.channel_state(self.channel) is not None
 
     @property
@@ -174,7 +173,6 @@ class NavimowerGateRequiredBinarySensor(NavimowEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        # A stale/missing pose is not a safe implicit OFF for a physical gate.
         return super().available and self.coordinator.gate_state(self.gate) is not None
 
     @property

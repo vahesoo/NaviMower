@@ -20,6 +20,7 @@ from .const import (
     ACTIVITY_PAUSED,
     ACTIVITY_RETURNING,
     DOMAIN,
+    MAP_EDIT_STATES,
     STATE_PAUSED,
     encode_partition_ids,
     mow_setup,
@@ -48,7 +49,7 @@ async def async_setup_entry(
 class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
     """The mower as a HA lawn_mower entity."""
 
-    _attr_name = None  # main feature of the device -> use the device name
+    _attr_name = None
     _attr_supported_features = (
         LawnMowerEntityFeature.START_MOWING
         | LawnMowerEntityFeature.PAUSE
@@ -65,6 +66,9 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
 
     @property
     def activity(self) -> LawnMowerActivity:
+        if str(self.data.get("state_code") or "") in MAP_EDIT_STATES:
+            self._last_valid_activity = LawnMowerActivity.PAUSED
+            return LawnMowerActivity.PAUSED
         mapped = _ACTIVITY_MAP.get(self.data.get("activity"))
         if mapped is not None:
             self._last_valid_activity = mapped
@@ -72,16 +76,9 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         if self.data.get("docked") is True:
             self._last_valid_activity = LawnMowerActivity.DOCKED
             return LawnMowerActivity.DOCKED
-        # Never turn an unknown/transition code into a false Docked event.
         return self._last_valid_activity
 
     async def async_start_mowing(self) -> None:
-        """Resume a paused job, otherwise mow the zone chosen in the zone select.
-
-        The zone select stores the choice (``coordinator.selected_zone_ids``,
-        empty = all zones); this button starts it. Always "restart" mode -- the
-        popup "Mow now" card is where a continue-vs-restart choice lives.
-        """
         client = self.coordinator.client
         sn = self._sn
         if self.data.get("state_code") == STATE_PAUSED:
@@ -100,11 +97,13 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
                 "integration Options (id:name,...) so a start command can be sent."
             )
         available_ids = [z["id"] for z in zones]
-        sel = [i for i in (self.coordinator.selected_zone_ids or []) if i in available_ids]
+        sel = [
+            zone_id
+            for zone_id in (self.coordinator.selected_zone_ids or [])
+            if zone_id in available_ids
+        ]
         region_ids = sel or available_ids
         partition_ids = encode_partition_ids(region_ids)
-        # A picked zone sequence is sent in the clicked order. Selecting no
-        # zones means all zones with automatic routing.
         ordered = bool(sel)
         partition_setup = mow_setup(reset=True, ordered=ordered)
         self.coordinator.begin_mow_command_trace(
@@ -158,9 +157,11 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
     @property
     def extra_state_attributes(self) -> dict:
         data = self.data
+        state_code = str(data.get("state_code") or "")
         return {
             "state_code": data.get("state_code"),
             "state": data.get("state"),
+            "map_editing": state_code in MAP_EDIT_STATES,
             "current_zone": data.get("current_zone"),
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
