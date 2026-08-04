@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.4-beta2 — shared-account multi-mower session fix
+
+- Reuse one deterministic private-cloud app/device identity for every Navimower
+  entry using the same account, preventing one mower login from invalidating the
+  other mower entry's private session.
+- Automatically align different identities left by `0.3.4-beta1` when the
+  integration is reloaded or Home Assistant restarts, without changing mower
+  devices, entities, options, maps or retained history.
+- Always show the mower selector before Smart Home OAuth, including when only one
+  unconfigured mower remains.
+- Replace the custom config-entry update listener with `OptionsFlowWithReload`,
+  avoiding the deprecated listener-plus-config-flow reload combination and the
+  duplicate setup/entity race seen on Home Assistant 2026.7.
+- Keep OAuth token data updates reload-free while private/OAuth reconfigure flows
+  still perform one explicit integration reload.
+- Report idle/docked live-pose validity as unknown instead of falsely
+  disconnected when MQTT is connected but a continuous position stream is not
+  expected.
+- Add dedicated account-session regressions and a GitHub Actions test workflow.
+
 ## 0.3.3
 
 - Keep the existing ordered-zone command format for every mower family while the
@@ -103,7 +123,7 @@
 - Detects app-side partial resets such as 50% to 0-5%, while keeping partial
   cycles separate from `last_completed_at` and preserving the 95% practical
   completion rule.
-- Tracks MQTT vehicle-state and action freshness independently from pose age,
+- Tracks MQTT vehicle-state and action freshness independently of pose age,
   merges partial MQTT snapshots, and forces Docked off whenever the normalized
   mower activity is mowing, paused or returning.
 - Filters encoded/manual cutting-height values and removes unsupported raw
