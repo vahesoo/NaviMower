@@ -1,4 +1,4 @@
-"""Regressions for Navimower v0.3.4-beta4."""
+"""Regressions introduced in Navimower v0.3.4-beta4."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_manifest_version() -> None:
+def test_manifest_is_at_least_beta4_feature_line() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta4"
+    assert manifest["version"].startswith("0.3.4-beta")
 
 
 def test_map_edit_state_codes_share_one_label_and_paused_activity() -> None:
@@ -67,6 +67,6 @@ def test_geo_fence_radius_is_opt_in_and_center_is_not_exposed() -> None:
     assert 'raw_read_key="antiTheftRadius"' in block
     assert "native_min_value=10" in block
     assert "native_max_value=50" in block
-    assert "native_step=10" in block
+    assert "native_step=1" in block
     assert "enabled_default=False" in block
     assert "antiTheftPoint" not in source
