@@ -3,17 +3,28 @@ from __future__ import annotations
 from datetime import date
 import importlib.util
 from pathlib import Path
+import sys
+import types
 
-MODULE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "custom_components"
-    / "navimower"
-    / "zone_state.py"
-)
-spec = importlib.util.spec_from_file_location("navimower_zone_state", MODULE_PATH)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENT = ROOT / "custom_components" / "navimower"
+PACKAGE = "navimower_zone_state_test"
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+package = types.ModuleType(PACKAGE)
+package.__path__ = [str(COMPONENT)]
+sys.modules.setdefault(PACKAGE, package)
+_load_module(f"{PACKAGE}.const", COMPONENT / "const.py")
+module = _load_module(f"{PACKAGE}.zone_state", COMPONENT / "zone_state.py")
 
 
 def test_weighted_map_and_single_zone_task_progress() -> None:
