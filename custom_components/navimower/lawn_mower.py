@@ -97,18 +97,18 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
                 "integration Options (id:name,...) so a start command can be sent."
             )
         available_ids = [z["id"] for z in zones]
-        selected = [
+        sel = [
             zone_id
             for zone_id in (self.coordinator.selected_zone_ids or [])
             if zone_id in available_ids
         ]
-        region_ids = selected or available_ids
+        region_ids = sel or available_ids
         partition_ids = encode_partition_ids(region_ids)
-        ordered = bool(selected)
+        ordered = bool(sel)
         partition_setup = mow_setup(reset=True, ordered=ordered)
         self.coordinator.begin_mow_command_trace(
             source="lawn_mower.start_mowing",
-            requested_zone_ids=selected,
+            requested_zone_ids=sel,
             resolved_zone_ids=region_ids,
             reset=True,
             ordered=ordered,
@@ -117,7 +117,7 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         )
         self.coordinator.set_pending_activity(ACTIVITY_MOWING)
         self.coordinator.set_command_target(
-            selected if ordered else [], source="lawn_mower.start_mowing"
+            sel if ordered else [], source="lawn_mower.start_mowing"
         )
         try:
             result = await self.coordinator.async_send(
