@@ -11,11 +11,14 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
+from .account import shared_private_device_id
 from .channel import parse_channels
 from .const import (
     API_BASE_URL,
     CONF_API_BASE_URL,
     CONF_AUTH_IMPLEMENTATION,
+    CONF_DEVICE_ID,
+    CONF_EMAIL,
     CONF_MQTT_SOURCE_ENTRY_ID,
     CONF_OAUTH_TOKEN,
     DEFAULT_INCLUDE_RETURN_TRAIL,
@@ -52,24 +55,6 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # The standalone map card, Mow Now dialog and schedule editor are distributed
 # from the separate navimower-map-card HACS dashboard repository.
-
-
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload only when user options change, never on OAuth token refresh.
-
-    Home Assistant writes refreshed OAuth tokens back to ``entry.data``. A
-    normal unconditional config-entry listener would therefore unload every
-    entity on each token refresh. Keep an explicit options snapshot and ignore
-    data-only updates.
-    """
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    snapshots = domain_data.setdefault("_options_snapshot", {})
-    current = dict(entry.options)
-    previous = snapshots.get(entry.entry_id)
-    if previous == current:
-        return
-    snapshots[entry.entry_id] = current
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -134,12 +119,26 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Restore local data, then start private cloud and OAuth/MQTT in parallel."""
     async_register_oauth_implementation(hass)
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    domain_data.setdefault("_options_snapshot", {})[entry.entry_id] = dict(
-        entry.options
-    )
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # Entries created before v0.3.4-beta2 may contain different app/device IDs
+    # for the same private-cloud account. Converge them before constructing the
+    # client so an old pair heals automatically on the next reload or restart.
+    canonical_device_id = shared_private_device_id(
+        hass.config_entries.async_entries(DOMAIN),
+        entry.data.get(CONF_EMAIL),
+        entry.data.get(CONF_DEVICE_ID),
+    )
+    if canonical_device_id and entry.data.get(CONF_DEVICE_ID) != canonical_device_id:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_DEVICE_ID: canonical_device_id},
+        )
+        _LOGGER.info(
+            "Aligned Navimower private-cloud identity for account-shared entry %s",
+            entry.entry_id,
+        )
+
+    domain_data = hass.data.setdefault(DOMAIN, {})
     coordinator = NavimowCoordinator(hass, entry)
     await coordinator.async_load_persistent_state()
     domain_data[entry.entry_id] = coordinator
@@ -228,9 +227,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_shutdown()
     domain_data = hass.data.get(DOMAIN) or {}
     domain_data.pop(entry.entry_id, None)
-    snapshots = domain_data.get("_options_snapshot")
-    if isinstance(snapshots, dict):
-        snapshots.pop(entry.entry_id, None)
     return True
 
 
