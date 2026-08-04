@@ -1411,12 +1411,35 @@ class NavimowerHistory:
                                 else active_detail.get("percentage")
                             )
                         if progress is not None:
-                            previous_progress = (
-                                _as_int(task_progress.get(str(active_zone_id))) or 0
+                            previous_progress = _as_int(
+                                task_progress.get(str(active_zone_id))
                             )
-                            task_progress[str(active_zone_id)] = max(
-                                previous_progress, progress
+                            vendor_progress = _as_int(
+                                active_detail.get("vendor_percentage")
+                                if active_detail.get("vendor_percentage") is not None
+                                else active_detail.get("percentage")
                             )
+                            stale_completed_value = bool(
+                                previous_progress is not None
+                                and previous_progress >= VENDOR_COMPLETION_PROGRESS_MIN
+                                and progress < VENDOR_COMPLETION_PROGRESS_MIN
+                                and vendor_progress is not None
+                                and vendor_progress < VENDOR_COMPLETION_PROGRESS_MIN
+                            )
+                            if stale_completed_value:
+                                # A restored/transition spike of 100% must not pin
+                                # an actively mowed zone when both the fresh work
+                                # counter and vendor coverage confirm it is still
+                                # incomplete. This heals beta2-era session state.
+                                task_progress[str(active_zone_id)] = progress
+                                if active.get("completion_reason") == "vendor_progress":
+                                    active["completed"] = None
+                                    active["completion_reason"] = None
+                                    active["final_progress"] = {}
+                            else:
+                                task_progress[str(active_zone_id)] = max(
+                                    previous_progress or 0, progress
+                                )
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])
                     candidates = [
@@ -1441,6 +1464,12 @@ class NavimowerHistory:
                     active["completion_reason"] = (
                         active.get("completion_reason") or "vendor_progress"
                     )
+                elif active.get("completion_reason") == "vendor_progress":
+                    # Recompute optimistic completion after a stale 100% value
+                    # has been corrected by fresh active-zone telemetry.
+                    active["completed"] = None
+                    active["completion_reason"] = None
+                    active["final_progress"] = {}
                 self._update_active_metadata_locked(active)
                 changed = True
 

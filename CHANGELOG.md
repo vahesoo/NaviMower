@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4-beta3 — active-zone progress and map-data performance
+
+- Recover an active zone from a stale/restored 100% session value when both the
+  fresh MQTT work counter and vendor coverage confirm that the zone is still
+  below the practical completion threshold.
+- Heal the persisted active-session progress and clear an optimistic
+  `vendor_progress` completion flag, preventing an incomplete route from being
+  finalized as completed after a restart or transient 100% work counter.
+- Add a second defensive check in the central zone model so stale completion can
+  never override fresh active-zone telemetry while the history checkpoint heals.
+- Build Map data attributes from the lightweight session index instead of deep
+  copying cached sessions and thousands of route points during every state write.
+- Add regressions based on the H215 Street 100%→29% and X390 Maja tagune
+  100%→32% diagnostic cases.
+
 ## 0.3.4-beta2 — shared-account multi-mower session fix
 
 - Reuse one deterministic private-cloud app/device identity for every Navimower
