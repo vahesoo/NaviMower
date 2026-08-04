@@ -68,7 +68,19 @@ BINARY_SENSORS: tuple[NavimowBinaryDescription, ...] = (
         translation_key="pose_valid",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: d.get("mqtt_pose_valid") if d.get("mqtt_configured") else None,
+        # A docked/idle mower is not expected to publish a continuous pose. Keep
+        # this diagnostic unknown in that state instead of reporting a false
+        # disconnection while the MQTT broker and state stream remain healthy.
+        value_fn=lambda d: (
+            True
+            if d.get("mqtt_pose_valid")
+            else (
+                None
+                if not d.get("mqtt_configured")
+                or d.get("mqtt_stream_expected") is False
+                else False
+            )
+        ),
     ),
     NavimowBinaryDescription(
         key="docked",
