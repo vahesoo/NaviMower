@@ -35,7 +35,7 @@ class NavimowSelectDescription(SelectEntityDescription):
 SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
     NavimowSelectDescription(
         key="work_mode",
-        name="Work mode",
+        translation_key="work_mode",
         icon="mdi:grass",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: None,
