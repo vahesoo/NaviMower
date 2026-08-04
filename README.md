@@ -101,7 +101,9 @@ a new session even though the mower never docked. This lets the active-cycle
 route start cleanly while the previous route remains in history. A successful
 `navimower.mow` call with `reset: true` creates that boundary immediately, even
 when the previous pass stopped at 50%; `reset: false` keeps the existing vendor
-progress and current cycle.
+progress and current cycle. Exact timestamped samples remain stored internally,
+while card-facing route payloads omit intermediate points closer than
+0.30 m to the last published point. Every segment start and final point remains.
 
 If a Stop/Start, integration reload or Home Assistant restart creates separate
 history fragments, fragments with a gap of up to **five minutes** are joined
@@ -148,12 +150,13 @@ Gate areas remain available as a precise physical fallback. Gate and Gate-area
 safety uses only a fresh MQTT position; stale private-cloud fallback coordinates
 are never used to issue a false physical close signal.
 
-When mowing is started from Home Assistant with an explicit ordered zone list,
-Navimower latches the first requested zone immediately. This command intent has
-priority over short-lived stale vendor target fields, so `gate_required` can
-open the gate at departure instead of waiting for the mower to enter the
-physical Gate area. An in-flight latch keeps its original direction until the
-mower reaches the destination zone and the configured close delay expires.
+When mowing is started from Home Assistant with an explicit zone list, the
+clicked zone order is sent unchanged and the first requested zone is latched
+immediately. That command intent has priority over short-lived stale vendor
+target fields, so `gate_required` can open the gate at departure instead of
+waiting for the mower to enter the physical Gate area. An in-flight latch keeps
+its original direction until the mower reaches the destination zone and the
+configured close delay expires.
 
 Normal empty navigation states are exposed as readable values (`No active
 target`, `Not in channel`, or a last-known/stale physical zone) rather than
@@ -542,14 +545,20 @@ Files are written to:
 The export includes sanitized raw responses, nested key inventory, private
 endpoint age/error statistics, OAuth/MQTT recovery health, map summary, zones,
 doodles, session metadata, persistent zone history and passive MQTT topic/key
-inventory.
+inventory. After a `navimower.mow` or native lawn-mower start action it also
+contains `last_mow_command`: the exact selected zone order, sent little-endian
+hex payload, an unsent big-endian reference, `partitionSetup`, send response,
+command number, before/after state and a read-only `/vehicle/set/response` lookup
+performed when diagnostics are downloaded.
 
 Tokens, password, email, UID, serial number, GPS coordinates, PIN, RTK anchor,
 ICCID, anti-theft point and network identifiers are removed. Local map X/Y and
 vendor doodle SVG remain because they are useful for geometry research. Review
 the file before publishing it.
 
-The action sends no mower commands and performs no settings or map writes.
+The action sends no mower commands and performs no settings or map writes. A
+command-status lookup is read-only; the recorded mow command must have been sent
+earlier by the user.
 
 ## Current limitations
 

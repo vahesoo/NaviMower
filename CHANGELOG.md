@@ -1,10 +1,33 @@
+# Changelog
+
+## 0.3.3
+
+- Keep the existing ordered-zone command format for every mower family while the
+  H1500 failure is investigated; explicit zone clicks remain the sent sequence.
+- Add a sanitized `last_mow_command` diagnostics trace for both service and native
+  lawn-mower starts, including zone IDs/names, exact sent hex, `partitionSetup`,
+  acknowledgement, extracted command number and before/after state snapshots.
+- Query `/vehicle/set/response` read-only for the last command when diagnostics
+  are downloaded, making silent H1/H1500 command rejection observable.
+- Include an unsent big-endian zone-ID reference beside the actual little-endian
+  payload to identify a possible generation-specific byte-order difference.
+- Reduce Map Card payload size by filtering intermediate route points closer than
+  0.30 m to the last published point. Exact timestamped history remains stored
+  and available through the session-detail API.
+- Preserve segment starts and final points so short routes and interruption
+  boundaries are not lost during card-facing route simplification.
+- Keep same-day per-zone mowing trails visible across dock/charge continuations,
+  even when a charging stop creates a new persistent history session.
+- Replace a zone's Today trail only after a confirmed completion, vendor progress
+  reset, or explicit restart enters that zone; unrelated zones remain unchanged.
+- Persist explicit per-zone cycle-boundary markers so Home Assistant restarts and
+  the five-minute session repair cannot merge a restarted cycle into the old one.
+
 ## 0.3.2
 
 - Redact `oauth_device_id` from native diagnostics.
 - Add safe RTK metadata and quality-field extraction.
 - Add structured summaries for positioning, connectivity, battery health, firmware, capabilities, maintenance, schedule, environmental settings and opaque vendor fields.
-
-# Changelog
 
 ## 0.3.1 — H1 map recovery, native diagnostics and global schedule control
 
