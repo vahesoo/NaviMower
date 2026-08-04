@@ -591,7 +591,10 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         map_data = self.data.get("map") or {}
-        active = self.coordinator.history.active_session
+        # The session index contains metadata only. Avoid deep-copying active and
+        # cached full sessions (including thousands of route points) on every
+        # Home Assistant state write.
+        session_index = self.coordinator.history.sessions_index_payload()
         return {
             "schema_version": MAP_API_SCHEMA_VERSION,
             "api_path": f"/api/navimower/map/{self._entry_id}",
@@ -621,10 +624,8 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "trail_started_at": self.coordinator.history.active_started_at(),
             "trail_points": len(self.data.get("trail") or []),
             "trail_active": bool(self.data.get("trail_active")),
-            "active_session_id": (active or {}).get("id"),
-            "retained_session_count": len(
-                self.coordinator.history.session_summaries(include_points=False)
-            ),
+            "active_session_id": session_index.get("active_session_id"),
+            "retained_session_count": len(session_index.get("sessions") or []),
             "trail_retention_days": self.coordinator.history.retention_days,
             "include_return_trail": self.coordinator.history.include_return_trail,
             "private_cloud_connected": self.data.get("private_cloud_connected"),

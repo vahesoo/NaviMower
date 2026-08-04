@@ -191,13 +191,31 @@ def build_zone_model(
             if cloud.get("pct") is not None
             else persisted.get("percentage")
         )
+        live_display_pct = display_pct
         current_task_pct = clamp_pct(task_progress.get(str(zone_id)))
         task_override = (
             cycle_id is not None
             and zone_id in visited_zone_ids
             and current_task_pct is not None
         )
-        if task_override:
+        recovered_stale_completion = bool(
+            zone_id == active_zone_id
+            and task_override
+            and current_task_pct is not None
+            and current_task_pct >= COMPLETION_THRESHOLD
+            and live_display_pct is not None
+            and live_display_pct < COMPLETION_THRESHOLD
+            and vendor_pct is not None
+            and vendor_pct < COMPLETION_THRESHOLD
+        )
+        if recovered_stale_completion:
+            # Defence in depth: even before the corrected session checkpoint is
+            # written, never let a restored/transition 100% override two fresh
+            # incomplete counters for the currently active zone.
+            current_task_pct = live_display_pct
+            display_pct = live_display_pct
+            task_override = False
+        elif task_override:
             display_pct = current_task_pct
 
         raw_finished = next(
@@ -222,6 +240,8 @@ def build_zone_model(
         progress_source = detail.get("progress_source") or persisted.get(
             "progress_source"
         )
+        if recovered_stale_completion:
+            progress_source = "active_live_recovery"
         if calculated is not None and (
             task_override or progress_source not in (None, "coverage")
         ):
@@ -269,6 +289,7 @@ def build_zone_model(
                     progress_source
                     or ("task_cycle" if task_override else "coverage")
                 ),
+                "progress_recovered": recovered_stale_completion,
                 "cutting_height_mm": detail.get("cutting_height_mm"),
                 "stale": False,
             }
