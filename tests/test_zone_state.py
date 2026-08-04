@@ -3,17 +3,28 @@ from __future__ import annotations
 from datetime import date
 import importlib.util
 from pathlib import Path
+import sys
+import types
 
-MODULE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "custom_components"
-    / "navimower"
-    / "zone_state.py"
-)
-spec = importlib.util.spec_from_file_location("navimower_zone_state", MODULE_PATH)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENT = ROOT / "custom_components" / "navimower"
+PACKAGE = "navimower_zone_state_test"
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+package = types.ModuleType(PACKAGE)
+package.__path__ = [str(COMPONENT)]
+sys.modules.setdefault(PACKAGE, package)
+_load_module(f"{PACKAGE}.const", COMPONENT / "const.py")
+module = _load_module(f"{PACKAGE}.zone_state", COMPONENT / "zone_state.py")
 
 
 def test_weighted_map_and_single_zone_task_progress() -> None:
@@ -108,7 +119,7 @@ def test_unvisited_zone_keeps_daily_map_value_but_counts_zero_in_task() -> None:
     assert totals["map_coverage_pct"] == 92.7
 
 
-def test_daily_trails_replace_only_same_zone_on_new_cycle() -> None:
+def test_daily_trails_keep_previous_cycle_for_unconfirmed_continuation() -> None:
     local_day = date(2026, 8, 3)
     sessions = [
         {
@@ -143,8 +154,8 @@ def test_daily_trails_replace_only_same_zone_on_new_cycle() -> None:
     )
     by_zone = {row["zone_id"]: row for row in payload["zones"]}
     assert by_zone[13]["cycle_id"] == "morning"
-    assert by_zone[24]["cycle_id"] == "afternoon-street"
-    assert by_zone[24]["segments"] == [[[12.0, 1.0], [13.0, 1.0]]]
+    assert by_zone[24]["cycle_id"] == "morning"
+    assert by_zone[24]["segments"] == [[[10.0, 1.0], [11.0, 1.0]]]
     assert payload["revision"] == 12
 
 
