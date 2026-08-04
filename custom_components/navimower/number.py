@@ -5,15 +5,50 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.number import NumberEntity, NumberEntityDescription, NumberMode
+from homeassistant.components.number import (
+    NumberDeviceClass,
+    NumberEntity,
+    NumberEntityDescription,
+    NumberMode,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfLength
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfLength,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+
+RAIN_WAIT_HOURS: tuple[float, ...] = (
+    0.25,
+    0.5,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    14,
+    16,
+    18,
+    20,
+    22,
+    24,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -28,10 +63,13 @@ class NavimowNumberDescription(NumberEntityDescription):
     robot_hex: bool = True
     robot_numeric: bool = False
     raw_read_key: str | None = None
+    raw_base: int = 10
+    allowed_native_values: tuple[float, ...] | None = None
     enabled_default: bool = True
 
 
 NUMBERS: tuple[NavimowNumberDescription, ...] = (
+    # Battery settings
     NavimowNumberDescription(
         key="return_battery_level",
         translation_key="return_battery_level",
@@ -58,30 +96,68 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         value_fn=lambda s: s.get("charging_limit"),
         write_key="chargingLimit",
     ),
+    # Weather-adaptive settings
     NavimowNumberDescription(
         key="rain_delay_time",
         translation_key="rain_delay_time",
         icon="mdi:timer-pause",
         entity_category=EntityCategory.CONFIG,
-        native_unit_of_measurement="h",
-        native_min_value=1,
-        native_max_value=12,
-        native_step=1,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        native_min_value=0.25,
+        native_max_value=24,
+        native_step=0.25,
         mode=NumberMode.BOX,
-        value_fn=lambda s: s.get("rain_delay_wire"),
+        value_fn=lambda s: None,
+        raw_read_key="delayedPileSet",
+        raw_base=16,
         write_key="delayedPileSet",
         scale=4,
         cloud_hex=True,
+        allowed_native_values=RAIN_WAIT_HOURS,
     ),
     NavimowNumberDescription(
+        key="snow_delay_time",
+        translation_key="snow_delay_time",
+        icon="mdi:calendar-clock",
+        entity_category=EntityCategory.CONFIG,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        native_min_value=24,
+        native_max_value=168,
+        native_step=1,
+        mode=NumberMode.BOX,
+        value_fn=lambda s: None,
+        raw_read_key="snowDelayTime",
+        write_key="snowDelayTime",
+        robot_hex=False,
+        robot_numeric=True,
+    ),
+    NavimowNumberDescription(
+        key="maximum_mowing_temperature",
+        translation_key="maximum_mowing_temperature",
+        icon="mdi:thermometer-high",
+        entity_category=EntityCategory.CONFIG,
+        device_class=NumberDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        native_min_value=30,
+        native_max_value=45,
+        native_step=1,
+        mode=NumberMode.BOX,
+        value_fn=lambda s: None,
+        raw_read_key="allowMaxTemp",
+        write_key="allowMaxTemp",
+        robot_hex=False,
+        robot_numeric=True,
+    ),
+    # Safety settings
+    NavimowNumberDescription(
         key="geo_fence_radius",
-        name="Geo-fence radius",
+        translation_key="geo_fence_radius",
         icon="mdi:map-marker-radius-outline",
         entity_category=EntityCategory.CONFIG,
         native_unit_of_measurement=UnitOfLength.METERS,
         native_min_value=10,
         native_max_value=50,
-        native_step=10,
+        native_step=1,
         mode=NumberMode.SLIDER,
         value_fn=lambda s: None,
         raw_read_key="antiTheftRadius",
@@ -106,9 +182,16 @@ def _wire_value(desc: NavimowNumberDescription, data: dict) -> int | None:
         else desc.value_fn(data.get("settings") or {})
     )
     try:
+        if isinstance(value, str):
+            return int(value.strip(), desc.raw_base)
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _allowed(desc: NavimowNumberDescription, value: float) -> bool:
+    allowed = desc.allowed_native_values
+    return allowed is None or any(abs(value - item) < 1e-6 for item in allowed)
 
 
 async def async_setup_entry(
@@ -142,7 +225,13 @@ class NavimowNumber(NavimowEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         desc = self.entity_description
-        wire = int(round(value)) * desc.scale
+        native = float(value)
+        if not _allowed(desc, native):
+            choices = ", ".join(f"{item:g}" for item in desc.allowed_native_values or ())
+            raise HomeAssistantError(
+                f"Unsupported {desc.key} value {native:g}; allowed values: {choices}"
+            )
+        wire = int(round(native * desc.scale))
         key = desc.write_key
         if desc.robot_hex:
             robot_value: int | str = f"{wire:02X}"

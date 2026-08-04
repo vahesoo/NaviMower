@@ -235,27 +235,36 @@
     "switch": {
       "mowing_schedule_enabled": { "name": "Mowing schedule enabled" },
       "night_mow": { "name": "Night mowing" },
+      "mowing_cycle": { "name": "Cyclic mowing" },
+      "rain_detection": { "name": "Rain" },
       "rain_sensor": { "name": "Rain sensor" },
-      "rain_detection": { "name": "Rain detection" },
+      "weather_rain": { "name": "Weather forecast" },
+      "rain_delay_mode": { "name": "Delay after rain" },
+      "frost_delay": { "name": "Frost" },
+      "snow_delay": { "name": "Snow" },
+      "storm_delay": { "name": "Strong wind" },
+      "high_temp_delay": { "name": "Hot weather" },
       "sound": { "name": "Sound" },
       "power_saving": { "name": "Power saving" },
+      "night_light": { "name": "Night light" },
       "child_lock": { "name": "Child lock" },
       "lift_alarm": { "name": "Lift alarm" },
-      "mowing_cycle": { "name": "Cyclic mowing" },
-      "frost_delay": { "name": "Frost delay" },
-      "snow_delay": { "name": "Snow delay" },
-      "storm_delay": { "name": "Strong wind delay" },
-      "high_temp_delay": { "name": "High-temperature delay" },
+      "geo_fence_alarm": { "name": "Geo-fence alarm" },
       "efls": { "name": "Camera positioning (EFLS)" },
       "obstacle_avoidance": { "name": "Obstacle avoidance" },
       "traction_control": { "name": "Traction control" },
-      "animal_protection": { "name": "Animal-friendly" },
-      "night_light": { "name": "Night light" },
-      "weather_rain": { "name": "Rain forecast" },
-      "rain_delay_mode": { "name": "Delay on rain" }
+      "animal_protection": { "name": "Animal-friendly" }
     },
     "select": {
       "zone": { "name": "Mow zone" },
+      "work_mode": {
+        "name": "Work mode",
+        "state": {
+          "standard": "Standard mowing",
+          "efficient": "Efficient mowing",
+          "precision": "Precision mowing"
+        }
+      },
       "night_light_level": {
         "name": "Night light brightness",
         "state": {
@@ -268,14 +277,20 @@
         "state": {
           "drizzle": "Drizzle",
           "light": "Light rain",
-          "moderate": "Moderate"
+          "moderate": "Moderate rain"
         }
       }
     },
     "number": {
       "return_battery_level": { "name": "Return-to-dock battery" },
       "charging_limit": { "name": "Charging limit" },
-      "rain_delay_time": { "name": "Rain delay time" }
+      "rain_delay_time": { "name": "Wait time after rain" },
+      "snow_delay_time": { "name": "Snow delay duration" },
+      "maximum_mowing_temperature": { "name": "Maximum mowing temperature" },
+      "geo_fence_radius": { "name": "Geo-fence radius" }
+    },
+    "time": {
+      "frost_delay_until": { "name": "Won't mow until after frost" }
     },
     "camera": {
       "map": { "name": "Map" }
