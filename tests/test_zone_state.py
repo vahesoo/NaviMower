@@ -119,7 +119,7 @@ def test_unvisited_zone_keeps_daily_map_value_but_counts_zero_in_task() -> None:
     assert totals["map_coverage_pct"] == 92.7
 
 
-def test_daily_trails_replace_only_same_zone_on_new_cycle() -> None:
+def test_daily_trails_keep_previous_cycle_for_unconfirmed_continuation() -> None:
     local_day = date(2026, 8, 3)
     sessions = [
         {
@@ -154,8 +154,8 @@ def test_daily_trails_replace_only_same_zone_on_new_cycle() -> None:
     )
     by_zone = {row["zone_id"]: row for row in payload["zones"]}
     assert by_zone[13]["cycle_id"] == "morning"
-    assert by_zone[24]["cycle_id"] == "afternoon-street"
-    assert by_zone[24]["segments"] == [[[12.0, 1.0], [13.0, 1.0]]]
+    assert by_zone[24]["cycle_id"] == "morning"
+    assert by_zone[24]["segments"] == [[[10.0, 1.0], [11.0, 1.0]]]
     assert payload["revision"] == 12
 
 
