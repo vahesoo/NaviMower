@@ -1,4 +1,4 @@
-"""Static regressions for the v0.3.1 integration features."""
+"""Static regressions for the v0.3.1+ integration features."""
 from __future__ import annotations
 
 import ast
@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-COMPONENT = ROOT / "custom_components/navimower"
+COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def test_native_diagnostics_entrypoint_exists() -> None:
@@ -42,7 +42,7 @@ def test_schedule_translation_exists() -> None:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.3"
+    assert manifest["version"] == "0.3.4-beta1"
 
 
 def test_diagnostics_redacts_oauth_device_id_and_summarizes_rtk() -> None:
