@@ -21,6 +21,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography
+
+      - name: Compile integration
+        run: python -m compileall -q custom_components/navimower
+
+      - name: Run regression tests
+        run: python -m pytest -q
+
       - name: Read integration version
         id: version
         shell: bash
