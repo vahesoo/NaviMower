@@ -3,19 +3,29 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
+import types
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
+PACKAGE = "navimower_v034_beta2_test"
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_account_module():
-    spec = importlib.util.spec_from_file_location(
-        "navimower_test_account", COMPONENT / "account.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    package = types.ModuleType(PACKAGE)
+    package.__path__ = [str(COMPONENT)]
+    sys.modules.setdefault(PACKAGE, package)
+    _load_module(f"{PACKAGE}.const", COMPONENT / "const.py")
+    return _load_module(f"{PACKAGE}.account", COMPONENT / "account.py")
 
 
 class _Entry:
