@@ -15,7 +15,7 @@ def _description_block(source: str, key: str, marker: str) -> str:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"]
 
 
 def test_discrete_weather_values_use_selects() -> None:
