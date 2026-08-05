@@ -72,22 +72,23 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         value_fn=lambda s: s.get("charging_limit"),
         write_key="chargingLimit",
     ),
-    # Weather-adaptive settings with regular, continuous app ranges.
+    # Weather-adaptive settings with regular app ranges.
     NavimowNumberDescription(
         key="snow_delay_time",
-        translation_key="snow_delay_time",
+        name="Snow delay duration",
         icon="mdi:calendar-clock",
         entity_category=EntityCategory.CONFIG,
-        native_unit_of_measurement=UnitOfTime.HOURS,
-        native_min_value=24,
-        native_max_value=168,
+        native_unit_of_measurement=UnitOfTime.DAYS,
+        native_min_value=1,
+        native_max_value=7,
         native_step=1,
         mode=NumberMode.SLIDER,
         value_fn=lambda s: None,
         raw_read_key="snowDelayTime",
         write_key="snowDelayTime",
-        # The mower command interprets its string as hexadecimal while set-list
-        # and the iot_set cloud copy expose/store decimal hours.
+        scale=24,
+        # Home Assistant shows whole days. The mower command still expects the
+        # underlying hour count as hexadecimal; cloud set-list stores hours.
         robot_hex=True,
     ),
     NavimowNumberDescription(
