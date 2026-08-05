@@ -71,9 +71,11 @@ def test_snow_and_temperature_ranges() -> None:
         "NavimowNumberDescription(", 1
     )[0]
     assert 'raw_read_key="snowDelayTime"' in snow
-    assert "native_min_value=24" in snow
-    assert "native_max_value=168" in snow
+    assert "native_unit_of_measurement=UnitOfTime.DAYS" in snow
+    assert "native_min_value=1" in snow
+    assert "native_max_value=7" in snow
     assert "native_step=1" in snow
+    assert "scale=24" in snow
     hot = source.split('key="maximum_mowing_temperature"', 1)[1].split(
         "NavimowNumberDescription(", 1
     )[0]
