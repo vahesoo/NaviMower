@@ -11,7 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta6"
+    assert manifest["version"] == "0.3.4-beta7"
 
 
 def test_setting_transaction_has_one_executor_job_and_delayed_readback() -> None:
@@ -26,8 +26,8 @@ def test_setting_transaction_has_one_executor_job_and_delayed_readback() -> None
     ast.parse(source)
 
 
-def test_all_setting_platforms_use_shared_transaction() -> None:
-    for filename in ("switch.py", "select.py", "number.py", "time.py"):
+def test_all_active_setting_platforms_use_shared_transaction() -> None:
+    for filename in ("switch.py", "select.py", "number.py"):
         source = (COMPONENT / filename).read_text()
         assert "from .setting_write import async_write_settings" in source
         assert "await async_write_settings(" in source
@@ -47,10 +47,15 @@ def test_switches_no_longer_refresh_between_robot_and_cloud_writes() -> None:
 def test_value_entities_use_acknowledged_write_through_values() -> None:
     select_source = (COMPONENT / "select.py").read_text()
     number_source = (COMPONENT / "number.py").read_text()
-    time_source = (COMPONENT / "time.py").read_text()
-    assert "cache_values={key: value}" in select_source
+    assert "cache_values={key: cloud_value}" in select_source
     assert "cache_values={key: cloud_value}" in number_source
-    assert 'cache_values={"frostDelayTime": wire}' in time_source
+
+
+def test_legacy_time_platform_creates_no_duplicate_frost_entity() -> None:
+    source = (COMPONENT / "time.py").read_text()
+    assert "Do not create legacy time entities" in source
+    assert "NavimowFrostTime" not in source
+    ast.parse(source)
 
 
 def test_geo_fence_alarm_uses_radar_icon() -> None:
