@@ -21,6 +21,35 @@ _LOGGER = logging.getLogger(__name__)
 
 ALL_ZONES = "All zones"
 
+RAIN_DELAY_VALUES: dict[str, str] = {
+    "15 min": "01",
+    "30 min": "02",
+    "1 h": "04",
+    "2 h": "08",
+    "3 h": "0C",
+    "4 h": "10",
+    "5 h": "14",
+    "6 h": "18",
+    "7 h": "1C",
+    "8 h": "20",
+    "9 h": "24",
+    "10 h": "28",
+    "11 h": "2C",
+    "12 h": "30",
+    "14 h": "38",
+    "16 h": "40",
+    "18 h": "48",
+    "20 h": "50",
+    "22 h": "58",
+    "24 h": "60",
+}
+
+# The app exposes only quarter-hour choices from midnight through 12:45.
+FROST_TIME_VALUES: dict[str, int] = {
+    f"{minutes // 60:02d}:{minutes % 60:02d}": minutes // 15
+    for minutes in range(0, 12 * 60 + 46, 15)
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class NavimowSelectDescription(SelectEntityDescription):
@@ -30,10 +59,37 @@ class NavimowSelectDescription(SelectEntityDescription):
     write_key: str
     value_map: dict[str, int | str]
     robot_numeric: bool = False
+    robot_hex: bool = False
+    cloud_hex: bool = False
+    cloud_string: bool = False
     raw_read_key: str | None = None
 
 
 SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
+    NavimowSelectDescription(
+        key="rain_delay_time",
+        name="Wait time after rain",
+        icon="mdi:timer-pause",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="delayedPileSet",
+        write_key="delayedPileSet",
+        # Both mower and cloud use the quarter-hour count encoded as hex.
+        value_map=RAIN_DELAY_VALUES,
+    ),
+    NavimowSelectDescription(
+        key="frost_delay_until",
+        name="Won't mow until after frost",
+        icon="mdi:clock-alert-outline",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="frostDelayTime",
+        write_key="frostDelayTime",
+        value_map=FROST_TIME_VALUES,
+        # The mower command expects the quarter-hour count as a hex string;
+        # set-list and iot_set use the decimal integer.
+        robot_hex=True,
+    ),
     NavimowSelectDescription(
         key="work_mode",
         translation_key="work_mode",
@@ -47,7 +103,6 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
             "efficient": "03",
             "precision": "04",
         },
-        robot_numeric=False,
     ),
     NavimowSelectDescription(
         key="night_light_level",
@@ -57,7 +112,6 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
         value_fn=lambda s: s.get("night_light_level"),
         write_key="nightLightLevel",
         value_map={"dim": 0, "very_dim": 1},
-        robot_numeric=False,
     ),
     NavimowSelectDescription(
         key="weather_sensitivity",
@@ -78,10 +132,24 @@ def _raw_setting(data: dict, key: str) -> Any:
     return set_list.get(key) if isinstance(set_list, dict) else None
 
 
+def _normalize_raw_value(
+    desc: NavimowSelectDescription, value: Any
+) -> int | str | None:
+    """Normalize set-list values to the type used by the select value map."""
+    if value is None:
+        return None
+    mapped = tuple(desc.value_map.values())
+    if any(isinstance(candidate, int) for candidate in mapped):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return str(value).strip().upper()
+
+
 def _read_value(desc: NavimowSelectDescription, data: dict) -> int | str | None:
     if desc.raw_read_key is not None:
-        value = _raw_setting(data, desc.raw_read_key)
-        return None if value is None else str(value)
+        return _normalize_raw_value(desc, _raw_setting(data, desc.raw_read_key))
     return desc.value_fn(data.get("settings") or {})
 
 
@@ -171,14 +239,25 @@ class NavimowSettingSelect(NavimowEntity, SelectEntity):
         return self._reverse.get(value)
 
     async def async_select_option(self, option: str) -> None:
-        value = self.entity_description.value_map[option]
-        key = self.entity_description.write_key
-        if self.entity_description.robot_numeric:
-            robot_value: int | str = int(value)
+        desc = self.entity_description
+        value = desc.value_map[option]
+        key = desc.write_key
+        if desc.robot_hex:
+            robot_value: int | str = f"{int(value):02X}"
+        elif desc.robot_numeric:
+            robot_value = int(value)
         elif isinstance(value, int):
             robot_value = f"{value:02d}"
         else:
             robot_value = str(value)
+
+        if desc.cloud_hex:
+            cloud_value: int | str = f"{int(value):02X}"
+        elif desc.cloud_string:
+            cloud_value = str(value)
+        else:
+            cloud_value = value
+
         await async_write_settings(
             self.coordinator,
             operations=(
@@ -191,9 +270,9 @@ class NavimowSettingSelect(NavimowEntity, SelectEntity):
                     (
                         self._sn,
                         self.coordinator.vehicle_type,
-                        {key: value},
+                        {key: cloud_value},
                     ),
                 ),
             ),
-            cache_values={key: value},
+            cache_values={key: cloud_value},
         )
