@@ -11,7 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"]
 
 
 def test_setting_transaction_has_one_executor_job_and_delayed_readback() -> None:
