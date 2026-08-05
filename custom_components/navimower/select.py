@@ -15,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .setting_write import async_write_settings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -178,14 +179,21 @@ class NavimowSettingSelect(NavimowEntity, SelectEntity):
             robot_value = f"{value:02d}"
         else:
             robot_value = str(value)
-        await self.coordinator.async_send(
-            self.coordinator.client.send_setting_device,
-            self._sn,
-            {key: robot_value},
-        )
-        await self.coordinator.async_send(
-            self.coordinator.client.save_setting_iot,
-            self._sn,
-            self.coordinator.vehicle_type,
-            {key: value},
+        await async_write_settings(
+            self.coordinator,
+            operations=(
+                (
+                    self.coordinator.client.send_setting_device,
+                    (self._sn, {key: robot_value}),
+                ),
+                (
+                    self.coordinator.client.save_setting_iot,
+                    (
+                        self._sn,
+                        self.coordinator.vehicle_type,
+                        {key: value},
+                    ),
+                ),
+            ),
+            cache_values={key: value},
         )
