@@ -15,7 +15,7 @@ def _description_block(source: str, key: str, marker: str) -> str:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta7"
+    assert manifest["version"] == "0.3.4-beta8"
 
 
 def test_discrete_weather_values_use_selects() -> None:
@@ -53,7 +53,7 @@ def test_frost_select_is_quarter_hour_only_and_hex_to_robot() -> None:
     assert 'raw_read_key="frostDelayTime"' in block
     assert "value_map=FROST_TIME_VALUES" in block
     assert "robot_hex=True" in block
-    assert 'robot_value: int | str = f"{int(value):02X}"' in source
+    assert 'robot_value = f"{int(value):02X}"' in source
     assert "cloud_value = value" in source
 
     legacy = (COMPONENT / "time.py").read_text()
@@ -63,8 +63,17 @@ def test_frost_select_is_quarter_hour_only_and_hex_to_robot() -> None:
 
 def test_continuous_numeric_settings_are_sliders_with_hex_robot_values() -> None:
     source = (COMPONENT / "number.py").read_text()
+
+    snow = _description_block(source, "snow_delay_time", "NavimowNumberDescription(")
+    assert 'raw_read_key="snowDelayTime"' in snow
+    assert "native_min_value=1" in snow
+    assert "native_max_value=7" in snow
+    assert "native_step=1" in snow
+    assert "scale=24" in snow
+    assert "mode=NumberMode.SLIDER" in snow
+    assert "robot_hex=True" in snow
+
     for key, raw_key, minimum, maximum in (
-        ("snow_delay_time", "snowDelayTime", 24, 168),
         ("maximum_mowing_temperature", "allowMaxTemp", 30, 45),
         ("geo_fence_radius", "antiTheftRadius", 10, 50),
     ):
