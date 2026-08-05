@@ -1,4 +1,4 @@
-name: Publish integration prerelease
+name: Publish integration release
 
 on:
   push:
@@ -53,11 +53,11 @@ jobs:
             *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Publish GitHub prerelease
-        if: steps.version.outputs.prerelease == 'true'
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -65,11 +65,16 @@ jobs:
           TAG="v${VERSION}"
           NOTES=".github/release-notes/${VERSION}.md"
           BODY="${RUNNER_TEMP}/release-notes.md"
+          RELEASE_ARGS=()
 
           test -f "${NOTES}"
           TITLE="$(sed -n '1s/^title: //p' "${NOTES}")"
           test -n "${TITLE}"
           tail -n +3 "${NOTES}" > "${BODY}"
+
+          if [ "${PRERELEASE}" = "true" ]; then
+            RELEASE_ARGS+=(--prerelease)
+          fi
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; nothing to publish."
@@ -92,4 +97,4 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "${TITLE}" \
             --notes-file "${BODY}" \
-            --prerelease
+            "${RELEASE_ARGS[@]}"
