@@ -24,7 +24,7 @@ from .const import (
 from .zone_state import simplify_xy_points
 
 SESSION_SVG_ARCHIVE_VERSION = 1
-SESSION_SVG_GRID_M = 0.05
+SESSION_SVG_GRID_M = 0.025
 SESSION_SVG_MAX_ESTIMATED_CELLS = 1_500_000
 
 
@@ -69,8 +69,10 @@ def _point_is_cutting(point: list[Any]) -> bool:
     return activity == ACTIVITY_MOWING or "mow" in activity or "cut" in activity
 
 
-def _valid_points(session: dict[str, Any]) -> list[tuple[int, float, float, bool]]:
-    result: list[tuple[int, float, float, bool]] = []
+def _valid_points(
+    session: dict[str, Any],
+) -> list[tuple[int, float, float, bool, int | None]]:
+    result: list[tuple[int, float, float, bool, int | None]] = []
     for raw in session.get("points") or []:
         if not isinstance(raw, list) or len(raw) < 3:
             continue
@@ -79,7 +81,8 @@ def _valid_points(session: dict[str, Any]) -> list[tuple[int, float, float, bool
         y = _as_float(raw[2])
         if stamp is None or x is None or y is None:
             continue
-        result.append((stamp, x, y, _point_is_cutting(raw)))
+        zone_id = _as_int(raw[7]) if len(raw) > 7 else None
+        result.append((stamp, x, y, _point_is_cutting(raw), zone_id))
     return result
 
 
@@ -102,8 +105,8 @@ def _route_segments(
         for value in (_as_int(item) for item in session.get("segment_starts_ms") or [])
         if value is not None
     }
-    fragments: list[list[tuple[int, float, float, bool]]] = []
-    current: list[tuple[int, float, float, bool]] = []
+    fragments: list[list[tuple[int, float, float, bool, int | None]]] = []
+    current: list[tuple[int, float, float, bool, int | None]] = []
     for point in points:
         if current and point[0] in starts:
             fragments.append(current)
@@ -123,7 +126,11 @@ def _route_segments(
         kind: bool | None = None
         segment: list[list[float]] = []
         for previous, current_point in zip(fragment, fragment[1:]):
-            edge_cutting = previous[3] and current_point[3]
+            edge_cutting = (
+                previous[3]
+                and current_point[3]
+                and (previous[4] is not None or current_point[4] is not None)
+            )
             start_xy = [previous[1], previous[2]]
             end_xy = [current_point[1], current_point[2]]
             if start_xy == end_xy:
@@ -185,9 +192,10 @@ def _rasterize_swath(
 ) -> tuple[set[tuple[int, int]], float]:
     cell = _adaptive_grid_size(cutting_segments)
     radius = max(0.01, float(width_m) / 2.0)
-    # Mark a cell when its square intersects the round-capped stroke. The half
-    # diagonal allowance prevents one-cell cracks between adjacent segments.
-    threshold = radius + cell * math.sqrt(0.5)
+    # Cell-centre sampling keeps the stored footprint close to the requested
+    # swath width. The adaptive grid always retains several cells across the
+    # 0.25 m stroke, so connected route segments remain continuous.
+    threshold = radius
     threshold_sq = threshold * threshold
     occupied: set[tuple[int, int]] = set()
 
