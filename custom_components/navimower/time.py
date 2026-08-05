@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .setting_write import async_write_settings
 
 FROST_TIME_STEP_MINUTES = 15
 FROST_TIME_MAX_MINUTES = 12 * 60 + 45
@@ -74,14 +75,21 @@ class NavimowFrostTime(NavimowEntity, TimeEntity):
                 "The mower app currently supports frost times from 00:00 to 12:45"
             )
         wire = minutes // FROST_TIME_STEP_MINUTES
-        await self.coordinator.async_send(
-            self.coordinator.client.send_setting_device,
-            self._sn,
-            {"frostDelayTime": wire},
-        )
-        await self.coordinator.async_send(
-            self.coordinator.client.save_setting_iot,
-            self._sn,
-            self.coordinator.vehicle_type,
-            {"frostDelayTime": wire},
+        await async_write_settings(
+            self.coordinator,
+            operations=(
+                (
+                    self.coordinator.client.send_setting_device,
+                    (self._sn, {"frostDelayTime": wire}),
+                ),
+                (
+                    self.coordinator.client.save_setting_iot,
+                    (
+                        self._sn,
+                        self.coordinator.vehicle_type,
+                        {"frostDelayTime": wire},
+                    ),
+                ),
+            ),
+            cache_values={"frostDelayTime": wire},
         )

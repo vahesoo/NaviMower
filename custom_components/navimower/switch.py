@@ -7,9 +7,8 @@ Two write families, both via ``/vehicle/set/save-set-data``:
 * "modern" MowerSettingBean toggles use ``operation_type:"iot_set"`` with a
   per-key value encoding and are sent to the robot first so the change applies.
 
-Feature detection is based on the values reported by the mower. A few settings
-that are not copied into the coordinator settings snapshot are read directly
-from the sanitized private-cloud ``set_list`` payload.
+Settings writes use one transaction and delayed cloud readback so an eventually
+consistent ``set_list`` cannot briefly restore the previous switch state.
 """
 from __future__ import annotations
 
@@ -26,6 +25,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .setting_write import async_write_settings
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -224,7 +224,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
     NavimowSwitchDescription(
         key="geo_fence_alarm",
         translation_key="geo_fence_alarm",
-        icon="mdi:shield-map-outline",
+        icon="mdi:radar",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: None,
         raw_read_key="guard",
@@ -358,30 +358,46 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
 
     async def _write(self, on: bool) -> None:
         desc = self.entity_description
+        operations = []
         if desc.iot:
-            robot_val: Any = (
+            robot_value: Any = (
                 (1 if on else 0) if desc.robot_numeric else ("1" if on else "0")
             )
-            await self.coordinator.async_send(
-                self.coordinator.client.send_setting_device,
-                self._sn,
-                {desc.robot_key or desc.write_key: robot_val},
+            cloud_value: Any = (
+                (1 if on else 0) if desc.numeric else ("1" if on else "0")
             )
-            await self.coordinator.async_send(
-                self.coordinator.client.set_iot_bool,
-                self._sn,
-                self.coordinator.vehicle_type,
-                desc.write_key,
-                on,
-                desc.numeric,
+            operations.extend(
+                (
+                    (
+                        self.coordinator.client.send_setting_device,
+                        (self._sn, {desc.robot_key or desc.write_key: robot_value}),
+                    ),
+                    (
+                        self.coordinator.client.set_iot_bool,
+                        (
+                            self._sn,
+                            self.coordinator.vehicle_type,
+                            desc.write_key,
+                            on,
+                            desc.numeric,
+                        ),
+                    ),
+                )
             )
         else:
-            await self.coordinator.async_send(
-                self.coordinator.client.set_bool_setting,
-                self._sn,
-                desc.write_key,
-                on,
+            cloud_value = "01" if on else "00"
+            operations.append(
+                (
+                    self.coordinator.client.set_bool_setting,
+                    (self._sn, desc.write_key, on),
+                )
             )
+
+        await async_write_settings(
+            self.coordinator,
+            operations=operations,
+            cache_values={desc.write_key: cloud_value},
+        )
         if desc.assumed:
             self._optimistic = on
             self.async_write_ha_state()

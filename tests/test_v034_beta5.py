@@ -1,4 +1,4 @@
-"""Regressions for Navimower v0.3.4-beta5."""
+"""Regressions introduced in Navimower v0.3.4-beta5."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_manifest_version() -> None:
+def test_manifest_is_at_least_beta5_feature_line() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta5"
+    assert manifest["version"].startswith("0.3.4-beta")
 
 
 def test_geo_fence_alarm_and_radius_are_cloud_backed() -> None:

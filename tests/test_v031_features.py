@@ -42,7 +42,7 @@ def test_schedule_translation_exists() -> None:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta5"
+    assert manifest["version"] == "0.3.4-beta6"
 
 
 def test_diagnostics_redacts_oauth_device_id_and_summarizes_rtk() -> None:
