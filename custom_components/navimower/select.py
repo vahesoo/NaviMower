@@ -10,6 +10,7 @@ from homeassistant.components.select import SelectEntity, SelectEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -50,6 +51,12 @@ FROST_TIME_VALUES: dict[str, int] = {
     for minutes in range(0, 12 * 60 + 46, 15)
 }
 
+# Do Not Disturb start/end choices cover the full day in 15-minute steps.
+DAY_TIME_VALUES: dict[str, int] = {
+    f"{minutes // 60:02d}:{minutes % 60:02d}": minutes // 15
+    for minutes in range(0, 24 * 60, 15)
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class NavimowSelectDescription(SelectEntityDescription):
@@ -63,6 +70,7 @@ class NavimowSelectDescription(SelectEntityDescription):
     cloud_hex: bool = False
     cloud_string: bool = False
     raw_read_key: str | None = None
+    compound_index: int | None = None
 
 
 SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
@@ -91,6 +99,28 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
         robot_hex=True,
     ),
     NavimowSelectDescription(
+        key="quiet_period_start",
+        name="Quiet period starts",
+        icon="mdi:clock-start",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="dndPeriod",
+        write_key="dndPeriod",
+        value_map=DAY_TIME_VALUES,
+        compound_index=0,
+    ),
+    NavimowSelectDescription(
+        key="quiet_period_end",
+        name="Quiet period ends",
+        icon="mdi:clock-end",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="dndPeriod",
+        write_key="dndPeriod",
+        value_map=DAY_TIME_VALUES,
+        compound_index=1,
+    ),
+    NavimowSelectDescription(
         key="work_mode",
         translation_key="work_mode",
         icon="mdi:grass",
@@ -105,13 +135,42 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
         },
     ),
     NavimowSelectDescription(
+        key="light_brightness",
+        name="Brightness",
+        icon="mdi:brightness-6",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="lightIntensity",
+        write_key="lightIntensity",
+        value_map={
+            "Default": "0",
+            "Dim": "1",
+            "Extra dim": "2",
+        },
+    ),
+    NavimowSelectDescription(
         key="night_light_level",
         translation_key="night_light_level",
-        icon="mdi:brightness-6",
+        icon="mdi:brightness-4",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("night_light_level"),
         write_key="nightLightLevel",
         value_map={"dim": 0, "very_dim": 1},
+    ),
+    NavimowSelectDescription(
+        key="edge_sense_mode",
+        name="Edge sense mode",
+        icon="mdi:vector-line",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="edgeSenselevel",
+        write_key="edgeSenselevel",
+        value_map={
+            "Standard": 0,
+            "Cautious": 1,
+            "Extreme": 2,
+        },
+        robot_numeric=True,
     ),
     NavimowSelectDescription(
         key="weather_sensitivity",
@@ -132,10 +191,28 @@ def _raw_setting(data: dict, key: str) -> Any:
     return set_list.get(key) if isinstance(set_list, dict) else None
 
 
+def _decode_dnd_period(value: Any) -> tuple[int, int] | None:
+    """Decode the app's two hexadecimal quarter-hour bytes."""
+    text = str(value).strip().upper() if value is not None else ""
+    if len(text) != 4:
+        return None
+    try:
+        start = int(text[:2], 16)
+        end = int(text[2:], 16)
+    except ValueError:
+        return None
+    if not 0 <= start < 96 or not 0 <= end < 96:
+        return None
+    return start, end
+
+
 def _normalize_raw_value(
     desc: NavimowSelectDescription, value: Any
 ) -> int | str | None:
     """Normalize set-list values to the type used by the select value map."""
+    if desc.compound_index is not None:
+        period = _decode_dnd_period(value)
+        return None if period is None else period[desc.compound_index]
     if value is None:
         return None
     mapped = tuple(desc.value_map.values())
@@ -242,21 +319,34 @@ class NavimowSettingSelect(NavimowEntity, SelectEntity):
         desc = self.entity_description
         value = desc.value_map[option]
         key = desc.write_key
-        if desc.robot_hex:
-            robot_value: int | str = f"{int(value):02X}"
-        elif desc.robot_numeric:
-            robot_value = int(value)
-        elif isinstance(value, int):
-            robot_value = f"{value:02d}"
-        else:
-            robot_value = str(value)
 
-        if desc.cloud_hex:
-            cloud_value: int | str = f"{int(value):02X}"
-        elif desc.cloud_string:
-            cloud_value = str(value)
+        if desc.compound_index is not None:
+            period = _decode_dnd_period(_raw_setting(self.data, key))
+            if period is None:
+                raise HomeAssistantError(
+                    "The Navimow app has not provided a valid quiet period."
+                )
+            updated = list(period)
+            updated[desc.compound_index] = int(value)
+            compound = f"{updated[0]:02X}{updated[1]:02X}"
+            robot_value: int | str = compound
+            cloud_value: int | str = compound
         else:
-            cloud_value = value
+            if desc.robot_hex:
+                robot_value = f"{int(value):02X}"
+            elif desc.robot_numeric:
+                robot_value = int(value)
+            elif isinstance(value, int):
+                robot_value = f"{value:02d}"
+            else:
+                robot_value = str(value)
+
+            if desc.cloud_hex:
+                cloud_value = f"{int(value):02X}"
+            elif desc.cloud_string:
+                cloud_value = str(value)
+            else:
+                cloud_value = value
 
         await async_write_settings(
             self.coordinator,

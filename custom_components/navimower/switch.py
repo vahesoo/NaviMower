@@ -1,11 +1,9 @@
-"""Switch platform for Navimower: cloud settings toggles.
+"""Switch platform for Navimower cloud settings.
 
-Two write families, both via ``/vehicle/set/save-set-data``:
-
-* legacy switches (nightMow/rain/sound/power-saving) use the *plain* form with a
-  zero-padded boolean string ('01'/'00');
-* "modern" MowerSettingBean toggles use ``operation_type:"iot_set"`` with a
-  per-key value encoding and are sent to the robot first so the change applies.
+``nightMowSwitch`` is a legacy setting written through the plain
+``save-set-data`` form with a zero-padded boolean string (``"01"``/``"00"``).
+Modern MowerSettingBean toggles use ``operation_type:"iot_set"`` and are sent
+to the mower first so the change applies immediately.
 
 Settings writes use one transaction and delayed cloud readback so an eventually
 consistent ``set_list`` cannot briefly restore the previous switch state.
@@ -43,6 +41,8 @@ class NavimowSwitchDescription(SwitchEntityDescription):
     assumed: bool = False
     gate_key: str | None = None
     raw_read_key: str | None = None
+    raw_read_path: tuple[str, ...] | None = None
+    raw_fallback_keys: tuple[str, ...] = ()
 
 
 SWITCHES: tuple[NavimowSwitchDescription, ...] = (
@@ -61,14 +61,13 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
     ),
     NavimowSwitchDescription(
         key="night_mow",
-        translation_key="night_mow",
+        name="Night mowing",
         icon="mdi:weather-night",
-        entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("night_mow"),
         write_key="nightMowSwitch",
         proven=True,
-        iot=True,
-        numeric=True,
+        raw_read_path=("camerabox", "nightMowSwitch"),
+        raw_fallback_keys=("nightMowSwitch", "night_mow_switch"),
     ),
     NavimowSwitchDescription(
         key="mowing_cycle",
@@ -179,7 +178,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
     ),
     NavimowSwitchDescription(
         key="power_saving",
-        translation_key="power_saving",
+        name="Energy saver",
         icon="mdi:leaf",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.get("power_saving"),
@@ -187,6 +186,19 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         proven=True,
         iot=True,
         numeric=True,
+    ),
+    NavimowSwitchDescription(
+        key="do_not_disturb",
+        name="Do not disturb",
+        icon="mdi:volume-off",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="dndModeSwitch",
+        write_key="dndModeSwitch",
+        iot=True,
+        numeric=False,
+        robot_numeric=False,
+        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="night_light",
@@ -200,7 +212,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         numeric=True,
         enabled_default=True,
     ),
-    # Safety and navigation settings
+    # Safety, navigation and model-specific Lab settings
     NavimowSwitchDescription(
         key="child_lock",
         translation_key="child_lock",
@@ -280,6 +292,30 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         numeric=True,
         enabled_default=True,
     ),
+    NavimowSwitchDescription(
+        key="terrain_adapt",
+        name="Terrain adapt",
+        icon="mdi:terrain",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="terrainAdaptSwitch",
+        write_key="terrainAdaptSwitch",
+        iot=True,
+        numeric=True,
+        enabled_default=True,
+    ),
+    NavimowSwitchDescription(
+        key="edge_sense",
+        name="Edge sense",
+        icon="mdi:vector-line",
+        entity_category=EntityCategory.CONFIG,
+        value_fn=lambda s: None,
+        raw_read_key="edgeSense",
+        write_key="edgeSense",
+        iot=True,
+        numeric=True,
+        enabled_default=True,
+    ),
 )
 
 
@@ -298,15 +334,52 @@ def _as_bool(value: Any) -> bool | None:
     return None
 
 
-def _raw_setting(data: dict, key: str) -> Any:
+def _set_list(data: dict) -> dict:
     raw = data.get("raw") or {}
-    set_list = raw.get("set_list") or {}
-    return set_list.get(key) if isinstance(set_list, dict) else None
+    value = raw.get("set_list") or {}
+    return value if isinstance(value, dict) else {}
+
+
+def _raw_setting(data: dict, key: str) -> Any:
+    return _set_list(data).get(key)
+
+
+def _raw_setting_path(data: dict, path: tuple[str, ...]) -> Any:
+    value: Any = _set_list(data)
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _read_raw_value(desc: NavimowSwitchDescription, data: dict) -> Any:
+    if desc.raw_read_path is not None:
+        value = _raw_setting_path(data, desc.raw_read_path)
+        if value is not None:
+            return value
+    if desc.raw_read_key is not None:
+        value = _raw_setting(data, desc.raw_read_key)
+        if value is not None:
+            return value
+    for key in desc.raw_fallback_keys:
+        value = _raw_setting(data, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _uses_raw_read(desc: NavimowSwitchDescription) -> bool:
+    return bool(
+        desc.raw_read_key is not None
+        or desc.raw_read_path is not None
+        or desc.raw_fallback_keys
+    )
 
 
 def _read_value(desc: NavimowSwitchDescription, data: dict) -> bool | None:
-    if desc.raw_read_key is not None:
-        return _as_bool(_raw_setting(data, desc.raw_read_key))
+    if _uses_raw_read(desc):
+        return _as_bool(_read_raw_value(desc, data))
     return desc.value_fn(data.get("settings") or {})
 
 
@@ -314,11 +387,29 @@ def _present(desc: NavimowSwitchDescription, data: dict) -> bool:
     if desc.proven:
         return True
     settings = data.get("settings") or {}
-    if desc.raw_read_key is not None:
-        return _raw_setting(data, desc.raw_read_key) is not None
+    if _uses_raw_read(desc):
+        return _read_raw_value(desc, data) is not None
     if desc.gate_key is not None:
         return settings.get(desc.gate_key) is not None
     return desc.value_fn(settings) is not None
+
+
+def _nested_cache_root(
+    data: dict, path: tuple[str, ...], value: Any
+) -> tuple[str, dict[str, Any]]:
+    """Return a copied top-level subtree with one nested value updated."""
+    if len(path) < 2:
+        raise ValueError("nested cache path must contain at least two keys")
+    source = _set_list(data)
+    root_key = path[0]
+    root = dict(source.get(root_key) or {})
+    cursor = root
+    for key in path[1:-1]:
+        child = dict(cursor.get(key) or {})
+        cursor[key] = child
+        cursor = child
+    cursor[path[-1]] = value
+    return root_key, root
 
 
 async def async_setup_entry(
@@ -393,10 +484,19 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
                 )
             )
 
+        cache_values: dict[str, Any] = {desc.write_key: cloud_value}
+        if desc.raw_read_path is not None:
+            root_key, root = _nested_cache_root(
+                self.data, desc.raw_read_path, cloud_value
+            )
+            cache_values[root_key] = root
+        for key in desc.raw_fallback_keys:
+            cache_values[key] = cloud_value
+
         await async_write_settings(
             self.coordinator,
             operations=operations,
-            cache_values={desc.write_key: cloud_value},
+            cache_values=cache_values,
         )
         if desc.assumed:
             self._optimistic = on
