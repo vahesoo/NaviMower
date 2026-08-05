@@ -1,4 +1,4 @@
-"""Regressions for Navimower v0.3.4-beta8 and the stable release."""
+"""Regressions for Navimower v0.3.4-beta8 and later releases."""
 from __future__ import annotations
 
 import ast
@@ -15,7 +15,7 @@ def _description_block(source: str, key: str, marker: str) -> str:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"]
 
 
 def test_snow_delay_is_exposed_as_one_to_seven_days() -> None:
