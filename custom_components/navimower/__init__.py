@@ -37,6 +37,7 @@ from .map_api import async_register_map_api
 from .mqtt import NavimowerMqttBridge
 from .oauth import async_register_oauth_implementation
 from .services import async_setup_services
+from .session_archive import SessionArchiveManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -144,6 +145,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_load_persistent_state()
     domain_data[entry.entry_id] = coordinator
 
+    # Prepare immutable completed-session render caches independently from the
+    # exact timestamped history. Active sessions remain normal live polylines.
+    session_archive = SessionArchiveManager(hass, entry.entry_id, coordinator)
+    coordinator.session_archive = session_archive
+    session_archive.start()
+
     bridge = NavimowerMqttBridge(hass, entry, coordinator)
     coordinator.mqtt_bridge = bridge
 
@@ -203,6 +210,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.get(DOMAIN) or {}
     ).get(entry.entry_id)
     bridge = getattr(coordinator, "mqtt_bridge", None) if coordinator else None
+    session_archive = (
+        getattr(coordinator, "session_archive", None) if coordinator else None
+    )
 
     # Stop watchdog/recovery work and invalidate old callback generations before
     # entities disappear. This prevents a late Paho callback from writing into a
@@ -222,6 +232,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
         return False
 
+    if session_archive is not None:
+        await session_archive.async_stop()
     if coordinator is not None:
         if bridge is not None:
             await bridge.async_stop()
@@ -233,6 +245,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove cached map data and all retained mowing sessions."""
+    await SessionArchiveManager.async_remove_all(hass, entry.entry_id)
     await NavimowerHistory.async_remove_all(hass, entry.entry_id)
     try:
         await state_store(hass, entry.entry_id).async_remove()
