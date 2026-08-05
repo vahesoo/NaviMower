@@ -1,0 +1,158 @@
+name: Prepare 0.3.4 README
+
+on:
+  push:
+    branches:
+      - release/0.3.4
+    paths:
+      - .github/workflows/prepare-readme.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/0.3.4
+
+      - name: Insert entity reference and release notes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text(encoding="utf-8")
+
+          entity_marker = """Firmware-dependent settings are created only when the corresponding value is
+          reported by the mower. Manual-height models do not expose encoded map values as
+          cutting-height millimetres.
+
+          ## Installation
+          """
+          entity_section = """Firmware-dependent setting entities are created and enabled only when the
+          current mower model and a successful private-cloud `set_list` response support
+          them. An older unsupported setting entity is removed only after a valid
+          `set_list` read, never because of a temporary cloud failure. Manual-height
+          models do not expose encoded map values as cutting-height millimetres.
+
+          ### Entity reference and model support
+
+          > [!NOTE]
+          > Primary field testing has been performed on an **H215** in the European/FRA
+          > region. An **X390** has been used for secondary multi-mower, map, telemetry
+          > and model-specific settings validation. Other models and firmware versions
+          > can report different fields, so setting entities are created from both the
+          > known model mapping and the mower's returned `set_list`.
+
+          The names below are the entity names shown under the mower device. Home
+          Assistant generates the final entity IDs from the mower and entity names.
+
+          #### Core controls, sensors and diagnostics
+
+          | Entity or group | What it provides | Availability |
+          | --- | --- | --- |
+          | Lawn mower | Start, pause and return-to-dock controls plus current activity | All configured mowers |
+          | Battery and State | Selected live battery source and normalized mower state | All configured mowers |
+          | Docked, Problem and Live position valid | Automation-friendly binary states | All configured mowers; live position requires fresh MQTT pose data |
+          | Task progress | Overall progress of the currently selected vendor task | When task progress is reported or recoverable |
+          | Map coverage, Map mowed area and Map area | Area-weighted state of the whole decoded map | Mowers with decoded mowing zones |
+          | Task mowed area and Weekly mowed area | Current-task and vendor weekly area counters | When reported by the private cloud |
+          | Zone Coverage | Current retained coverage for each mapped zone | One enabled entity per zone |
+          | Zone Area, Mowed area, Last mowed and Last completed | Optional supporting entities for each zone | Created per zone and disabled by default |
+          | Cutting height | Current global/effective cutting height | Models reporting a trustworthy remote height; field-tested on H215 |
+          | Current physical zone, Target zone and Current channel | Physical location, intended destination and mapped-channel state | Decoded map plus live/private position data |
+          | Zone transition | Previous and current physical zone transition | Mowers with decoded zones and fresh pose data |
+          | Position X/Y, Heading and source/age | Local map pose and source diagnostics | Mowers reporting position data |
+          | Schedule and Next mow | Parsed weekly schedule, zones and next planned start | When schedule data is reported |
+          | Blades life and Chassis life | Maintenance reminder percentage and runtime details | When maintenance data is reported |
+          | Connectivity and diagnostics | Private-cloud, OAuth, MQTT, stream, signal and source status | All configured mowers; detailed fields depend on available sources |
+          | Gate area and Gate required | Fresh-pose presence and intent-based gate automation state | Only for configured Gate areas or zone-pair gates |
+          | Map data and SVG camera | Lightweight API metadata and renderable map image | Mowers with decoded map data |
+
+          #### Setting controls
+
+          | Setting entity or group | What it changes | Tested/model availability |
+          | --- | --- | --- |
+          | Mowing schedule enabled | Enables or pauses the saved weekly plan without deleting it | Models reporting `startPlan`; H215 and X390 observed |
+          | Charging limit and Return battery level | Battery charge and return thresholds | Only when the mower reports the corresponding setting |
+          | Cyclic mowing | Enables repeated mowing cycles inside the schedule window | Models reporting `mowingCycle` |
+          | Night mowing | Allows mowing at night | H215 bidirectionally tested; other models only when reported |
+          | Work mode | Standard, Efficient or Precision mowing | H215 tested; X390 observed where reported |
+          | Rain and weather controls | Rain feature, physical rain sensor, forecast source and post-rain delay | H215 bidirectionally tested |
+          | Weather sensitivity | Drizzle, Light or Moderate response | When `weatherSensitivity` is reported |
+          | Frost controls | Frost enable and quarter-hour cutoff time | H215 bidirectionally tested |
+          | Snow controls | Snow enable and 1–7 day delay | H215 bidirectionally tested |
+          | Strong wind and Hot weather | Weather-adaptive mowing stops | H215 setting fields observed |
+          | Maximum mowing temperature | 30–45 °C limit | H215 bidirectionally tested |
+          | Do not disturb and Quiet period | Mutes the mower and stores separate 15-minute start/end times | H215 bidirectionally tested |
+          | Energy saver | Enables the app's energy-saving setting | H215 bidirectionally tested |
+          | Sound | Enables or disables mower sounds | When `soundSwitch` is reported |
+          | Night light | Enables the mower's night light | When `lightSwitch` is reported |
+          | Night light brightness | Default, Dim or Extra dim through `lightIntensity` | **H215 only**, bidirectionally mapped |
+          | Brightness | Dim or Extra dim through `nightLightLevel` | **X390 only**, secondary validation |
+          | Child lock and Lift alarm | Safety lock and lift-alert controls | When reported by the mower |
+          | Geo-fence alarm and radius | Anti-theft alarm and 10–50 m radius | H215 bidirectionally tested; only when reported |
+          | Camera positioning (EFLS), obstacle avoidance and traction control | Navigation and traction features | Only when the corresponding setting is reported |
+          | Animal-friendly | Enables animal-protection behaviour | H215 bidirectionally tested; other models when reported |
+          | Terrain adapt | H215 Lab terrain adaptation | **H215 only**, bidirectionally tested |
+          | Edge sense | Enables the H215 Lab edge-sensing feature | **H215 only**, bidirectionally tested |
+          | Edge sense mode | Standard, Cautious or Extreme | **H215 only**, bidirectionally tested |
+
+          ## Installation
+          """
+          if entity_marker not in text:
+              raise SystemExit("README entity marker not found")
+          text = text.replace(entity_marker, entity_section, 1)
+
+          upgrade_marker = """## Upgrade notes
+
+          ### From v0.2.9 to v0.3.0
+          """
+          upgrade_section = """## Upgrade notes
+
+          ### v0.3.4
+
+          - Promotes the tested 0.3.4 beta line to a normal release with multi-mower
+            config entries, stable telemetry fallbacks and history/session hardening.
+          - Adds the mapped weather, Geo-fence, work-mode, Do not disturb, Energy
+            saver, Night mowing and H215 Lab controls described above.
+          - Setting writes are sent robot-first and cloud-second without an
+            intermediate refresh, then confirmed by delayed authoritative readback.
+          - Corrects mower-side hexadecimal encoding for Geo-fence radius, Snow
+            delay, Frost cutoff and Maximum mowing temperature.
+          - Snow delay is displayed as a 1–7 day slider.
+          - Brightness is model-specific: H215 uses the three-level Night light
+            brightness control, while X390 uses the two-level Brightness control.
+          - Supported setting switches, selects and numbers are enabled by default;
+            unsupported stale beta entities are removed after a valid `set_list`
+            response.
+          - No config-entry or options migration is required. Restart Home Assistant
+            after updating. Primary live testing was performed on H215; X390 coverage
+            remains secondary and other models are best-effort.
+          - Full release notes are available in
+            [`.github/release-notes/0.3.4.md`](.github/release-notes/0.3.4.md).
+
+          ### From v0.2.9 to v0.3.0
+          """
+          if upgrade_marker not in text:
+              raise SystemExit("README upgrade marker not found")
+          text = text.replace(upgrade_marker, upgrade_section, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Commit README and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/prepare-readme.yaml
+          git add README.md
+          git commit -m "Document 0.3.4 entities and model support"
+          git push origin HEAD:release/0.3.4
