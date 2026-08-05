@@ -26,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .setting_write import async_write_settings
 
 RAIN_WAIT_HOURS: tuple[float, ...] = (
     0.25,
@@ -239,20 +240,27 @@ class NavimowNumber(NavimowEntity, NumberEntity):
             robot_value = wire
         else:
             robot_value = str(wire)
-        await self.coordinator.async_send(
-            self.coordinator.client.send_setting_device,
-            self._sn,
-            {key: robot_value},
-        )
         if desc.cloud_hex:
             cloud_value: int | str = f"{wire:02X}"
         elif desc.cloud_string:
             cloud_value = str(wire)
         else:
             cloud_value = wire
-        await self.coordinator.async_send(
-            self.coordinator.client.save_setting_iot,
-            self._sn,
-            self.coordinator.vehicle_type,
-            {key: cloud_value},
+        await async_write_settings(
+            self.coordinator,
+            operations=(
+                (
+                    self.coordinator.client.send_setting_device,
+                    (self._sn, {key: robot_value}),
+                ),
+                (
+                    self.coordinator.client.save_setting_iot,
+                    (
+                        self._sn,
+                        self.coordinator.vehicle_type,
+                        {key: cloud_value},
+                    ),
+                ),
+            ),
+            cache_values={key: cloud_value},
         )
