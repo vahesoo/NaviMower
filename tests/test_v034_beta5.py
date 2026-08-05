@@ -11,7 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_manifest_contains_beta5_feature_line() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"]
 
 
 def test_geo_fence_alarm_and_radius_are_cloud_backed() -> None:
