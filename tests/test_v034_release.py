@@ -1,4 +1,4 @@
-"""Stable-release regressions for Navimower v0.3.4."""
+"""Stable v0.3.4 and next-beta regressions for Navimower."""
 from __future__ import annotations
 
 import ast
@@ -9,14 +9,17 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_stable_manifest_and_release_notes() -> None:
+def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
-    notes = (ROOT / ".github" / "release-notes" / "0.3.4.md").read_text()
-    assert notes.startswith("title: Navimower 0.3.4")
-    assert "Primary development and live bidirectional setting tests" in notes
+    assert manifest["version"] == "0.4.0-beta1"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta1.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.0-beta1")
+    assert "completed-session" in notes
     assert "H215" in notes
     assert "X390" in notes
+
+    stable_notes = (ROOT / ".github" / "release-notes" / "0.3.4.md").read_text()
+    assert stable_notes.startswith("title: Navimower 0.3.4")
 
 
 def test_setting_platforms_gate_and_clean_unsupported_entities() -> None:
@@ -103,3 +106,25 @@ def test_readme_documents_entities_models_and_testing_scope() -> None:
     assert "Night light brightness" in readme
     assert "Terrain adapt" in readme
     assert "### v0.3.4" in readme
+
+
+def test_v040_beta1_completed_session_archive_contract() -> None:
+    svg = (COMPONENT / "session_svg.py").read_text()
+    archive = (COMPONENT / "session_archive.py").read_text()
+    api = (COMPONENT / "map_api.py").read_text()
+    setup = (COMPONENT / "__init__.py").read_text()
+
+    assert "SESSION_SVG_ARCHIVE_VERSION = 1" in svg
+    assert '"fill_rule": "evenodd"' in svg
+    assert '"swath_width_m": SWATH_WIDTH_M' in svg
+    assert '"travel"' in svg
+    assert "MQTT_CUTTING_ACTIONS" in svg
+    assert "render_matches_session" in archive
+    assert "async_add_executor_job" in archive
+    assert "/api/navimower/session-render/{entry_id}/{session_id}" in api
+    assert "session_render_api_path_template" in api
+    assert "SessionArchiveManager" in setup
+    ast.parse(svg)
+    ast.parse(archive)
+    ast.parse(api)
+    ast.parse(setup)

@@ -43,6 +43,9 @@ class NavimowerSessionsView(HomeAssistantView):
         return self.json(
             {
                 "schema_version": MAP_API_SCHEMA_VERSION,
+                "session_render_api_path_template": (
+                    f"/api/navimower/session-render/{entry_id}/{{session_id}}"
+                ),
                 **payload,
             }
         )
@@ -74,6 +77,41 @@ class NavimowerSessionView(HomeAssistantView):
         )
 
 
+class NavimowerSessionRenderView(HomeAssistantView):
+    """Return one compact SVG-ready render archive for a completed session."""
+
+    url = "/api/navimower/session-render/{entry_id}/{session_id}"
+    name = "api:navimower:session-render"
+    requires_auth = True
+
+    async def get(
+        self,
+        request: web.Request,
+        entry_id: str,
+        session_id: str,
+    ) -> web.Response:
+        coordinator = _coordinator(request, entry_id)
+        manager = getattr(coordinator, "session_archive", None)
+        if manager is None:
+            raise web.HTTPServiceUnavailable(
+                text="Navimower session archive manager is unavailable"
+            )
+        render = await manager.async_get(session_id)
+        if render is None:
+            raise web.HTTPNotFound(
+                text="No completed Navimower session render is available"
+            )
+        return self.json(
+            {
+                "schema_version": MAP_API_SCHEMA_VERSION,
+                "render_schema_version": render.get("version"),
+                "entry_id": entry_id,
+                "session_id": session_id,
+                "render": render,
+            }
+        )
+
+
 def async_register_map_api(hass: HomeAssistant) -> None:
     """Register all map/history endpoints once per Home Assistant process."""
     if hass.data.get(_REGISTERED_KEY):
@@ -81,4 +119,5 @@ def async_register_map_api(hass: HomeAssistant) -> None:
     hass.http.register_view(NavimowerMapView())
     hass.http.register_view(NavimowerSessionsView())
     hass.http.register_view(NavimowerSessionView())
+    hass.http.register_view(NavimowerSessionRenderView())
     hass.data[_REGISTERED_KEY] = True
