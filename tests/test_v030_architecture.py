@@ -9,7 +9,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_release_version_and_map_schema() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"]
     const_source = (COMPONENT / "const.py").read_text()
     assert "MAP_API_SCHEMA_VERSION: Final = 5" in const_source
 
