@@ -11,7 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta7"
+    assert manifest["version"] == "0.3.4-beta8"
 
 
 def test_setting_transaction_has_one_executor_job_and_delayed_readback() -> None:
@@ -41,7 +41,8 @@ def test_switches_no_longer_refresh_between_robot_and_cloud_writes() -> None:
     assert "send_setting_device" in write_block
     assert "set_iot_bool" in write_block
     assert "self.coordinator.async_send" not in write_block
-    assert "cache_values={desc.write_key: cloud_value}" in write_block
+    assert "cache_values=cache_values" in write_block
+    assert "cache_values: dict[str, Any] = {desc.write_key: cloud_value}" in write_block
 
 
 def test_value_entities_use_acknowledged_write_through_values() -> None:
