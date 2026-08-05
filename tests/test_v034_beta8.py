@@ -1,4 +1,4 @@
-"""Regressions for Navimower v0.3.4-beta8."""
+"""Regressions for Navimower v0.3.4-beta8 and the stable release."""
 from __future__ import annotations
 
 import ast
@@ -15,7 +15,7 @@ def _description_block(source: str, key: str, marker: str) -> str:
 
 def test_manifest_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.3.4-beta8"
+    assert manifest["version"] == "0.3.4"
 
 
 def test_snow_delay_is_exposed_as_one_to_seven_days() -> None:
@@ -72,7 +72,7 @@ def test_do_not_disturb_and_quiet_period_mapping() -> None:
     assert int("20", 16) * 15 // 60 == 8
 
 
-def test_energy_saver_and_three_level_brightness() -> None:
+def test_energy_saver_and_model_specific_brightness() -> None:
     switch_source = (COMPONENT / "switch.py").read_text()
     select_source = (COMPONENT / "select.py").read_text()
 
@@ -83,17 +83,29 @@ def test_energy_saver_and_three_level_brightness() -> None:
     assert 'write_key="lowPowerSet"' in energy
     assert "numeric=True" in energy
 
-    brightness = _description_block(
+    h215 = _description_block(
+        select_source, "night_light_level", "NavimowSelectDescription("
+    )
+    assert 'name="Night light brightness"' in h215
+    assert 'raw_read_key="lightIntensity"' in h215
+    assert 'write_key="lightIntensity"' in h215
+    assert '"Default": "0"' in h215
+    assert '"Dim": "1"' in h215
+    assert '"Extra dim": "2"' in h215
+    assert 'models=("H215",)' in h215
+
+    x390 = _description_block(
         select_source, "light_brightness", "NavimowSelectDescription("
     )
-    assert 'raw_read_key="lightIntensity"' in brightness
-    assert 'write_key="lightIntensity"' in brightness
-    assert '"Default": "0"' in brightness
-    assert '"Dim": "1"' in brightness
-    assert '"Extra dim": "2"' in brightness
+    assert 'name="Brightness"' in x390
+    assert 'raw_read_key="nightLightLevel"' in x390
+    assert 'write_key="nightLightLevel"' in x390
+    assert '"Dim": 0' in x390
+    assert '"Extra dim": 1' in x390
+    assert 'models=("X390",)' in x390
 
 
-def test_h215_lab_controls_are_raw_key_gated() -> None:
+def test_h215_lab_controls_are_raw_key_and_model_gated() -> None:
     switch_source = (COMPONENT / "switch.py").read_text()
     select_source = (COMPONENT / "select.py").read_text()
 
@@ -103,6 +115,7 @@ def test_h215_lab_controls_are_raw_key_gated() -> None:
     assert 'raw_read_key="terrainAdaptSwitch"' in terrain
     assert 'write_key="terrainAdaptSwitch"' in terrain
     assert "numeric=True" in terrain
+    assert 'models=("H215",)' in terrain
 
     edge = _description_block(
         switch_source, "edge_sense", "NavimowSwitchDescription("
@@ -110,6 +123,7 @@ def test_h215_lab_controls_are_raw_key_gated() -> None:
     assert 'raw_read_key="edgeSense"' in edge
     assert 'write_key="edgeSense"' in edge
     assert "numeric=True" in edge
+    assert 'models=("H215",)' in edge
 
     level = _description_block(
         select_source, "edge_sense_mode", "NavimowSelectDescription("
@@ -120,6 +134,7 @@ def test_h215_lab_controls_are_raw_key_gated() -> None:
     assert '"Cautious": 1' in level
     assert '"Extreme": 2' in level
     assert "robot_numeric=True" in level
+    assert 'models=("H215",)' in level
 
 
 def test_beta8_setting_sources_compile() -> None:

@@ -20,6 +20,7 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -126,15 +127,19 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         # human decimal value as a string (20 m -> "20").
         robot_hex=True,
         cloud_string=True,
-        enabled_default=False,
     ),
 )
 
 
-def _raw_setting(data: dict, key: str) -> Any:
+def _set_list(data: dict) -> dict[str, Any] | None:
     raw = data.get("raw") or {}
-    set_list = raw.get("set_list") or {}
-    return set_list.get(key) if isinstance(set_list, dict) else None
+    value = raw.get("set_list")
+    return value if isinstance(value, dict) else None
+
+
+def _raw_setting(data: dict, key: str) -> Any:
+    set_list = _set_list(data)
+    return set_list.get(key) if set_list is not None else None
 
 
 def _wire_value(desc: NavimowNumberDescription, data: dict) -> int | None:
@@ -151,15 +156,40 @@ def _wire_value(desc: NavimowNumberDescription, data: dict) -> int | None:
         return None
 
 
+def _remove_unsupported_registry_entities(
+    hass: HomeAssistant,
+    coordinator: NavimowCoordinator,
+    supported: set[str],
+) -> None:
+    """Remove stale number settings after a confirmed set_list read."""
+    registry = er.async_get(hass)
+    for desc in NUMBERS:
+        if desc.key in supported:
+            continue
+        entity_id = registry.async_get_entity_id(
+            "number", DOMAIN, f"{coordinator.sn}_{desc.key}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     data = coordinator.data or {}
+    supported_descriptions = [
+        desc for desc in NUMBERS if _wire_value(desc, data) is not None
+    ]
+
+    # Cleanup is safe only after the private cloud supplied a real set_list.
+    if _set_list(data) is not None:
+        _remove_unsupported_registry_entities(
+            hass, coordinator, {desc.key for desc in supported_descriptions}
+        )
+
     async_add_entities(
-        NavimowNumber(coordinator, desc)
-        for desc in NUMBERS
-        if _wire_value(desc, data) is not None
+        NavimowNumber(coordinator, desc) for desc in supported_descriptions
     )
 
 

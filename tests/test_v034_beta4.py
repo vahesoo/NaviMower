@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_manifest_is_at_least_beta4_feature_line() -> None:
+def test_manifest_contains_beta4_feature_line() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"].startswith("0.3.4-beta")
+    assert manifest["version"] == "0.3.4"
 
 
 def test_map_edit_state_codes_share_one_label_and_paused_activity() -> None:
@@ -59,7 +59,7 @@ def test_work_mode_mapping_and_dual_write() -> None:
     assert "save_setting_iot" in source
 
 
-def test_geo_fence_radius_is_opt_in_and_center_is_not_exposed() -> None:
+def test_geo_fence_radius_is_supported_by_presence_and_center_is_not_exposed() -> None:
     source = (COMPONENT / "number.py").read_text()
     block = source.split('key="geo_fence_radius"', 1)[1].split(
         'NavimowNumberDescription(', 1
@@ -68,5 +68,5 @@ def test_geo_fence_radius_is_opt_in_and_center_is_not_exposed() -> None:
     assert "native_min_value=10" in block
     assert "native_max_value=50" in block
     assert "native_step=1" in block
-    assert "enabled_default=False" in block
+    assert "enabled_default=False" not in block
     assert "antiTheftPoint" not in source

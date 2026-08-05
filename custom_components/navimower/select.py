@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -71,6 +72,7 @@ class NavimowSelectDescription(SelectEntityDescription):
     cloud_string: bool = False
     raw_read_key: str | None = None
     compound_index: int | None = None
+    models: tuple[str, ...] = ()
 
 
 SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
@@ -134,10 +136,13 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
             "precision": "04",
         },
     ),
+    # H215 exposes the app's three-level Night light brightness control through
+    # lightIntensity. Keep the existing night_light_level unique ID so upgrades
+    # do not create a replacement entity.
     NavimowSelectDescription(
-        key="light_brightness",
-        name="Brightness",
-        icon="mdi:brightness-6",
+        key="night_light_level",
+        name="Night light brightness",
+        icon="mdi:brightness-4",
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: None,
         raw_read_key="lightIntensity",
@@ -147,15 +152,24 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
             "Dim": "1",
             "Extra dim": "2",
         },
+        models=("H215",),
     ),
+    # X390 exposes a separate two-level Brightness control through
+    # nightLightLevel. Its set_list may also contain dormant lightIntensity, so
+    # the model gate is required in addition to field presence.
     NavimowSelectDescription(
-        key="night_light_level",
-        translation_key="night_light_level",
-        icon="mdi:brightness-4",
+        key="light_brightness",
+        name="Brightness",
+        icon="mdi:brightness-6",
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.get("night_light_level"),
+        value_fn=lambda s: None,
+        raw_read_key="nightLightLevel",
         write_key="nightLightLevel",
-        value_map={"dim": 0, "very_dim": 1},
+        value_map={
+            "Dim": 0,
+            "Extra dim": 1,
+        },
+        models=("X390",),
     ),
     NavimowSelectDescription(
         key="edge_sense_mode",
@@ -171,6 +185,7 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
             "Extreme": 2,
         },
         robot_numeric=True,
+        models=("H215",),
     ),
     NavimowSelectDescription(
         key="weather_sensitivity",
@@ -185,10 +200,22 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
 )
 
 
-def _raw_setting(data: dict, key: str) -> Any:
+def _set_list(data: dict) -> dict[str, Any] | None:
     raw = data.get("raw") or {}
-    set_list = raw.get("set_list") or {}
-    return set_list.get(key) if isinstance(set_list, dict) else None
+    value = raw.get("set_list")
+    return value if isinstance(value, dict) else None
+
+
+def _raw_setting(data: dict, key: str) -> Any:
+    set_list = _set_list(data)
+    return set_list.get(key) if set_list is not None else None
+
+
+def _model_supported(desc: NavimowSelectDescription, data: dict) -> bool:
+    if not desc.models:
+        return True
+    model = str(data.get("model") or "").strip().casefold()
+    return model in {candidate.casefold() for candidate in desc.models}
 
 
 def _decode_dnd_period(value: Any) -> tuple[int, int] | None:
@@ -230,17 +257,47 @@ def _read_value(desc: NavimowSelectDescription, data: dict) -> int | str | None:
     return desc.value_fn(data.get("settings") or {})
 
 
+def _supported(desc: NavimowSelectDescription, data: dict) -> bool:
+    return _model_supported(desc, data) and _read_value(desc, data) is not None
+
+
+def _remove_unsupported_registry_entities(
+    hass: HomeAssistant,
+    coordinator: NavimowCoordinator,
+    supported: set[str],
+) -> None:
+    """Remove stale setting entities left by an older model mapping."""
+    registry = er.async_get(hass)
+    for desc in SETTING_SELECTS:
+        if desc.key in supported:
+            continue
+        entity_id = registry.async_get_entity_id(
+            "select", DOMAIN, f"{coordinator.sn}_{desc.key}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     data = coordinator.data or {}
-    entities: list[SelectEntity] = [NavimowZoneSelect(coordinator)]
-    entities += [
-        NavimowSettingSelect(coordinator, desc)
-        for desc in SETTING_SELECTS
-        if _read_value(desc, data) is not None
+    supported_descriptions = [
+        desc for desc in SETTING_SELECTS if _supported(desc, data)
     ]
+
+    # Cleanup is safe only after the private cloud supplied a real set_list.
+    # A temporary endpoint failure must not delete otherwise valid entities.
+    if _set_list(data) is not None:
+        _remove_unsupported_registry_entities(
+            hass, coordinator, {desc.key for desc in supported_descriptions}
+        )
+
+    entities: list[SelectEntity] = [NavimowZoneSelect(coordinator)]
+    entities.extend(
+        NavimowSettingSelect(coordinator, desc) for desc in supported_descriptions
+    )
     async_add_entities(entities)
 
 
@@ -307,6 +364,7 @@ class NavimowSettingSelect(NavimowEntity, SelectEntity):
     ) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
+        self._attr_entity_registry_enabled_default = True
         self._attr_options = list(description.value_map)
         self._reverse = {value: option for option, value in description.value_map.items()}
 

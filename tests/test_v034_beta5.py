@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_manifest_is_at_least_beta5_feature_line() -> None:
+def test_manifest_contains_beta5_feature_line() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"].startswith("0.3.4-beta")
+    assert manifest["version"] == "0.3.4"
 
 
 def test_geo_fence_alarm_and_radius_are_cloud_backed() -> None:
@@ -26,7 +26,7 @@ def test_geo_fence_alarm_and_radius_are_cloud_backed() -> None:
     assert "native_min_value=10" in number_source
     assert "native_max_value=50" in number_source
     assert "native_step=1" in number_source
-    assert "enabled_default=False" in number_source
+    assert "enabled_default=False" not in number_source
     assert "antiTheftPoint" not in switch_source + number_source
 
 

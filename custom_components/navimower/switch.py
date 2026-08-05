@@ -18,6 +18,7 @@ from homeassistant.components.switch import SwitchEntity, SwitchEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -37,12 +38,13 @@ class NavimowSwitchDescription(SwitchEntityDescription):
     numeric: bool = False
     robot_key: str | None = None
     robot_numeric: bool = True
-    enabled_default: bool | None = None
+    enabled_default: bool = True
     assumed: bool = False
     gate_key: str | None = None
     raw_read_key: str | None = None
     raw_read_path: tuple[str, ...] | None = None
     raw_fallback_keys: tuple[str, ...] = ()
+    models: tuple[str, ...] = ()
 
 
 SWITCHES: tuple[NavimowSwitchDescription, ...] = (
@@ -57,7 +59,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         iot=True,
         numeric=False,
         robot_numeric=False,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="night_mow",
@@ -78,7 +79,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="mowingCycle",
         iot=True,
         robot_numeric=False,
-        enabled_default=True,
     ),
     # Weather-adaptive settings
     NavimowSwitchDescription(
@@ -108,7 +108,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="weatherSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="rain_delay_mode",
@@ -119,7 +118,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="delayedPileSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="frost_delay",
@@ -130,7 +128,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="frostSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="snow_delay",
@@ -141,7 +138,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="snowSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="storm_delay",
@@ -152,7 +148,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="stormSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="high_temp_delay",
@@ -163,7 +158,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="highTempSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     # General settings
     NavimowSwitchDescription(
@@ -198,7 +192,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         iot=True,
         numeric=False,
         robot_numeric=False,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="night_light",
@@ -210,7 +203,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="lightSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     # Safety, navigation and model-specific Lab settings
     NavimowSwitchDescription(
@@ -221,7 +213,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("child_lock"),
         write_key="childLock",
         iot=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="lift_alarm",
@@ -231,7 +222,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("lift_alarm"),
         write_key="liftSwitch",
         iot=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="geo_fence_alarm",
@@ -244,7 +234,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         iot=True,
         numeric=False,
         robot_numeric=False,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="efls",
@@ -255,7 +244,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="slamSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="obstacle_avoidance",
@@ -266,7 +254,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="cptSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="traction_control",
@@ -278,7 +265,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         robot_key="tcsSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="animal_protection",
@@ -290,7 +276,6 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="animalProtection",
         iot=True,
         numeric=True,
-        enabled_default=True,
     ),
     NavimowSwitchDescription(
         key="terrain_adapt",
@@ -302,7 +287,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="terrainAdaptSwitch",
         iot=True,
         numeric=True,
-        enabled_default=True,
+        models=("H215",),
     ),
     NavimowSwitchDescription(
         key="edge_sense",
@@ -314,7 +299,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         write_key="edgeSense",
         iot=True,
         numeric=True,
-        enabled_default=True,
+        models=("H215",),
     ),
 )
 
@@ -334,14 +319,15 @@ def _as_bool(value: Any) -> bool | None:
     return None
 
 
-def _set_list(data: dict) -> dict:
+def _set_list(data: dict) -> dict[str, Any] | None:
     raw = data.get("raw") or {}
-    value = raw.get("set_list") or {}
-    return value if isinstance(value, dict) else {}
+    value = raw.get("set_list")
+    return value if isinstance(value, dict) else None
 
 
 def _raw_setting(data: dict, key: str) -> Any:
-    return _set_list(data).get(key)
+    set_list = _set_list(data)
+    return set_list.get(key) if set_list is not None else None
 
 
 def _raw_setting_path(data: dict, path: tuple[str, ...]) -> Any:
@@ -383,9 +369,16 @@ def _read_value(desc: NavimowSwitchDescription, data: dict) -> bool | None:
     return desc.value_fn(data.get("settings") or {})
 
 
-def _present(desc: NavimowSwitchDescription, data: dict) -> bool:
-    if desc.proven:
+def _model_supported(desc: NavimowSwitchDescription, data: dict) -> bool:
+    if not desc.models:
         return True
+    model = str(data.get("model") or "").strip().casefold()
+    return model in {candidate.casefold() for candidate in desc.models}
+
+
+def _present(desc: NavimowSwitchDescription, data: dict) -> bool:
+    if not _model_supported(desc, data):
+        return False
     settings = data.get("settings") or {}
     if _uses_raw_read(desc):
         return _read_raw_value(desc, data) is not None
@@ -394,13 +387,30 @@ def _present(desc: NavimowSwitchDescription, data: dict) -> bool:
     return desc.value_fn(settings) is not None
 
 
+def _remove_unsupported_registry_entities(
+    hass: HomeAssistant,
+    coordinator: NavimowCoordinator,
+    supported: set[str],
+) -> None:
+    """Remove stale setting entities after a confirmed set_list read."""
+    registry = er.async_get(hass)
+    for desc in SWITCHES:
+        if desc.key in supported:
+            continue
+        entity_id = registry.async_get_entity_id(
+            "switch", DOMAIN, f"{coordinator.sn}_{desc.key}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
+
 def _nested_cache_root(
     data: dict, path: tuple[str, ...], value: Any
 ) -> tuple[str, dict[str, Any]]:
     """Return a copied top-level subtree with one nested value updated."""
     if len(path) < 2:
         raise ValueError("nested cache path must contain at least two keys")
-    source = _set_list(data)
+    source = _set_list(data) or {}
     root_key = path[0]
     root = dict(source.get(root_key) or {})
     cursor = root
@@ -417,10 +427,18 @@ async def async_setup_entry(
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     data = coordinator.data or {}
-    entities = [
-        NavimowSwitch(coordinator, desc) for desc in SWITCHES if _present(desc, data)
-    ]
-    async_add_entities(entities)
+    supported_descriptions = [desc for desc in SWITCHES if _present(desc, data)]
+
+    # Cleanup is safe only after the private cloud supplied a real set_list.
+    # A temporary endpoint failure must not delete otherwise valid entities.
+    if _set_list(data) is not None:
+        _remove_unsupported_registry_entities(
+            hass, coordinator, {desc.key for desc in supported_descriptions}
+        )
+
+    async_add_entities(
+        NavimowSwitch(coordinator, desc) for desc in supported_descriptions
+    )
 
 
 class NavimowSwitch(NavimowEntity, SwitchEntity):
@@ -433,11 +451,7 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
     ) -> None:
         super().__init__(coordinator, description.key)
         self.entity_description = description
-        self._attr_entity_registry_enabled_default = (
-            description.enabled_default
-            if description.enabled_default is not None
-            else description.proven
-        )
+        self._attr_entity_registry_enabled_default = description.enabled_default
         self._attr_assumed_state = description.assumed
         self._optimistic: bool | None = None
 
