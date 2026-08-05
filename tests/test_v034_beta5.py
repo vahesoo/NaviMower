@@ -48,20 +48,21 @@ def test_weather_switches_match_app_meaning() -> None:
 
 
 def test_rain_wait_options_and_hex_wire_encoding() -> None:
-    source = (COMPONENT / "number.py").read_text()
-    assert "RAIN_WAIT_HOURS" in source
-    for value in ("0.25", "0.5", "12", "14", "16", "18", "20", "22", "24"):
-        assert value in source
-    block = source.split('key="rain_delay_time"', 1)[1].split(
-        "NavimowNumberDescription(", 1
-    )[0]
-    assert 'raw_read_key="delayedPileSet"' in block
-    assert "raw_base=16" in block
-    assert "scale=4" in block
-    assert "cloud_hex=True" in block
-    assert "allowed_native_values=RAIN_WAIT_HOURS" in block
-    assert 'f"{wire:02X}"' in source
-    assert "wire = int(round(native * desc.scale))" in source
+    select_source = (COMPONENT / "select.py").read_text()
+    number_source = (COMPONENT / "number.py").read_text()
+    assert 'key="rain_delay_time"' in select_source
+    assert 'raw_read_key="delayedPileSet"' in select_source
+    for label, wire in (
+        ("15 min", "01"),
+        ("30 min", "02"),
+        ("1 h", "04"),
+        ("3 h", "0C"),
+        ("12 h", "30"),
+        ("14 h", "38"),
+        ("24 h", "60"),
+    ):
+        assert f'"{label}": "{wire}"' in select_source
+    assert 'key="rain_delay_time"' not in number_source
 
 
 def test_snow_and_temperature_ranges() -> None:
@@ -82,15 +83,16 @@ def test_snow_and_temperature_ranges() -> None:
     assert "native_step=1" in hot
 
 
-def test_frost_time_platform_uses_quarter_hours() -> None:
-    init_source = (COMPONENT / "__init__.py").read_text()
-    source = (COMPONENT / "time.py").read_text()
-    assert "Platform.TIME" in init_source
-    assert "FROST_TIME_STEP_MINUTES = 15" in source
-    assert "FROST_TIME_MAX_MINUTES = 12 * 60 + 45" in source
-    assert '"frostDelayTime": wire' in source
-    assert "send_setting_device" in source
-    assert "save_setting_iot" in source
+def test_frost_cutoff_uses_quarter_hour_select() -> None:
+    source = (COMPONENT / "select.py").read_text()
+    assert "FROST_TIME_VALUES" in source
+    assert "range(0, 12 * 60 + 46, 15)" in source
+    block = source.split('key="frost_delay_until"', 1)[1].split(
+        "NavimowSelectDescription(", 1
+    )[0]
+    assert 'raw_read_key="frostDelayTime"' in block
+    assert 'write_key="frostDelayTime"' in block
+    assert "robot_hex=True" in block
     ast.parse(source)
 
 
@@ -104,4 +106,3 @@ def test_translation_files_match_and_include_beta5_entities() -> None:
     assert entity["switch"]["geo_fence_alarm"]["name"] == "Geo-fence alarm"
     assert entity["number"]["snow_delay_time"]["name"] == "Snow delay duration"
     assert entity["number"]["maximum_mowing_temperature"]["name"] == "Maximum mowing temperature"
-    assert entity["time"]["frost_delay_until"]["name"] == "Won't mow until after frost"
