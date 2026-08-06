@@ -1,4 +1,4 @@
-"""Stable v0.3.4 and next-beta regressions for Navimower."""
+"""Stable v0.3.4 and v0.4.0 regressions for Navimower."""
 from __future__ import annotations
 
 import ast
@@ -11,17 +11,24 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.0-beta2"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta2.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.0-beta2")
+    assert manifest["version"] == "0.4.0"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.0")
+    assert "completed-session" in notes
     assert "include_sessions=0" in notes
     assert "include_daily_trails=0" in notes
-    assert "H215" in notes
-    assert "X390" in notes
+    assert "H1" in notes
+    assert "selected zones" in notes
+    assert "custom zone order" in notes
 
     beta1_notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta1.md").read_text()
     assert beta1_notes.startswith("title: Navimower 0.4.0-beta1")
     assert "completed-session" in beta1_notes
+
+    beta2_notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta2.md").read_text()
+    assert beta2_notes.startswith("title: Navimower 0.4.0-beta2")
+    assert "include_sessions=0" in beta2_notes
+    assert "include_daily_trails=0" in beta2_notes
 
     stable_notes = (ROOT / ".github" / "release-notes" / "0.3.4.md").read_text()
     assert stable_notes.startswith("title: Navimower 0.3.4")
