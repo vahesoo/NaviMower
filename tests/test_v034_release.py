@@ -11,12 +11,17 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.0-beta1"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta1.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.0-beta1")
-    assert "completed-session" in notes
+    assert manifest["version"] == "0.4.0-beta2"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta2.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.0-beta2")
+    assert "include_sessions=0" in notes
+    assert "include_daily_trails=0" in notes
     assert "H215" in notes
     assert "X390" in notes
+
+    beta1_notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta1.md").read_text()
+    assert beta1_notes.startswith("title: Navimower 0.4.0-beta1")
+    assert "completed-session" in beta1_notes
 
     stable_notes = (ROOT / ".github" / "release-notes" / "0.3.4.md").read_text()
     assert stable_notes.startswith("title: Navimower 0.3.4")
@@ -128,3 +133,20 @@ def test_v040_beta1_completed_session_archive_contract() -> None:
     ast.parse(archive)
     ast.parse(api)
     ast.parse(setup)
+
+
+def test_v040_beta2_lightweight_map_payload_contract() -> None:
+    api = (COMPONENT / "map_api.py").read_text()
+
+    assert '_FALSE_QUERY_VALUES = frozenset({"0", "false", "no", "off"})' in api
+    assert 'include_sessions=_query_enabled(request, "include_sessions")' in api
+    assert 'request, "include_daily_trails"' in api
+    assert "if include_sessions and include_daily_trails:" in api
+    assert "return await coordinator.async_map_payload()" in api
+    assert "await coordinator.history.async_card_sessions() if include_sessions else []" in api
+    assert "if include_daily_trails:" in api
+    assert 'payload.pop("sessions", None)' not in api
+    assert '"sessions",' in api
+    assert 'payload.pop("daily_trails", None)' in api
+    assert 'payload.pop("daily_trails_revision", None)' in api
+    ast.parse(api)
