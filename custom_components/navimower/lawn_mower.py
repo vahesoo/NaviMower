@@ -27,6 +27,7 @@ from .const import (
 )
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .model_support import supports_ordered_zone_mowing
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +105,11 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         ]
         region_ids = sel or available_ids
         partition_ids = encode_partition_ids(region_ids)
-        ordered = bool(sel)
+        requested_ordered = bool(sel)
+        ordered = requested_ordered and supports_ordered_zone_mowing(
+            self.data.get("model") or self.coordinator.entry.data.get("model"),
+            self.coordinator.vehicle_type,
+        )
         partition_setup = mow_setup(reset=True, ordered=ordered)
         self.coordinator.begin_mow_command_trace(
             source="lawn_mower.start_mowing",
@@ -117,7 +122,7 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         )
         self.coordinator.set_pending_activity(ACTIVITY_MOWING)
         self.coordinator.set_command_target(
-            sel if ordered else [], source="lawn_mower.start_mowing"
+            sel if requested_ordered else [], source="lawn_mower.start_mowing"
         )
         try:
             result = await self.coordinator.async_send(
@@ -133,7 +138,7 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         except Exception as err:
             self.coordinator.record_mow_command_error(err)
             self.coordinator.clear_pending_activity()
-            if ordered:
+            if requested_ordered:
                 self.coordinator.clear_command_target()
             raise
 

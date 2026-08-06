@@ -46,8 +46,9 @@ set_schedule:
 mow:
   name: Mow now
   description: >-
-    Start mowing immediately: the chosen zones, in the order given, with a
-    restart-vs-continue choice.
+    Start mowing immediately in the chosen zones, with a restart-vs-continue
+    choice. Models that support custom sequencing follow the listed zone order.
+    First-generation H-series mowers mow the selected zones in their own order.
   fields:
     device_id:
       name: Mower
@@ -59,9 +60,10 @@ mow:
     zones:
       name: Zones
       description: >-
-        Internal map zone IDs to mow, in the order they should be mowed (for
-        example [13,24]). Leave empty to mow all zones and let the mower choose
-        its own route.
+        Internal map zone IDs to mow (for example [13,24]). On models that support
+        custom sequencing, the list order is used. First-generation H-series
+        mowers still restrict mowing to the selected zones but choose their order
+        automatically. Leave empty to mow all zones.
       required: false
       example: "[1]"
       selector:

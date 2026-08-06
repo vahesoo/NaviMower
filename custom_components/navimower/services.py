@@ -4,9 +4,10 @@
   time periods, each optionally restricted to zones) via the proven
   save-set-data format.
 - ``navimower.mow`` starts mowing now: chosen zones and a ``reset`` flag
-  (True = riparti da zero / clear progress, False = continua). Listing zones
-  explicitly also fixes the ORDER they are mowed in (like the app's zone-click
-  sequence); omitting them means all zones with the robot choosing its own route.
+  (True = riparti da zero / clear progress, False = continua). On models that
+  support custom sequencing, listing zones explicitly also fixes their mowing
+  order. First-generation H-series mowers still accept the selected zones but
+  choose their order themselves.
 
 These back the graphical cards (and automations).
 """
@@ -27,6 +28,7 @@ from .const import (
     encode_partition_ids,
     mow_setup,
 )
+from .model_support import supports_ordered_zone_mowing
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
@@ -205,9 +207,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
         zones = list(requested_zones)
-        # An explicit click sequence means "mow these zones in this order".
-        # Omitting zones means all known zones with the robot choosing the route.
-        ordered = bool(zones)
+        requested_ordered = bool(zones)
+        ordered = requested_ordered and supports_ordered_zone_mowing(
+            (coordinator.data or {}).get("model")
+            or coordinator.entry.data.get("model"),
+            coordinator.vehicle_type,
+        )
         if not zones:
             zones = [
                 z["id"]
@@ -232,7 +237,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         )
         coordinator.set_pending_activity(ACTIVITY_MOWING)
         coordinator.set_command_target(
-            requested_zones if ordered else [], source="navimower.mow"
+            requested_zones if requested_ordered else [], source="navimower.mow"
         )
         try:
             result = await coordinator.async_send(
@@ -249,7 +254,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
             coordinator.record_mow_command_error(err)
             coordinator.clear_pending_activity()
-            if ordered:
+            if requested_ordered:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
