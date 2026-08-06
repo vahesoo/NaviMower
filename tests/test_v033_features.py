@@ -1,4 +1,4 @@
-"""Dependency-free regressions for Navimower v0.3.3."""
+"""Dependency-free regressions for Navimower v0.3.3 and later."""
 from __future__ import annotations
 
 import ast
@@ -19,15 +19,33 @@ def _load_const():
     return module
 
 
-def test_selected_zone_order_remains_enabled_for_every_model() -> None:
+def _load_model_support():
+    spec = importlib.util.spec_from_file_location(
+        "navimower_test_model_support", COMPONENT / "model_support.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_selected_zone_order_falls_back_to_robot_order_for_h1() -> None:
     services = (COMPONENT / "services.py").read_text()
     mower = (COMPONENT / "lawn_mower.py").read_text()
-    const = (COMPONENT / "const.py").read_text()
-    assert "ordered = bool(zones)" in services
-    assert "ordered = bool(sel)" in mower
-    assert "is_h1_generation" not in services
-    assert "is_h1_generation" not in mower
-    assert "H1_GENERATION_MODELS" not in const
+    support = _load_model_support()
+
+    assert support.is_h1_generation("H1500", 20000002) is True
+    assert support.is_h1_generation("H800E", 0) is True
+    assert support.is_h1_generation("H215", 400000459) is False
+    assert support.supports_ordered_zone_mowing("H1500", 20000002) is False
+    assert support.supports_ordered_zone_mowing("H215", 400000459) is True
+
+    for source in (services, mower):
+        assert "requested_ordered" in source
+        assert "supports_ordered_zone_mowing(" in source
+        assert "ordered = requested_ordered and" in source
+    assert "requested_zones if requested_ordered else []" in services
+    assert "sel if requested_ordered else []" in mower
 
 
 def test_mow_command_trace_is_exported_with_live_status_lookup() -> None:
@@ -51,7 +69,6 @@ def test_mow_command_trace_is_exported_with_live_status_lookup() -> None:
     assert "self.coordinator.begin_mow_command_trace(" in mower
 
 
-
 def test_command_number_extraction_handles_known_response_shapes() -> None:
     source = (COMPONENT / "coordinator.py").read_text()
     tree = ast.parse(source)
@@ -68,6 +85,7 @@ def test_command_number_extraction_handles_known_response_shapes() -> None:
     assert extract({"data": {"cmdNum": 456}}) == "456"
     assert extract("789") == "789"
     assert extract({"data": {"status": 1}}) is None
+
 
 def test_card_route_simplifier_uses_30_cm_and_keeps_endpoints() -> None:
     const = _load_const()
