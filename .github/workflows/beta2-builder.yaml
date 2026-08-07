@@ -6,12 +6,17 @@ on:
       - main
     paths:
       - .github/workflows/beta2-builder.yaml
+  pull_request:
+    branches:
+      - main
+    types: [reopened]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'release/0.4.1-beta2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
