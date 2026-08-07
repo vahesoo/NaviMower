@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release v5'
+    if: github.event.head_commit.message == 'Trigger beta5 release v6'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -35,20 +35,11 @@ jobs:
 
           workflow = Path('.github/workflows/beta5-passive-discovery-finalizer.yml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
-          if marker not in workflow:
-              raise SystemExit('beta5 patch marker not found')
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
-
-          # The extracted Python is already de-indented from the YAML block.
-          # Remove the extra runtime 10-space stripping used by the embedded
-          # writer strings; otherwise deep Python blocks lose indentation.
           script = script.replace(".replace('\\n          ', '\\n').lstrip()", ".lstrip()")
           script = script.replace(".replace('\\n          ', '\\n')", "")
 
-          # Normalize the diagnostics option block to the literal expected by
-          # the patch script. This avoids YAML indentation affecting that exact
-          # string match while keeping the resulting config_flow unchanged.
           tree = ast.parse(script)
           expected_anchor = None
           for node in tree.body:
@@ -60,20 +51,23 @@ jobs:
               if expected_anchor is not None:
                   break
           if not isinstance(expected_anchor, str):
-              raise SystemExit('could not read config-flow anchor from beta5 patch')
-
+              raise SystemExit('could not read config-flow anchor')
           flow_path = Path('custom_components/navimower/config_flow.py')
           flow = flow_path.read_text(encoding='utf-8')
           if expected_anchor not in flow:
-              start_marker = '                    vol.Required(\n                        OPT_DIAGNOSTICS_DETAIL,'
-              start = flow.index(start_marker)
+              start = flow.index('                    vol.Required(\n                        OPT_DIAGNOSTICS_DETAIL,')
               extended = flow.index('                            "extended": "Extended",', start)
               end = flow.index('                    ),', extended) + len('                    ),\n')
-              flow = flow[:start] + expected_anchor + flow[end:]
-              flow_path.write_text(flow, encoding='utf-8')
+              flow_path.write_text(flow[:start] + expected_anchor + flow[end:], encoding='utf-8')
 
           exec(compile(script, 'beta5-passive-discovery-finalizer.yml', 'exec'))
           PY
+          echo '--- client.py 115-155 ---'
+          nl -ba custom_components/navimower/api/client.py | sed -n '115,155p'
+          echo '--- mqtt.py 920-965 ---'
+          nl -ba custom_components/navimower/mqtt.py | sed -n '920,965p'
+          echo '--- services.py 200-235 ---'
+          nl -ba custom_components/navimower/services.py | sed -n '200,235p'
           } 2>&1 | tee /tmp/beta5-patch.log
       - name: Validate full test suite
         id: tests
@@ -108,7 +102,7 @@ jobs:
             echo "tests: ${{ steps.tests.outcome }}"
             echo
             echo '```text'
-            tail -n 140 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 220 /tmp/beta5-patch.log 2>/dev/null || true
             tail -n 140 /tmp/beta5-tests.log 2>/dev/null || true
             echo '```'
           } > /tmp/beta5-failure.md
