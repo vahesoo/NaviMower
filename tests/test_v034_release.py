@@ -11,13 +11,13 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta1"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta1.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.1-beta1")
-    assert "Live position valid" in notes
-    assert "channel" in notes
-    assert "Private-cloud polling starvation fix" in notes
-    assert "5 seconds" in notes
+    assert manifest["version"] == "0.4.1-beta2"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta2.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta2")
+    assert "Zone progress and coverage ownership" in notes
+    assert "Session and daily-trail stability" in notes
+    assert "Mowing-footprint width" in notes
+    assert "316" in notes
 
     stable_040 = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
     assert stable_040.startswith("title: Navimower 0.4.0")
@@ -133,9 +133,9 @@ def test_v040_beta1_completed_session_archive_contract() -> None:
     api = (COMPONENT / "map_api.py").read_text()
     setup = (COMPONENT / "__init__.py").read_text()
 
-    assert "SESSION_SVG_ARCHIVE_VERSION = 1" in svg
+    assert "SESSION_SVG_ARCHIVE_VERSION = 2" in svg
     assert '"fill_rule": "evenodd"' in svg
-    assert '"swath_width_m": SWATH_WIDTH_M' in svg
+    assert '"swath_width_m": swath_width' in svg
     assert '"travel"' in svg
     assert "MQTT_CUTTING_ACTIONS" in svg
     assert "render_matches_session" in archive

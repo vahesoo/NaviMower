@@ -136,9 +136,9 @@ def test_daily_trail_cycle_markers_survive_storage_and_prevent_merge() -> None:
 def test_daily_trails_do_not_treat_every_dock_session_as_new_cycle() -> None:
     source = (COMPONENT / "zone_state.py").read_text()
     assert "boundary_before_next" in source
-    assert 'if active:' in source
-    assert 'if "reset" in reason:' in source
-    assert 'elif session.get("completed") is True:' in source
+    assert "and not active" in source
+    assert 'if "reset" in reason or session.get("completed") is True:' in source
+    assert "zone_cycle_boundaries" in source
     assert "by_zone.pop(zone_id, None)" in source
 
 

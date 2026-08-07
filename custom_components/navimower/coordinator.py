@@ -1386,7 +1386,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             dict(item) for item in (map_data or {}).get("zones") or []
             if isinstance(item, dict)
         ]
-        active_zone_id = _as_int(snapshot.get("current_physical_zone_id"))
+        active_zone_id = _as_int(snapshot.get("active_zone_progress_zone_id"))
+        if active_zone_id is None:
+            active_zone_id = _as_int(snapshot.get("current_physical_zone_id"))
         if active_zone_id is None:
             candidates = snapshot.get("current_zone_ids") or []
             if len(candidates) == 1:
@@ -1935,11 +1937,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 continue
             boundary = zone.get("boundary") or {}
             raw_height = _as_int(boundary.get("height_set"))
-            inherits = raw_height in (None, 0, 256)
-            configured_height = None if inherits else _normalize_cutting_height_mm(raw_height)
+            normalized_height = _normalize_cutting_height_mm(raw_height)
+            known_inherit = raw_height in (None, 0, 256)
+            unknown_encoded = (
+                raw_height not in (None, 0, 256) and normalized_height is None
+            )
+            configured_height = None if known_inherit or unknown_encoded else normalized_height
             effective_height = None
             if cutting_height_supported:
-                effective_height = global_height if inherits else configured_height
+                effective_height = (
+                    global_height
+                    if known_inherit or unknown_encoded
+                    else configured_height
+                )
+            inherits = True if known_inherit else None if unknown_encoded else False
             row = coverage_by_id.get(zone_id) or {}
             start_time = _as_int(row.get("start_time"))
             end_time = _as_int(row.get("end_time"))
@@ -2068,6 +2079,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             else "All"
         )
         map_geom = self._map_geometry or {}
+        device_info = raw.get("device_info") or {}
+        mowing_extend = _find(device_info, "mowingExtend", "mowing_extend") or {}
+        mowing_path_width_raw = _as_float(
+            _find(mowing_extend, "mowingPathWidth", "mowing_path_width")
+        )
+        mowing_path_width_m = None
+        if mowing_path_width_raw is not None and mowing_path_width_raw > 0:
+            candidate_width = (
+                mowing_path_width_raw / 1000.0
+                if mowing_path_width_raw > 10
+                else mowing_path_width_raw
+            )
+            if 0.1 <= candidate_width <= 2.0:
+                mowing_path_width_m = candidate_width
 
         # Coverage and position. MQTT is authoritative while fresh; private
         # get-location remains a fallback when MQTT is absent/stale.
@@ -2172,17 +2197,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         zone_height_values = [
             _normalize_cutting_height_mm(value) for value in raw_zone_heights
         ]
-        encoded_zone_height = any(
-            value not in (None, 0, 256)
-            and _normalize_cutting_height_mm(value) is None
-            for value in raw_zone_heights
-        )
+        # A vendor-specific/encoded zone value must not disable cutting-height
+        # support for the whole mower. Known global/zone heights prove the
+        # feature exists; unknown raw zone markers are handled per-zone below.
         cutting_height_supported = bool(
-            not encoded_zone_height
-            and (
-                normalized_cut_height is not None
-                or any(value is not None for value in zone_height_values)
-            )
+            normalized_cut_height is not None
+            or any(value is not None for value in zone_height_values)
         )
 
         settings = {
@@ -2334,6 +2354,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 map_geom, cutting_height_supported=cutting_height_supported
             ) if map_geom else None,
             "cutting_height_supported": cutting_height_supported,
+            "mowing_path_width_m": mowing_path_width_m,
             # groups
             "settings": settings,
             "maintenance": maint,
@@ -2598,7 +2619,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         physical_zone_id = _valid_zone_id(
             snapshot.get("current_physical_zone_id")
         )
-        active_progress_zone = mqtt_zone_id or cloud_zone_id or physical_zone_id
+        # Work/zone progress belongs only to an explicit work target.
+        active_progress_zone = mqtt_zone_id or cloud_zone_id
+        if active_progress_zone is None and active:
+            active_progress_zone = previous_zone_id = _valid_zone_id(
+                previous.get("active_zone_progress_zone_id")
+            )
+        else:
+            previous_zone_id = _valid_zone_id(
+                previous.get("active_zone_progress_zone_id")
+            )
         private_zone_progress = _progress_percent(snapshot.get("work_progress"))
         zone_progress_candidates = (
             [
@@ -2620,9 +2650,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 active_zone_progress = value
                 active_zone_progress_source = source
                 break
-        previous_zone_id = _valid_zone_id(
-            previous.get("active_zone_progress_zone_id")
-        )
         previous_zone_progress = _progress_percent(
             previous.get("active_zone_progress")
         )

@@ -23,7 +23,7 @@ from .const import (
 )
 from .zone_state import simplify_xy_points
 
-SESSION_SVG_ARCHIVE_VERSION = 1
+SESSION_SVG_ARCHIVE_VERSION = 2
 SESSION_SVG_GRID_M = 0.025
 SESSION_SVG_MAX_ESTIMATED_CELLS = 1_500_000
 
@@ -158,9 +158,12 @@ def _polyline_length(segments: Iterable[list[list[float]]]) -> float:
     return total
 
 
-def _adaptive_grid_size(cutting_segments: list[list[list[float]]]) -> float:
+def _adaptive_grid_size(
+    cutting_segments: list[list[list[float]]],
+    width_m: float = SWATH_WIDTH_M,
+) -> float:
     length = _polyline_length(cutting_segments)
-    estimated_area = max(SWATH_WIDTH_M * length, SWATH_WIDTH_M**2)
+    estimated_area = max(width_m * length, width_m**2)
     needed = math.sqrt(estimated_area / SESSION_SVG_MAX_ESTIMATED_CELLS)
     return min(0.20, max(SESSION_SVG_GRID_M, needed))
 
@@ -190,7 +193,7 @@ def _rasterize_swath(
     *,
     width_m: float = SWATH_WIDTH_M,
 ) -> tuple[set[tuple[int, int]], float]:
-    cell = _adaptive_grid_size(cutting_segments)
+    cell = _adaptive_grid_size(cutting_segments, width_m)
     radius = max(0.01, float(width_m) / 2.0)
     # Cell-centre sampling keeps the stored footprint close to the requested
     # swath width. The adaptive grid always retains several cells across the
@@ -426,7 +429,10 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
     if not all_segments:
         return None
 
-    occupied, grid_size = _rasterize_swath(cutting_segments)
+    swath_width = _as_float(session.get("mowing_path_width_m"))
+    if swath_width is None or not 0.1 <= swath_width <= 2.0:
+        swath_width = SWATH_WIDTH_M
+    occupied, grid_size = _rasterize_swath(cutting_segments, width_m=swath_width)
     loops = _boundary_loops(occupied) if occupied else []
     mowed_path = _loops_path(loops, grid_size) if loops else ""
     travel_path, travel_points = _polyline_path(travel_segments)
@@ -440,7 +446,7 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
         "mowed_area": {
             "path_d": mowed_path,
             "fill_rule": "evenodd",
-            "swath_width_m": SWATH_WIDTH_M,
+            "swath_width_m": swath_width,
             "grid_size_m": round(grid_size, 4),
             "loop_count": len(loops),
             "occupied_cell_count": len(occupied),
