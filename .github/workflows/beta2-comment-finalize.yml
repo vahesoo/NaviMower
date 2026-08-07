@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V4'
+    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V5'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -45,20 +45,57 @@ jobs:
           PY
           python - <<'PY'
           from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
           p = Path('tests/test_history_merge.py')
           s = p.read_text(encoding='utf-8')
-
           old = '''        active_zone_progress=97,\n    )\n    active = manager.active_session\n'''
           new = '''        active_zone_progress=97,\n        active_progress_zone_id=13,\n    )\n    active = manager.active_session\n'''
           if old not in s:
               raise SystemExit('practical completion owner block missing')
           s = s.replace(old, new, 1)
-
           old = '''    assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False\n    assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True\n    first = manager._sessions[0]\n    assert first["completed"] is False\n    assert first["completion_reason"] == "vendor_cycle_reset_partial"\n    assert "last_completed_at" not in manager.zone_history().get("13", {})\n'''
           new = '''    high["active_zone_progress_zone_id"] = 13\n    low["active_zone_progress_zone_id"] = 13\n    first_id = manager._active_id\n    assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False\n    assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True\n    assert manager._active_id == first_id\n    assert len(manager._sessions) == 1\n    first = manager._cache[first_id]\n    assert first["completed"] is None\n    assert first["completion_reason"] is None\n    boundaries = first.get("zone_cycle_boundaries") or []\n    assert len(boundaries) == 1\n    assert boundaries[0]["zone_id"] == 13\n    assert boundaries[0]["previous_peak"] == 50\n    assert "last_completed_at" not in manager.zone_history().get("13", {})\n'''
           if old not in s:
               raise SystemExit('vendor partial reset block missing')
-          s = s.replace(old, new, 1)
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'tests/test_session_svg.py',
+              'assert artifact["version"] == 1',
+              'assert artifact["version"] == 2',
+              'session svg archive version',
+          )
+          replace_once(
+              'tests/test_session_archive.py',
+              '''            def __init__(self):\n                self.history = History()\n                self.listeners = []\n''',
+              '''            def __init__(self):\n                self.history = History()\n                self.listeners = []\n                self.data = {}\n''',
+              'session archive coordinator data',
+          )
+
+          p = Path('tests/test_v033_features.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''    assert "boundary_before_next" in source\n    assert 'if active:' in source\n    assert 'if "reset" in reason:' in source\n    assert 'elif session.get("completed") is True:' in source\n    assert "by_zone.pop(zone_id, None)" in source\n'''
+          new = '''    assert "boundary_before_next" in source\n    assert "and not active" in source\n    assert 'if "reset" in reason or session.get("completed") is True:' in source\n    assert "zone_cycle_boundaries" in source\n    assert "by_zone.pop(zone_id, None)" in source\n'''
+          if old not in s:
+              raise SystemExit('daily trail contract block missing')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          p = Path('tests/test_v034_release.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('assert manifest["version"] == "0.4.1-beta1"', 'assert manifest["version"] == "0.4.1-beta2"', 1)
+          s = s.replace('(ROOT / ".github" / "release-notes" / "0.4.1-beta1.md").read_text()', '(ROOT / ".github" / "release-notes" / "0.4.1-beta2.md").read_text()', 1)
+          s = s.replace('assert notes.startswith("title: Navimower 0.4.1-beta1")', 'assert notes.startswith("title: Navimower 0.4.1-beta2")', 1)
+          s = s.replace('assert "Live position valid" in notes\n    assert "channel" in notes\n    assert "Private-cloud polling starvation fix" in notes\n    assert "5 seconds" in notes', 'assert "Zone progress and coverage ownership" in notes\n    assert "Session and daily-trail stability" in notes\n    assert "Mowing-footprint width" in notes\n    assert "316" in notes', 1)
+          s = s.replace('assert "SESSION_SVG_ARCHIVE_VERSION = 1" in svg', 'assert "SESSION_SVG_ARCHIVE_VERSION = 2" in svg', 1)
+          s = s.replace('assert \'"swath_width_m": SWATH_WIDTH_M\' in svg', 'assert \'"swath_width_m": swath_width\' in svg', 1)
           p.write_text(s, encoding='utf-8')
           PY
           python -m compileall -q custom_components/navimower
@@ -74,10 +111,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "beta2 finalizer v4 outcome: ${{ steps.build.outcome }}"
+            echo "beta2 finalizer v5 outcome: ${{ steps.build.outcome }}"
             echo
             echo '```text'
-            tail -n 160 /tmp/beta2.log 2>/dev/null || true
+            tail -n 180 /tmp/beta2.log 2>/dev/null || true
             echo '```'
           } > /tmp/result.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
