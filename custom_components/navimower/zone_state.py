@@ -104,6 +104,19 @@ def zone_id_for_point(x: float, y: float, map_zones: list[dict[str, Any]]) -> in
     return None
 
 
+def _live_progress_owner(zone_details: list[dict[str, Any]]) -> int | None:
+    """Return the zone that owns a fresh work/route progress counter."""
+    for item in zone_details:
+        if not isinstance(item, dict) or item.get("progress") is None:
+            continue
+        source = str(item.get("progress_source") or "")
+        if source and source not in {"coverage", "task_cycle"}:
+            zone_id = as_int(item.get("id"))
+            if zone_id is not None:
+                return zone_id
+    return None
+
+
 def build_zone_model(
     *,
     map_zones: list[dict[str, Any]],
@@ -153,6 +166,12 @@ def build_zone_model(
     }
     task_progress = session.get("task_zone_progress") or {}
 
+    # Physical polygon and work-progress ownership are different concepts.  The
+    # packed/MQTT work counter identifies the zone whose percentage is changing;
+    # the mower can still physically be in the previous polygon during a
+    # transition. Prefer that explicit progress owner for the active marker.
+    effective_active_zone_id = _live_progress_owner(zone_details) or active_zone_id
+
     rows: list[dict[str, Any]] = []
     for zone_id in zone_ids:
         map_row = map_by_id.get(zone_id) or {}
@@ -193,13 +212,23 @@ def build_zone_model(
         )
         live_display_pct = display_pct
         current_task_pct = clamp_pct(task_progress.get(str(zone_id)))
+
+        # A session checkpoint can contain values written by older releases to
+        # the wrong physical zone. Only the current work-progress owner may
+        # override its live per-zone percentage. Other zones use the vendor's
+        # actual per-zone counter, which also heals persisted beta1 mix-ups.
+        if zone_id != effective_active_zone_id and vendor_pct is not None:
+            current_task_pct = vendor_pct
+        elif zone_id == effective_active_zone_id and current_task_pct is None:
+            current_task_pct = live_display_pct
+
         task_override = (
             cycle_id is not None
-            and zone_id in visited_zone_ids
+            and zone_id == effective_active_zone_id
             and current_task_pct is not None
         )
         recovered_stale_completion = bool(
-            zone_id == active_zone_id
+            zone_id == effective_active_zone_id
             and task_override
             and current_task_pct is not None
             and current_task_pct >= COMPLETION_THRESHOLD
@@ -209,9 +238,6 @@ def build_zone_model(
             and vendor_pct < COMPLETION_THRESHOLD
         )
         if recovered_stale_completion:
-            # Defence in depth: even before the corrected session checkpoint is
-            # written, never let a restored/transition 100% override two fresh
-            # incomplete counters for the currently active zone.
             current_task_pct = live_display_pct
             display_pct = live_display_pct
             task_override = False
@@ -235,8 +261,6 @@ def build_zone_model(
             if area is not None and display_pct is not None
             else None
         )
-        # Use the percentage-driven value whenever live progress has replaced the
-        # slower cloud percentage.  Otherwise keep the vendor's exact finished m².
         progress_source = detail.get("progress_source") or persisted.get(
             "progress_source"
         )
@@ -272,7 +296,7 @@ def build_zone_model(
                     if current_task_pct is not None
                     else None
                 ),
-                "active": zone_id == active_zone_id,
+                "active": zone_id == effective_active_zone_id,
                 "selected_in_task": zone_id in task_zone_ids,
                 "visited_in_task": zone_id in visited_zone_ids,
                 "cycle_id": row_cycle,
@@ -305,8 +329,7 @@ def build_zone_model(
 
     # Per-zone progress is retained for zone entities and map markers. The
     # mower's own overall task percentage is a different counter and is the
-    # authoritative Task progress whenever available. This prevents an active
-    # zone/route counter from being mistaken for whole-task progress.
+    # authoritative Task progress whenever available.
     weighted_task_mowed = 0.0
     for row in task_rows:
         area = as_float(row.get("area_m2")) or 0.0
@@ -364,7 +387,7 @@ def build_zone_model(
             round(weighted_task_pct, 1) if weighted_task_pct is not None else None
         ),
         "task_zone_ids": sorted(task_zone_ids),
-        "active_zone_id": active_zone_id,
+        "active_zone_id": effective_active_zone_id,
         "zone_count": len(rows),
         "completed_zone_count": sum(
             1 for row in rows if (as_float(row.get("coverage_pct")) or 0) >= COMPLETION_THRESHOLD
@@ -435,23 +458,16 @@ def build_daily_trails(
 ) -> dict[str, Any]:
     """Keep today's route for the latest mowing cycle of every zone.
 
-    A persistent history *session* ends whenever the mower docks, but docking for
-    an intermediate charge does not start a new mowing *cycle*.  Therefore
-    consecutive incomplete sessions are accumulated for the same zone.  The old
-    daily route is replaced only when a confirmed cycle boundary reaches that
-    zone: practical completion, a vendor progress reset, or an explicit reset
-    command recorded on the first session of the new cycle.
+    A persistent history *session* can span several zones and charge/continue
+    fragments.  A per-zone cycle boundary must therefore clear only that zone's
+    older trail; it must never split the whole logical mowing session.
 
-    The active session is rendered by the card's dedicated live-trail layer.  It
-    is intentionally not copied into ``daily_trails``.  During a charge-return
+    The active session is rendered by the card's dedicated live-trail layer. It
+    is intentionally not copied into ``daily_trails``. During a charge-return
     continuation the previous completed fragments remain visible underneath the
-    live route; at a real new-cycle boundary they are cleared as soon as the new
-    active session first enters that zone.
+    live route; at a confirmed new-zone-cycle boundary only that zone is cleared.
     """
     by_zone: dict[int, dict[str, Any]] = {}
-    # A completed/reset session closes the current zone cycle.  The replacement
-    # is delayed until a later session actually enters that zone, matching the
-    # Navimow app and preserving unrelated zones.
     boundary_before_next: set[int] = set()
     ordered = sorted(
         (item for item in sessions if isinstance(item, dict)),
@@ -473,6 +489,21 @@ def build_daily_trails(
             )
             if value is not None
         }
+        zone_boundaries: dict[int, list[int]] = {}
+        for item in session.get("zone_cycle_boundaries") or []:
+            if not isinstance(item, dict):
+                continue
+            zone_id = as_int(item.get("zone_id"))
+            at_ms = as_int(item.get("at_ms"))
+            if zone_id is not None and at_ms is not None:
+                zone_boundaries.setdefault(zone_id, []).append(at_ms)
+        for values in zone_boundaries.values():
+            values.sort()
+        applied_boundary_count: dict[int, int] = {
+            zone_id: 0 for zone_id in zone_boundaries
+        }
+        inline_reset_zones: set[int] = set()
+
         session_by_zone: dict[int, dict[str, Any]] = {}
         current_zone: int | None = None
         current_segment: list[list[float]] = []
@@ -507,8 +538,20 @@ def build_daily_trails(
                 flush()
                 current_zone = None
                 continue
-            boundary = stamp in starts and current_segment
-            if zone_id != current_zone or boundary:
+
+            boundaries = zone_boundaries.get(zone_id) or []
+            boundary_index = applied_boundary_count.get(zone_id, 0)
+            while boundary_index < len(boundaries) and stamp >= boundaries[boundary_index]:
+                if current_zone == zone_id:
+                    flush()
+                    current_zone = None
+                session_by_zone.pop(zone_id, None)
+                inline_reset_zones.add(zone_id)
+                boundary_index += 1
+            applied_boundary_count[zone_id] = boundary_index
+
+            segment_boundary = stamp in starts and current_segment
+            if zone_id != current_zone or segment_boundary:
                 flush()
                 current_zone = zone_id
             current_segment.append([x, y])
@@ -528,13 +571,14 @@ def build_daily_trails(
         encountered_zones = set(session_by_zone)
 
         for zone_id, session_row in session_by_zone.items():
-            if zone_id in boundary_before_next or zone_id in explicit_reset_zones:
+            if (
+                zone_id in boundary_before_next
+                or zone_id in explicit_reset_zones
+                or zone_id in inline_reset_zones
+            ):
                 by_zone.pop(zone_id, None)
                 boundary_before_next.discard(zone_id)
 
-            # The live layer already owns the active route. Keeping it out of the
-            # daily payload prevents duplicate drawing while allowing completed
-            # pre-charge fragments to remain visible.
             if active:
                 continue
 
@@ -550,6 +594,13 @@ def build_daily_trails(
                 by_zone[zone_id] = row
             row["segments"].extend(session_row["segments"])
             row["point_count"] += int(session_row["point_count"])
+
+        # A boundary can clear a previous completed trail even while the current
+        # session is active and therefore omitted from daily_trails.
+        if active:
+            for zone_id in inline_reset_zones | explicit_reset_zones:
+                by_zone.pop(zone_id, None)
+                boundary_before_next.discard(zone_id)
 
         reason = str(session.get("completion_reason") or "").lower()
         final_progress_zone_ids = {
