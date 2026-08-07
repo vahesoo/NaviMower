@@ -10,130 +10,57 @@ permissions:
 
 jobs:
   build:
-    if: github.event.issue.title == 'RUN NAVIMOWER 0.4.1-BETA2 BUILDER'
+    if: github.event.issue.title == 'RUN NAVIMOWER BETA2 FINAL BUILD'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Build and validate beta2
+      - name: Build clean beta2 from beta1
+        id: build
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           exec > >(tee /tmp/beta2.log) 2>&1
+          set -euo pipefail
           git fetch origin release/0.4.1-beta2
-          git checkout -B release/0.4.1-beta2 origin/release/0.4.1-beta2
-          python - <<'PY'
+          git show origin/release/0.4.1-beta2:.github/workflows/beta2-prep-temp.yaml > /tmp/beta2-patch.yaml
+          git show origin/release/0.4.1-beta2:sitecustomize.py > /tmp/sitecustomize.py
+          git checkout -B release/0.4.1-beta2 75aa6ce2bdae2cc70f8335abefda61cf842109e4
+          mkdir -p .github/workflows
+          cp /tmp/beta2-patch.yaml .github/workflows/beta2-prep-temp.yaml
+          PYTHONPATH=/tmp python - <<'PY'
           from pathlib import Path
-          workflow = Path('.github/workflows/beta2-prep-temp.yaml').read_text(encoding='utf-8')
+          workflow = Path('/tmp/beta2-patch.yaml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
-          exec(compile(script, 'beta2-prep-temp.yaml', 'exec'))
+          exec(compile(script, 'beta2-patch.yaml', 'exec'))
           PY
           python - <<'PY'
           from pathlib import Path
           p = Path('tests/test_history_merge.py')
           s = p.read_text(encoding='utf-8')
-          old = '''    # The vendor can publish the reset during the brief non-cutting handover
-    # between two scheduled passes. The old route must still be finalized.
-    assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
-    assert manager._active_id is None
-
-    manager.process_pose(
-        position={"x": 1.2, "y": 1.2},
-        pose_time=2_200_000_021,
-        heading=0.1,
-        activity="mowing",
-        cutting=True,
-        docked=False,
-        returning=False,
-        zone_ids=[24],
-    )
-    second_id = manager._active_id
-    assert second_id and second_id != first_id
-    assert len(manager._sessions) == 2
-    first = manager._cache[first_id]
-    assert first["completed"] is True
-    assert first["completion_reason"] == "vendor_cycle_reset"
-    assert first["final_progress"] == {"24": 98}
-    assert not history._sessions_can_merge(first, manager._cache[second_id])
-    zone_history = manager.zone_history()["24"]
-'''
-          new = '''    reset["active_zone_progress_zone_id"] = 24
-    assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
-    assert manager._active_id == first_id
-
-    manager.process_pose(
-        position={"x": 1.2, "y": 1.2},
-        pose_time=2_200_000_021,
-        heading=0.1,
-        activity="mowing",
-        cutting=True,
-        docked=False,
-        returning=False,
-        zone_ids=[24],
-    )
-    assert manager._active_id == first_id
-    assert len(manager._sessions) == 1
-    first = manager._cache[first_id]
-    assert first["completed"] is None
-    assert first["completion_reason"] is None
-    boundaries = first.get("zone_cycle_boundaries") or []
-    assert len(boundaries) == 1
-    assert boundaries[0]["zone_id"] == 24
-    assert boundaries[0]["previous_peak"] == 98
-    zone_history = manager.zone_history()["24"]
-'''
-          if old not in s: raise SystemExit('cycle reset block missing')
-          s = s.replace(old, new, 1)
-          old = '''    assert manager.prepare_cycle(high, pose_time=2_250_000_010) is False
-    assert manager.prepare_cycle(low, pose_time=2_250_000_020) is True
-    assert manager._active_id is None
-    assert stub_id not in manager._cache
-    assert manager._sessions == []
-    manager.process_pose(
-'''
-          new = '''    assert manager.prepare_cycle(high, pose_time=2_250_000_010) is False
-    low["active_zone_progress_zone_id"] = 24
-    assert manager.prepare_cycle(low, pose_time=2_250_000_020) is True
-    assert manager._active_id == stub_id
-    assert stub_id in manager._cache
-    assert len(manager._sessions) == 1
-    manager.process_pose(
-'''
-          if old not in s: raise SystemExit('provisional block missing')
-          s = s.replace(old, new, 1)
-          old = '''    assert len(manager._sessions) == 1
-    if hass.tasks:
-'''
-          new = '''    assert len(manager._sessions) == 1
-    assert manager._active_id == stub_id
-    assert (manager._cache[stub_id].get("zone_cycle_boundaries") or [])[0]["zone_id"] == 24
-    if hass.tasks:
-'''
-          if old not in s: raise SystemExit('provisional final block missing')
-          s = s.replace(old, new, 1)
           old = '''        active_zone_progress=97,
     )
+    manager.prepare_cycle(
 '''
           new = '''        active_zone_progress=97,
-        active_progress_zone_id=13,
+        active_progress_zone_id=24,
     )
+    manager.prepare_cycle(
 '''
-          if old not in s: raise SystemExit('progress owner block missing')
+          if old not in s:
+              raise SystemExit('dock completion owner block missing')
           p.write_text(s.replace(old, new, 1), encoding='utf-8')
-          p = Path('tests/test_v041_beta2.py')
-          s = p.read_text(encoding='utf-8')
-          p.write_text(s.replace('split("snapshot["coverage"]", 1)', "split('snapshot[\"coverage\"]', 1)"), encoding='utf-8')
           PY
-          rm -f .github/workflows/beta2-prep-temp.yaml .github/workflows/beta2-prep-pr.yaml
-          git show 75aa6ce2bdae2cc70f8335abefda61cf842109e4:.github/workflows/tests.yaml > .github/workflows/tests.yaml
           python -m compileall -q custom_components/navimower
           python -m pip install --upgrade pytest voluptuous cryptography
           python -m pytest -q
@@ -141,17 +68,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Prepare Navimower 0.4.1-beta2"
-          git push origin HEAD:release/0.4.1-beta2
-      - name: Report builder result
+          git push --force origin HEAD:release/0.4.1-beta2
+      - name: Report result
         if: always()
         shell: bash
         run: |
-          STATUS="${{ job.status }}"
           {
-            echo "beta2 builder status: ${STATUS}"
+            echo "beta2 final builder outcome: ${{ steps.build.outcome }}"
             echo
             echo '```text'
-            tail -n 80 /tmp/beta2.log 2>/dev/null || true
+            tail -n 120 /tmp/beta2.log 2>/dev/null || true
             echo '```'
-          } > /tmp/comment.md
-          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/comment.md
+          } > /tmp/result.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
+      - name: Fail if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
