@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release'
+    if: github.event.head_commit.message == 'Trigger beta5 release v2'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -23,10 +23,13 @@ jobs:
         with:
           python-version: "3.13"
       - name: Apply beta5 patch
+        id: patch
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
+          set -o pipefail
+          {
+            set -euo pipefail
+            python - <<'PY'
           from pathlib import Path
           workflow = Path('.github/workflows/beta5-passive-discovery-finalizer.yml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
@@ -36,14 +39,18 @@ jobs:
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
           exec(compile(script, 'beta5-passive-discovery-finalizer.yml', 'exec'))
           PY
+          } 2>&1 | tee /tmp/beta5-patch.log
       - name: Validate full test suite
         id: tests
         shell: bash
         run: |
-          set -euo pipefail
-          python -m compileall -q custom_components/navimower
-          python -m pip install --upgrade pytest voluptuous cryptography
-          python -m pytest -q
+          set -o pipefail
+          {
+            set -euo pipefail
+            python -m compileall -q custom_components/navimower
+            python -m pip install --upgrade pytest voluptuous cryptography
+            python -m pytest -q
+          } 2>&1 | tee /tmp/beta5-tests.log
       - name: Commit and publish beta5
         shell: bash
         run: |
@@ -60,4 +67,14 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          gh issue comment 27 --body "beta5 push workflow failed; tests outcome: ${{ steps.tests.outcome }}" || true
+          {
+            echo "beta5 push workflow failed"
+            echo "patch: ${{ steps.patch.outcome }}"
+            echo "tests: ${{ steps.tests.outcome }}"
+            echo
+            echo '```text'
+            tail -n 80 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 80 /tmp/beta5-tests.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/beta5-failure.md
+          gh issue comment 27 --body-file /tmp/beta5-failure.md || true
