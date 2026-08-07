@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V3'
+    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V4'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -47,11 +47,19 @@ jobs:
           from pathlib import Path
           p = Path('tests/test_history_merge.py')
           s = p.read_text(encoding='utf-8')
+
           old = '''        active_zone_progress=97,\n    )\n    active = manager.active_session\n'''
           new = '''        active_zone_progress=97,\n        active_progress_zone_id=13,\n    )\n    active = manager.active_session\n'''
           if old not in s:
               raise SystemExit('practical completion owner block missing')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          s = s.replace(old, new, 1)
+
+          old = '''    assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False\n    assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True\n    first = manager._sessions[0]\n    assert first["completed"] is False\n    assert first["completion_reason"] == "vendor_cycle_reset_partial"\n    assert "last_completed_at" not in manager.zone_history().get("13", {})\n'''
+          new = '''    high["active_zone_progress_zone_id"] = 13\n    low["active_zone_progress_zone_id"] = 13\n    first_id = manager._active_id\n    assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False\n    assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True\n    assert manager._active_id == first_id\n    assert len(manager._sessions) == 1\n    first = manager._cache[first_id]\n    assert first["completed"] is None\n    assert first["completion_reason"] is None\n    boundaries = first.get("zone_cycle_boundaries") or []\n    assert len(boundaries) == 1\n    assert boundaries[0]["zone_id"] == 13\n    assert boundaries[0]["previous_peak"] == 50\n    assert "last_completed_at" not in manager.zone_history().get("13", {})\n'''
+          if old not in s:
+              raise SystemExit('vendor partial reset block missing')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
           PY
           python -m compileall -q custom_components/navimower
           python -m pip install --upgrade pytest voluptuous cryptography
@@ -66,10 +74,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "beta2 finalizer v3 outcome: ${{ steps.build.outcome }}"
+            echo "beta2 finalizer v4 outcome: ${{ steps.build.outcome }}"
             echo
             echo '```text'
-            tail -n 140 /tmp/beta2.log 2>/dev/null || true
+            tail -n 160 /tmp/beta2.log 2>/dev/null || true
             echo '```'
           } > /tmp/result.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
