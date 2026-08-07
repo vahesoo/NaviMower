@@ -1,0 +1,79 @@
+name: Finalize Navimower 0.4.1-beta4 v2
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  finalize:
+    if: github.event.comment.body == 'RUN-BETA4-RELEASE-V2'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build and test beta4
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          exec > >(tee /tmp/beta4-v2.log) 2>&1
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/beta4-release-finalizer.yml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
+          exec(compile(script, 'beta4-release-finalizer.yml', 'exec'))
+          PY
+          python -m pip install --upgrade pytest voluptuous cryptography
+          python -m compileall -q custom_components/navimower
+          python -m pytest -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/beta4-release-finalizer.yml .github/workflows/beta4-finalizer-v2-temp.yml
+          git add -A
+          git commit -m "Release Navimower 0.4.1-beta4"
+          git push origin HEAD:main
+          VERSION="0.4.1-beta4"
+          TAG="v${VERSION}"
+          SHA="$(git rev-parse HEAD)"
+          NOTES=".github/release-notes/${VERSION}.md"
+          BODY="${RUNNER_TEMP}/release-notes.md"
+          TITLE="$(sed -n '1s/^title: //p' "${NOTES}")"
+          tail -n +3 "${NOTES}" > "${BODY}"
+          git fetch --tags origin
+          if ! git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            git tag "${TAG}" "${SHA}"
+            git push origin "${TAG}"
+          fi
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" --target "${SHA}" --title "${TITLE}" --notes-file "${BODY}" --prerelease
+          fi
+      - name: Report result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "beta4 v2 finalizer outcome: ${{ steps.build.outcome }}"
+            echo
+            echo '```text'
+            tail -n 180 /tmp/beta4-v2.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/result.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
+      - name: Fail if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
