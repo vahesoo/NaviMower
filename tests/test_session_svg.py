@@ -72,7 +72,7 @@ def test_completed_session_svg_archive() -> None:
         }
         artifact = target.build_session_svg_archive(session)
         assert artifact is not None
-        assert artifact["version"] == 1
+        assert artifact["version"] == 2
         assert artifact["coordinate_space"] == "map_xy_m"
         assert artifact["source"]["point_count"] == 5
         assert artifact["mowed_area"]["path_d"].startswith("M")

@@ -95,6 +95,7 @@ def test_completed_session_archive_manager() -> None:
             def __init__(self):
                 self.history = History()
                 self.listeners = []
+                self.data = {}
             def async_add_listener(self, callback):
                 self.listeners.append(callback)
                 return lambda: self.listeners.remove(callback)

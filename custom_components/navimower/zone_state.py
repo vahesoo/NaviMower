@@ -426,38 +426,12 @@ def zone_model_signature(
 
 
 def build_daily_trails(
-    *,
-    sessions: list[dict[str, Any]],
-    map_zones: list[dict[str, Any]],
-    local_date: date,
-    to_local_date,
-    revision: int,
+    *, sessions: list[dict[str, Any]], map_zones: list[dict[str, Any]], local_date: date, to_local_date, revision: int,
 ) -> dict[str, Any]:
-    """Keep today's route for the latest mowing cycle of every zone.
-
-    A persistent history *session* ends whenever the mower docks, but docking for
-    an intermediate charge does not start a new mowing *cycle*.  Therefore
-    consecutive incomplete sessions are accumulated for the same zone.  The old
-    daily route is replaced only when a confirmed cycle boundary reaches that
-    zone: practical completion, a vendor progress reset, or an explicit reset
-    command recorded on the first session of the new cycle.
-
-    The active session is rendered by the card's dedicated live-trail layer.  It
-    is intentionally not copied into ``daily_trails``.  During a charge-return
-    continuation the previous completed fragments remain visible underneath the
-    live route; at a real new-cycle boundary they are cleared as soon as the new
-    active session first enters that zone.
-    """
+    """Keep today's route for the latest confirmed mowing cycle of every zone."""
     by_zone: dict[int, dict[str, Any]] = {}
-    # A completed/reset session closes the current zone cycle.  The replacement
-    # is delayed until a later session actually enters that zone, matching the
-    # Navimow app and preserving unrelated zones.
     boundary_before_next: set[int] = set()
-    ordered = sorted(
-        (item for item in sessions if isinstance(item, dict)),
-        key=lambda item: as_int(item.get("started_at_ms")) or 0,
-    )
-
+    ordered = sorted((item for item in sessions if isinstance(item, dict)), key=lambda item: as_int(item.get("started_at_ms")) or 0)
     for session in ordered:
         session_id = str(session.get("id") or "")
         if not session_id:
@@ -465,138 +439,56 @@ def build_daily_trails(
         points = session.get("points") or []
         if not isinstance(points, list) or not points:
             continue
-
-        starts = {
-            value
-            for value in (
-                as_int(item) for item in session.get("segment_starts_ms") or []
-            )
-            if value is not None
-        }
-        session_by_zone: dict[int, dict[str, Any]] = {}
-        current_zone: int | None = None
-        current_segment: list[list[float]] = []
-
+        active = bool(session.get("active"))
+        starts = {value for value in (as_int(item) for item in session.get("segment_starts_ms") or []) if value is not None}
+        explicit_reset_zones = {value for value in (as_int(item) for item in session.get("cycle_reset_zone_ids") or []) if value is not None}
+        boundary_times: dict[int, list[int]] = {}
+        for item in session.get("zone_cycle_boundaries") or []:
+            if not isinstance(item, dict): continue
+            zone_id = as_int(item.get("zone_id")); at_ms = as_int(item.get("at_ms"))
+            if zone_id is not None and at_ms is not None: boundary_times.setdefault(zone_id, []).append(at_ms)
+        for values in boundary_times.values(): values.sort()
+        boundary_index = {zone_id: 0 for zone_id in boundary_times}
+        encountered_zones: set[int] = set(); current_zone: int | None = None; current_segment: list[list[float]] = []
         def flush() -> None:
             nonlocal current_segment
-            if current_zone is not None and current_segment:
-                row = session_by_zone.setdefault(
-                    current_zone, {"segments": [], "point_count": 0}
-                )
-                row["segments"].append(simplify_xy_points(current_segment))
+            if current_zone is not None and len(current_segment) >= 2 and not active:
+                simplified = simplify_xy_points(current_segment)
+                if len(simplified) >= 2:
+                    row = by_zone.get(current_zone)
+                    if row is None:
+                        row = {"zone_id": current_zone, "cycle_id": session_id, "active": False, "segments": [], "point_count": 0}
+                        by_zone[current_zone] = row
+                    row["segments"].append(simplified); row["point_count"] += len(current_segment)
             current_segment = []
-
         for raw in points:
-            if not isinstance(raw, list) or len(raw) < 3:
-                continue
-            stamp = as_int(raw[0])
-            x, y = as_float(raw[1]), as_float(raw[2])
-            if (
-                stamp is None
-                or x is None
-                or y is None
-                or to_local_date(stamp) != local_date
-            ):
-                flush()
-                current_zone = None
-                continue
+            if not isinstance(raw, list) or len(raw) < 3: continue
+            stamp = as_int(raw[0]); x, y = as_float(raw[1]), as_float(raw[2])
+            if stamp is None or x is None or y is None or to_local_date(stamp) != local_date:
+                flush(); current_zone = None; continue
             zone_id = as_int(raw[7]) if len(raw) > 7 else None
+            if zone_id is None: zone_id = zone_id_for_point(x, y, map_zones)
             if zone_id is None:
-                zone_id = zone_id_for_point(x, y, map_zones)
-            if zone_id is None:
-                flush()
-                current_zone = None
-                continue
-            boundary = stamp in starts and current_segment
-            if zone_id != current_zone or boundary:
-                flush()
-                current_zone = zone_id
-            current_segment.append([x, y])
-            session_by_zone.setdefault(
-                zone_id, {"segments": [], "point_count": 0}
-            )["point_count"] += 1
-        flush()
-
-        explicit_reset_zones = {
-            value
-            for value in (
-                as_int(item) for item in session.get("cycle_reset_zone_ids") or []
-            )
-            if value is not None
-        }
-        active = bool(session.get("active"))
-        encountered_zones = set(session_by_zone)
-
-        for zone_id, session_row in session_by_zone.items():
+                flush(); current_zone = None; continue
+            encountered_zones.add(zone_id)
             if zone_id in boundary_before_next or zone_id in explicit_reset_zones:
-                by_zone.pop(zone_id, None)
-                boundary_before_next.discard(zone_id)
-
-            # The live layer already owns the active route. Keeping it out of the
-            # daily payload prevents duplicate drawing while allowing completed
-            # pre-charge fragments to remain visible.
-            if active:
-                continue
-
-            row = by_zone.get(zone_id)
-            if row is None:
-                row = {
-                    "zone_id": zone_id,
-                    "cycle_id": session_id,
-                    "active": False,
-                    "segments": [],
-                    "point_count": 0,
-                }
-                by_zone[zone_id] = row
-            row["segments"].extend(session_row["segments"])
-            row["point_count"] += int(session_row["point_count"])
-
+                flush(); by_zone.pop(zone_id, None); boundary_before_next.discard(zone_id); explicit_reset_zones.discard(zone_id); current_zone = None
+            values = boundary_times.get(zone_id) or []; index = boundary_index.get(zone_id, 0)
+            while index < len(values) and stamp >= values[index]:
+                flush(); by_zone.pop(zone_id, None); current_zone = None; index += 1
+            boundary_index[zone_id] = index
+            fragment_boundary = stamp in starts and current_segment
+            if zone_id != current_zone or fragment_boundary:
+                flush(); current_zone = zone_id
+            current_segment.append([x, y])
+        flush()
         reason = str(session.get("completion_reason") or "").lower()
-        final_progress_zone_ids = {
-            value
-            for value in (
-                as_int(item) for item in (session.get("final_progress") or {}).keys()
-            )
-            if value is not None
-        }
-        if "reset" in reason:
-            boundary_zones = (
-                final_progress_zone_ids
-                or encountered_zones
-                or {
-                    value
-                    for value in (
-                        as_int(item) for item in session.get("zone_ids") or []
-                    )
-                    if value is not None
-                }
-            )
+        final_progress_zone_ids = {value for value in (as_int(item) for item in (session.get("final_progress") or {}).keys()) if value is not None}
+        if "reset" in reason or session.get("completed") is True:
+            boundary_zones = final_progress_zone_ids or encountered_zones or {value for value in (as_int(item) for item in session.get("zone_ids") or []) if value is not None}
             boundary_before_next.update(boundary_zones)
-        elif session.get("completed") is True:
-            boundary_zones = (
-                final_progress_zone_ids
-                or encountered_zones
-                or {
-                    value
-                    for value in (
-                        as_int(item) for item in session.get("zone_ids") or []
-                    )
-                    if value is not None
-                }
-            )
-            boundary_before_next.update(boundary_zones)
-
     result = []
     for zone_id in sorted(by_zone):
-        row = deepcopy(by_zone[zone_id])
-        row["segments"] = [
-            segment for segment in row["segments"] if len(segment) >= 2
-        ]
-        row["render_point_count"] = sum(len(segment) for segment in row["segments"])
-        if row["segments"]:
-            result.append(row)
-    return {
-        "date": local_date.isoformat(),
-        "revision": revision,
-        "zones": result,
-    }
+        row = deepcopy(by_zone[zone_id]); row["segments"] = [segment for segment in row["segments"] if len(segment) >= 2]; row["render_point_count"] = sum(len(segment) for segment in row["segments"])
+        if row["segments"]: result.append(row)
+    return {"date": local_date.isoformat(), "revision": revision, "zones": result}

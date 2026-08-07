@@ -144,9 +144,14 @@ class SessionArchiveManager:
             if render_matches_session(cached, session):
                 return deepcopy(cached)
 
+            render_session = deepcopy(session)
+            if render_session.get("mowing_path_width_m") is None:
+                width = (self.coordinator.data or {}).get("mowing_path_width_m")
+                if width is not None:
+                    render_session["mowing_path_width_m"] = width
             artifact = await self.hass.async_add_executor_job(
                 build_session_svg_archive,
-                deepcopy(session),
+                render_session,
             )
             if artifact is None:
                 return None

@@ -342,29 +342,22 @@ async def cycle_reset_split_test() -> None:
         },
         "zone_details": [{"id": 24, "name": "Yard", "progress": 4, "percentage": 4}],
     }
-    # The vendor can publish the reset during the brief non-cutting handover
-    # between two scheduled passes. The old route must still be finalized.
+    reset["active_zone_progress_zone_id"] = 24
     assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
-    assert manager._active_id is None
+    assert manager._active_id == first_id
 
     manager.process_pose(
-        position={"x": 1.2, "y": 1.2},
-        pose_time=2_200_000_021,
-        heading=0.1,
-        activity="mowing",
-        cutting=True,
-        docked=False,
-        returning=False,
-        zone_ids=[24],
+        position={"x": 1.2, "y": 1.2}, pose_time=2_200_000_021, heading=0.1, activity="mowing", cutting=True, docked=False, returning=False, zone_ids=[24],
     )
-    second_id = manager._active_id
-    assert second_id and second_id != first_id
-    assert len(manager._sessions) == 2
+    assert manager._active_id == first_id
+    assert len(manager._sessions) == 1
     first = manager._cache[first_id]
-    assert first["completed"] is True
-    assert first["completion_reason"] == "vendor_cycle_reset"
-    assert first["final_progress"] == {"24": 98}
-    assert not history._sessions_can_merge(first, manager._cache[second_id])
+    assert first["completed"] is None
+    assert first["completion_reason"] is None
+    boundaries = first.get("zone_cycle_boundaries") or []
+    assert len(boundaries) == 1
+    assert boundaries[0]["zone_id"] == 24
+    assert boundaries[0]["previous_peak"] == 98
     zone_history = manager.zone_history()["24"]
     assert zone_history["last_completed_progress"] == 98
     assert zone_history["last_completed_at"]
@@ -402,10 +395,11 @@ async def provisional_cycle_reset_stub_test() -> None:
         "zone_details": [{"id": 24, "name": "Yard", "progress": 4}],
     }
     assert manager.prepare_cycle(high, pose_time=2_250_000_010) is False
+    low["active_zone_progress_zone_id"] = 24
     assert manager.prepare_cycle(low, pose_time=2_250_000_020) is True
-    assert manager._active_id is None
-    assert stub_id not in manager._cache
-    assert manager._sessions == []
+    assert manager._active_id == stub_id
+    assert stub_id in manager._cache
+    assert len(manager._sessions) == 1
     manager.process_pose(
         position={"x": 4.1, "y": 4.1},
         pose_time=2_250_000_021,
@@ -417,6 +411,8 @@ async def provisional_cycle_reset_stub_test() -> None:
         zone_ids=[24],
     )
     assert len(manager._sessions) == 1
+    assert manager._active_id == stub_id
+    assert (manager._cache[stub_id].get("zone_cycle_boundaries") or [])[0]["zone_id"] == 24
     if hass.tasks:
         await asyncio.gather(*hass.tasks)
 
@@ -442,6 +438,7 @@ def practical_completion_threshold_test() -> None:
         {"zones": [{"id": 13, "pct": 97}]},
         [{"id": 13, "name": "Street", "percentage": 97}],
         active_zone_progress=97,
+        active_progress_zone_id=13,
     )
     active = manager.active_session
     assert active is not None
@@ -472,6 +469,7 @@ async def dock_completion_history_test() -> None:
         {"zones": [{"id": 24, "pct": 97}]},
         [{"id": 24, "name": "Yard", "progress": 97, "percentage": 23}],
         active_zone_progress=97,
+        active_progress_zone_id=24,
     )
     manager.prepare_cycle(
         {
@@ -605,11 +603,20 @@ async def vendor_partial_reset_test() -> None:
         "coverage": {"zones": [{"id": 13, "name": "Street", "pct": 3}]},
         "zone_details": [{"id": 13, "name": "Street", "progress": 3}],
     }
+    high["active_zone_progress_zone_id"] = 13
+    low["active_zone_progress_zone_id"] = 13
+    first_id = manager._active_id
     assert manager.prepare_cycle(high, pose_time=2_600_000_010) is False
     assert manager.prepare_cycle(low, pose_time=2_600_000_020) is True
-    first = manager._sessions[0]
-    assert first["completed"] is False
-    assert first["completion_reason"] == "vendor_cycle_reset_partial"
+    assert manager._active_id == first_id
+    assert len(manager._sessions) == 1
+    first = manager._cache[first_id]
+    assert first["completed"] is None
+    assert first["completion_reason"] is None
+    boundaries = first.get("zone_cycle_boundaries") or []
+    assert len(boundaries) == 1
+    assert boundaries[0]["zone_id"] == 13
+    assert boundaries[0]["previous_peak"] == 50
     assert "last_completed_at" not in manager.zone_history().get("13", {})
     if hass.tasks:
         await asyncio.gather(*hass.tasks)
