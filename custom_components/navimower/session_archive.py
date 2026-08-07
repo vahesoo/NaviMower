@@ -45,6 +45,13 @@ def _history_index_store(hass: HomeAssistant, entry_id: str) -> Store:
         return Store(hass, 1, key)
 
 
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class SessionArchiveManager:
     """Generate and persist one compact render artifact per completed session."""
 
@@ -127,6 +134,17 @@ class SessionArchiveManager:
                 self._pending = False
                 self._schedule_scan()
 
+    def _render_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        """Attach current mower width to old sessions that predate width storage."""
+        rendered = deepcopy(session)
+        existing = _as_float(rendered.get("mowing_path_width_m"))
+        if existing is not None and 0.10 <= existing <= 2.0:
+            return rendered
+        current = _as_float((self.coordinator.data or {}).get("mowing_path_width_m"))
+        if current is not None and 0.10 <= current <= 2.0:
+            rendered["mowing_path_width_m"] = current
+        return rendered
+
     async def async_get(self, session_id: str) -> dict[str, Any] | None:
         """Return a current archive, building it lazily when needed."""
         requested = str(session_id)
@@ -135,18 +153,19 @@ class SessionArchiveManager:
             session = await self.history.async_session_payload(requested)
             if not isinstance(session, dict) or session.get("active"):
                 return None
+            render_session = self._render_session(session)
 
             store = _archive_store(self.hass, self.entry_id, requested)
             try:
                 cached = await store.async_load()
             except Exception:  # noqa: BLE001
                 cached = None
-            if render_matches_session(cached, session):
+            if render_matches_session(cached, render_session):
                 return deepcopy(cached)
 
             artifact = await self.hass.async_add_executor_job(
                 build_session_svg_archive,
-                deepcopy(session),
+                render_session,
             )
             if artifact is None:
                 return None
@@ -154,11 +173,10 @@ class SessionArchiveManager:
             # Re-read after CPU work. A docked session can reopen during the
             # five-minute continuation window; never publish that stale archive.
             latest = await self.history.async_session_payload(requested)
-            if (
-                not isinstance(latest, dict)
-                or latest.get("active")
-                or not render_matches_session(artifact, latest)
-            ):
+            if not isinstance(latest, dict) or latest.get("active"):
+                return None
+            latest_render_session = self._render_session(latest)
+            if not render_matches_session(artifact, latest_render_session):
                 return None
 
             await store.async_save(artifact)
