@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release v7'
+    if: github.event.head_commit.message == 'Trigger beta5 release v8'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -63,10 +63,6 @@ jobs:
 
           exec(compile(script, 'beta5-passive-discovery-finalizer.yml', 'exec'))
 
-          # Normalize the three inserted class/closure blocks. The temporary YAML
-          # finalizer intentionally carries code as strings, and nested indentation
-          # is fragile after extraction; these replacements make the committed
-          # Python source deterministic before validation.
           client_path = Path('custom_components/navimower/api/client.py')
           client = client_path.read_text(encoding='utf-8')
           start = client.index('    def set_discovery_enabled(')
@@ -136,12 +132,7 @@ jobs:
               for candidate in {str(incoming_device_id or ""), str(self._device_id or "")}:
                   if candidate:
                       safe_topic = safe_topic.replace(candidate, "<device>")
-              self._record_inventory_item(
-                  self._message_inventory,
-                  safe_topic,
-                  payload,
-                  include_samples=False,
-              )
+              self._record_inventory_item(self._message_inventory, safe_topic, payload, include_samples=False)
               current_device = bool(
                   incoming_device_id == self._device_id
                   or (self._device_id and f"/vehicle/{self._device_id}/" in str(topic))
@@ -151,12 +142,7 @@ jobs:
               if safe_topic not in self._discovery_inventory and len(self._discovery_inventory) >= 64:
                   self._discovery_dropped_topics += 1
                   return
-              self._record_inventory_item(
-                  self._discovery_inventory,
-                  safe_topic,
-                  payload,
-                  include_samples=True,
-              )
+              self._record_inventory_item(self._discovery_inventory, safe_topic, payload, include_samples=True)
 
           @staticmethod
           def _record_inventory_item(
@@ -206,9 +192,7 @@ jobs:
               marker = {
                   "name": label,
                   "created_utc": datetime.now(UTC).isoformat(),
-                  "mqtt_message_total": sum(
-                      int(item.get("count", 0)) for item in self._discovery_inventory.values()
-                  ),
+                  "mqtt_message_total": sum(int(item.get("count", 0)) for item in self._discovery_inventory.values()),
               }
               self._discovery_markers.append(marker)
               del self._discovery_markers[:-50]
@@ -261,6 +245,14 @@ jobs:
 
           '''), '    ')
           services_path.write_text(services[:start] + service_method + services[end:], encoding='utf-8')
+
+          release_test = Path('tests/test_v034_release.py')
+          release_text = release_test.read_text(encoding='utf-8')
+          old = '''    assert manifest["version"] == "0.4.1-beta4"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta4.md").read_text()\n    assert notes.startswith("title: Navimower 0.4.1-beta4")\n    assert "MQTT pose-stream stability" in notes\n    assert "pose_degraded" in notes\n    assert "120 seconds" in notes\n'''
+          new = '''    assert manifest["version"] == "0.4.1-beta5"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta5.md").read_text()\n    assert notes.startswith("title: Navimower 0.4.1-beta5")\n    assert "Passive protocol discovery" in notes\n    assert "current-device-only" in notes\n    assert "off by default" in notes\n'''
+          if old not in release_text:
+              raise SystemExit('release regression version block missing')
+          release_test.write_text(release_text.replace(old, new, 1), encoding='utf-8')
           PY
           } 2>&1 | tee /tmp/beta5-patch.log
       - name: Validate full test suite
@@ -296,8 +288,8 @@ jobs:
             echo "tests: ${{ steps.tests.outcome }}"
             echo
             echo '```text'
-            tail -n 180 /tmp/beta5-patch.log 2>/dev/null || true
-            tail -n 180 /tmp/beta5-tests.log 2>/dev/null || true
+            tail -n 220 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 220 /tmp/beta5-tests.log 2>/dev/null || true
             echo '```'
           } > /tmp/beta5-failure.md
           gh issue comment 27 --body-file /tmp/beta5-failure.md || true
