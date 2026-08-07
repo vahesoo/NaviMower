@@ -59,6 +59,43 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 # from the separate navimower-map-card HACS dashboard repository.
 
 
+async def _async_private_poll_guard(coordinator: NavimowCoordinator) -> None:
+    """Guarantee private-cloud polling even while dense MQTT pushes arrive.
+
+    DataUpdateCoordinator.async_set_updated_data() intentionally restarts the
+    coordinator refresh timer.  Live mower position can arrive more frequently
+    than the private-cloud interval, so the normal timer can otherwise be pushed
+    forward forever.  This guard only refreshes when the last successful private
+    poll is actually due, which also avoids duplicate idle refreshes when the
+    normal coordinator schedule is already working.
+    """
+    try:
+        while not coordinator._shutdown_complete:
+            interval = (
+                coordinator.update_interval.total_seconds()
+                if coordinator.update_interval is not None
+                else 30.0
+            )
+            interval = max(1.0, float(interval))
+            await asyncio.sleep(interval)
+            if coordinator._shutdown_complete:
+                return
+            age = coordinator.private_poll_age()
+            if age is not None and age < interval * 0.9:
+                continue
+            try:
+                await coordinator.async_refresh()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Private polling guard refresh failed; normal retry continues",
+                    exc_info=True,
+                )
+    except asyncio.CancelledError:
+        raise
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up OAuth, services and authenticated map/history HTTP resources."""
     hass.data.setdefault(DOMAIN, {})
@@ -200,6 +237,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinator.data:
         coordinator.async_set_updated_data(coordinator.bootstrap_snapshot())
 
+    coordinator.private_poll_guard_task = hass.async_create_background_task(
+        _async_private_poll_guard(coordinator),
+        f"Navimower private poll guard {entry.entry_id}",
+    )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -213,6 +255,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session_archive = (
         getattr(coordinator, "session_archive", None) if coordinator else None
     )
+    private_poll_guard = (
+        getattr(coordinator, "private_poll_guard_task", None) if coordinator else None
+    )
+
+    if private_poll_guard is not None:
+        private_poll_guard.cancel()
+        await asyncio.gather(private_poll_guard, return_exceptions=True)
+        coordinator.private_poll_guard_task = None
 
     # Stop watchdog/recovery work and invalidate old callback generations before
     # entities disappear. This prevents a late Paho callback from writing into a
@@ -222,6 +272,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
+        if coordinator is not None and private_poll_guard is not None:
+            coordinator.private_poll_guard_task = hass.async_create_background_task(
+                _async_private_poll_guard(coordinator),
+                f"Navimower private poll guard {entry.entry_id}",
+            )
         if bridge is not None:
             try:
                 await bridge.async_resume()
