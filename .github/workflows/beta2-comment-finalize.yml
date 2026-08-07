@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V2'
+    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V3'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -43,6 +43,16 @@ jobs:
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
           exec(compile(script, 'beta2-patch.yaml', 'exec'))
           PY
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/test_history_merge.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''        active_zone_progress=97,\n    )\n    active = manager.active_session\n'''
+          new = '''        active_zone_progress=97,\n        active_progress_zone_id=13,\n    )\n    active = manager.active_session\n'''
+          if old not in s:
+              raise SystemExit('practical completion owner block missing')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
           python -m compileall -q custom_components/navimower
           python -m pip install --upgrade pytest voluptuous cryptography
           python -m pytest -q
@@ -56,10 +66,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "beta2 finalizer v2 outcome: ${{ steps.build.outcome }}"
+            echo "beta2 finalizer v3 outcome: ${{ steps.build.outcome }}"
             echo
             echo '```text'
-            tail -n 120 /tmp/beta2.log 2>/dev/null || true
+            tail -n 140 /tmp/beta2.log 2>/dev/null || true
             echo '```'
           } > /tmp/result.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
