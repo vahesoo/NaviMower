@@ -23,7 +23,7 @@ from .const import (
 )
 from .zone_state import simplify_xy_points
 
-SESSION_SVG_ARCHIVE_VERSION = 1
+SESSION_SVG_ARCHIVE_VERSION = 2
 SESSION_SVG_GRID_M = 0.025
 SESSION_SVG_MAX_ESTIMATED_CELLS = 1_500_000
 
@@ -45,6 +45,14 @@ def _as_float(value: Any) -> float | None:
 def _fmt(value: float) -> str:
     rendered = f"{float(value):.3f}".rstrip("0").rstrip(".")
     return "0" if rendered in {"-0", ""} else rendered
+
+
+def _session_swath_width(session: dict[str, Any]) -> float:
+    """Return mower-reported cutting-path width with a conservative fallback."""
+    width = _as_float(session.get("mowing_path_width_m"))
+    if width is not None and 0.10 <= width <= 2.0:
+        return width
+    return float(SWATH_WIDTH_M)
 
 
 def _point_is_cutting(point: list[Any]) -> bool:
@@ -158,9 +166,12 @@ def _polyline_length(segments: Iterable[list[list[float]]]) -> float:
     return total
 
 
-def _adaptive_grid_size(cutting_segments: list[list[list[float]]]) -> float:
+def _adaptive_grid_size(
+    cutting_segments: list[list[list[float]]],
+    width_m: float,
+) -> float:
     length = _polyline_length(cutting_segments)
-    estimated_area = max(SWATH_WIDTH_M * length, SWATH_WIDTH_M**2)
+    estimated_area = max(width_m * length, width_m**2)
     needed = math.sqrt(estimated_area / SESSION_SVG_MAX_ESTIMATED_CELLS)
     return min(0.20, max(SESSION_SVG_GRID_M, needed))
 
@@ -190,11 +201,8 @@ def _rasterize_swath(
     *,
     width_m: float = SWATH_WIDTH_M,
 ) -> tuple[set[tuple[int, int]], float]:
-    cell = _adaptive_grid_size(cutting_segments)
+    cell = _adaptive_grid_size(cutting_segments, float(width_m))
     radius = max(0.01, float(width_m) / 2.0)
-    # Cell-centre sampling keeps the stored footprint close to the requested
-    # swath width. The adaptive grid always retains several cells across the
-    # 0.25 m stroke, so connected route segments remain continuous.
     threshold = radius
     threshold_sq = threshold * threshold
     occupied: set[tuple[int, int]] = set()
@@ -220,21 +228,16 @@ def _direction(edge: tuple[tuple[int, int], tuple[int, int]]) -> int:
     (x1, y1), (x2, y2) = edge
     dx, dy = x2 - x1, y2 - y1
     if (dx, dy) == (1, 0):
-        return 0  # east
+        return 0
     if (dx, dy) == (0, 1):
-        return 1  # north
+        return 1
     if (dx, dy) == (-1, 0):
-        return 2  # west
-    return 3  # south
+        return 2
+    return 3
 
 
 def _boundary_loops(occupied: set[tuple[int, int]]) -> list[list[tuple[int, int]]]:
-    """Trace oriented outer and inner grid boundaries.
-
-    Edges are oriented with occupied area on their left. At a diagonal corner,
-    choosing the rightmost available continuation keeps touching components from
-    being spuriously joined. SVG even-odd fill then preserves all interior holes.
-    """
+    """Trace oriented outer and inner grid boundaries."""
     edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     for x, y in occupied:
         if (x, y - 1) not in occupied:
@@ -273,7 +276,6 @@ def _boundary_loops(occupied: set[tuple[int, int]]) -> list[list[tuple[int, int]
 
             def rank(edge):
                 delta = (_direction(edge) - incoming_dir) % 4
-                # right, straight, left, reverse
                 order = {3: 0, 0: 1, 1: 2, 2: 3}
                 return (order[delta], edge[1])
 
@@ -406,6 +408,7 @@ def session_render_fingerprint(session: dict[str, Any]) -> dict[str, Any]:
         "point_count": len(session.get("points") or []),
         "ended_at_ms": _as_int(session.get("ended_at_ms")),
         "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
+        "swath_width_m": round(_session_swath_width(session), 3),
     }
 
 
@@ -426,11 +429,16 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
     if not all_segments:
         return None
 
-    occupied, grid_size = _rasterize_swath(cutting_segments)
+    swath_width = _session_swath_width(session)
+    occupied, grid_size = _rasterize_swath(
+        cutting_segments,
+        width_m=swath_width,
+    )
     loops = _boundary_loops(occupied) if occupied else []
     mowed_path = _loops_path(loops, grid_size) if loops else ""
     travel_path, travel_points = _polyline_path(travel_segments)
     route_path, route_points = _polyline_path(all_segments)
+    thin_route_width = min(float(SWATH_WIDTH_M), swath_width)
 
     return {
         "version": SESSION_SVG_ARCHIVE_VERSION,
@@ -440,7 +448,7 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
         "mowed_area": {
             "path_d": mowed_path,
             "fill_rule": "evenodd",
-            "swath_width_m": SWATH_WIDTH_M,
+            "swath_width_m": swath_width,
             "grid_size_m": round(grid_size, 4),
             "loop_count": len(loops),
             "occupied_cell_count": len(occupied),
@@ -449,18 +457,16 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
         },
         "travel": {
             "path_d": travel_path,
-            "stroke_width_m": SWATH_WIDTH_M,
+            "stroke_width_m": thin_route_width,
             "linecap": "round",
             "linejoin": "round",
             "source_segment_count": len(travel_segments),
             "render_point_count": travel_points,
             "bbox": _bbox(travel_segments),
         },
-        # Full route path is retained as a compact fallback/debug representation.
-        # Future cards normally combine mowed_area + travel instead.
         "route": {
             "path_d": route_path,
-            "stroke_width_m": SWATH_WIDTH_M,
+            "stroke_width_m": thin_route_width,
             "linecap": "round",
             "linejoin": "round",
             "source_segment_count": len(all_segments),
