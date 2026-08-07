@@ -38,6 +38,9 @@ from .mqtt import NavimowerMqttBridge
 from .oauth import async_register_oauth_implementation
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
+from .runtime_compat import apply_runtime_compat_fixes
+
+apply_runtime_compat_fixes()
 
 _LOGGER = logging.getLogger(__name__)
 
