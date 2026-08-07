@@ -8,7 +8,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta4_version_and_notes():
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta4"
+    assert manifest["version"].startswith("0.4.1-beta")
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta4.md").read_text()
     assert "pose_degraded" in notes
     assert "120 seconds" in notes

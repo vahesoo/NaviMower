@@ -33,6 +33,7 @@ from .model_support import supports_ordered_zone_mowing
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
 SERVICE_EXPORT_DIAGNOSTICS = "export_diagnostics"
+SERVICE_MARK_DISCOVERY_EVENT = "mark_discovery_event"
 
 # Navimow weekday numbering is 1=Sun .. 7=Sat.
 _WEEKDAY_TO_NUM = {
@@ -76,6 +77,13 @@ EXPORT_DIAGNOSTICS_SCHEMA = vol.Schema(
     {
         vol.Optional("device_id"): cv.string,
         vol.Optional("include_compressed_map", default=True): cv.boolean,
+    }
+)
+
+MARK_DISCOVERY_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Required("name"): cv.string,
     }
 )
 
@@ -203,6 +211,17 @@ def async_setup_services(hass: HomeAssistant) -> None:
             notification_id="navimower_diagnostics_export",
         )
 
+    async def _mark_discovery_event(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        bridge = getattr(coordinator, "mqtt_bridge", None)
+        if bridge is None or not hasattr(bridge, "mark_discovery_event"):
+            raise ServiceValidationError("MQTT discovery bridge is not available")
+        if not getattr(bridge, "discovery_enabled", False):
+            raise ServiceValidationError(
+                "Passive discovery is disabled; enable it in Navimower options first"
+            )
+        bridge.mark_discovery_event(str(call.data["name"]))
+
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
@@ -267,4 +286,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_EXPORT_DIAGNOSTICS,
         _export_diagnostics,
         schema=EXPORT_DIAGNOSTICS_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_MARK_DISCOVERY_EVENT,
+        _mark_discovery_event,
+        schema=MARK_DISCOVERY_EVENT_SCHEMA,
     )

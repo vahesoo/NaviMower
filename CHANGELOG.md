@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1-beta5 - passive protocol discovery
+
+- Add an opt-in Passive protocol discovery option for temporary vendor-protocol investigation.
+- Subscribe to the current mower's `/downlink/vehicle/<device>/#` MQTT wildcard while discovery is enabled.
+- Keep current-device-only topic/key inventory and up to three bounded sanitized samples per topic.
+- Add `navimower.mark_discovery_event` timestamps for correlating app actions such as notifications, camera and LiDAR views.
+- Record value-free private-cloud request/response schema inventory for calls made by Navimower.
+- Add notification, event, push, stream, WebRTC, RTSP and LiDAR-oriented diagnostics keywords.
+- Preserve the existing account-wide MQTT inventory separately; discovery never makes stale pose appear fresh and does not change mower control.
+
 ## 0.4.1-beta4 — MQTT pose-stream stability
 
 - Stop rebuilding the complete MQTT client solely because type=1 pose is absent or stale.

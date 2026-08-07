@@ -100,3 +100,26 @@ export_diagnostics:
       default: true
       selector:
         boolean:
+
+
+mark_discovery_event:
+  name: Mark passive discovery event
+  description: >-
+    Add a timestamp marker to the current mower's passive discovery diagnostics.
+    Use this immediately before or after an action in the Navimow app so new MQTT
+    topics or private-cloud schema changes can be correlated with that action.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+integration: navimower
+    name:
+      name: Marker name
+      description: Short label such as before_camera, after_notification, or lidar_view.
+      required: true
+      example: before_camera
+      selector:
+        text:

@@ -49,6 +49,7 @@ from .const import (
     CONF_VEHICLE_TYPE,
     DEFAULT_DIAGNOSTICS_DETAIL,
     DEFAULT_INCLUDE_RETURN_TRAIL,
+    DEFAULT_PASSIVE_DISCOVERY,
     DEFAULT_LANGUAGE,
     DEFAULT_TRAIL_RETENTION_DAYS,
     DOMAIN,
@@ -56,6 +57,7 @@ from .const import (
     OPT_DIAGNOSTICS_DETAIL,
     OPT_GATES,
     OPT_INCLUDE_RETURN_TRAIL,
+    OPT_PASSIVE_DISCOVERY,
     OPT_TRAIL_RETENTION_DAYS,
     OPT_ZONES,
     TRAIL_RETENTION_OPTIONS,
@@ -576,6 +578,7 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                     OPT_TRAIL_RETENTION_DAYS: int(user_input[OPT_TRAIL_RETENTION_DAYS]),
                     OPT_INCLUDE_RETURN_TRAIL: bool(user_input[OPT_INCLUDE_RETURN_TRAIL]),
                     OPT_DIAGNOSTICS_DETAIL: str(user_input[OPT_DIAGNOSTICS_DETAIL]),
+                    OPT_PASSIVE_DISCOVERY: bool(user_input[OPT_PASSIVE_DISCOVERY]),
                 }
             )
         retention_labels = {
@@ -610,19 +613,28 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                         ),
                     ): bool,
                     vol.Required(
-                        OPT_DIAGNOSTICS_DETAIL,
-                        default=str(
-                            options.get(
-                                OPT_DIAGNOSTICS_DETAIL,
-                                DEFAULT_DIAGNOSTICS_DETAIL,
-                            )
-                        ),
-                    ): vol.In(
-                        {
-                            "standard": "Standard",
-                            "extended": "Extended",
-                        }
-                    ),
+              OPT_DIAGNOSTICS_DETAIL,
+              default=str(
+                  options.get(
+                      OPT_DIAGNOSTICS_DETAIL,
+                      DEFAULT_DIAGNOSTICS_DETAIL,
+                  )
+              ),
+          ): vol.In(
+              {
+                  "standard": "Standard",
+                  "extended": "Extended",
+              }
+          ),
+                    vol.Required(
+              OPT_PASSIVE_DISCOVERY,
+              default=bool(
+                  options.get(
+                      OPT_PASSIVE_DISCOVERY,
+                      DEFAULT_PASSIVE_DISCOVERY,
+                  )
+              ),
+          ): bool,
                 }
             ),
         )

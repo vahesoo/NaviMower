@@ -32,6 +32,7 @@ from .const import (
     CONF_API_BASE_URL,
     CONF_OAUTH_DEVICE_ID,
     CONF_OAUTH_TOKEN,
+    DEFAULT_PASSIVE_DISCOVERY,
     MQTT_BROKER,
     MQTT_DISCONNECT_TIMEOUT_SECONDS,
     MQTT_PASSWORD,
@@ -94,10 +95,24 @@ class NavimowerMqttBridge:
         self._last_recovery_utc: str | None = None
 
         self._message_inventory: dict[str, dict[str, Any]] = {}
+        self._discovery_enabled = bool(
+            entry.options.get(OPT_PASSIVE_DISCOVERY, DEFAULT_PASSIVE_DISCOVERY)
+        )
+        self._discovery_inventory: dict[str, dict[str, Any]] = {}
+        self._discovery_markers: list[dict[str, Any]] = []
+        self._discovery_dropped_topics = 0
+        cloud_client = getattr(coordinator, "client", None)
+        if hasattr(cloud_client, "set_discovery_enabled"):
+            cloud_client.set_discovery_enabled(self._discovery_enabled)
 
     @property
     def configured(self) -> bool:
         return bool(self.entry.data.get(CONF_OAUTH_TOKEN))
+
+    @property
+    def discovery_enabled(self) -> bool:
+        """Return whether temporary passive discovery is enabled."""
+        return self._discovery_enabled
 
     # ------------------------------------------------------------- lifecycle
     async def async_start(self) -> bool:
@@ -528,6 +543,11 @@ class NavimowerMqttBridge:
             self._set_recovery_state("subscribe_failed", str(err))
             _LOGGER.warning("Could not subscribe to Navimow location: %s", err)
             return False
+        if self._discovery_enabled:
+            try:
+                sdk._mqtt.client.subscribe(mqtt_discovery_topic(device_id))
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Could not subscribe to Navimower passive discovery: %s", err)
         self._subscribed_mono = time.monotonic()
         self._set_recovery_state("subscribed")
         return True
@@ -917,12 +937,33 @@ class NavimowerMqttBridge:
         payload: bytes,
         incoming_device_id: str,
     ) -> None:
-        """Keep a value-free inventory of MQTT topics and JSON key paths."""
+        """Keep account-wide schema inventory plus opt-in current-device samples."""
         safe_topic = str(topic)
-        if incoming_device_id:
-            safe_topic = safe_topic.replace(str(incoming_device_id), "<device>")
+        for candidate in {str(incoming_device_id or ""), str(self._device_id or "")}:
+            if candidate:
+                safe_topic = safe_topic.replace(candidate, "<device>")
+        self._record_inventory_item(self._message_inventory, safe_topic, payload, include_samples=False)
+        current_device = bool(
+            incoming_device_id == self._device_id
+            or (self._device_id and f"/vehicle/{self._device_id}/" in str(topic))
+        )
+        if not self._discovery_enabled or not current_device:
+            return
+        if safe_topic not in self._discovery_inventory and len(self._discovery_inventory) >= 64:
+            self._discovery_dropped_topics += 1
+            return
+        self._record_inventory_item(self._discovery_inventory, safe_topic, payload, include_samples=True)
+
+    @staticmethod
+    def _record_inventory_item(
+        store: dict[str, dict[str, Any]],
+        safe_topic: str,
+        payload: bytes,
+        *,
+        include_samples: bool,
+    ) -> None:
         now = datetime.now(UTC).isoformat()
-        item = self._message_inventory.setdefault(
+        item = store.setdefault(
             safe_topic,
             {
                 "count": 0,
@@ -937,33 +978,61 @@ class NavimowerMqttBridge:
         )
         item["count"] += 1
         item["last_seen_utc"] = now
-        item["max_payload_bytes"] = max(
-            item["max_payload_bytes"],
-            len(payload or b""),
-        )
+        item["max_payload_bytes"] = max(item["max_payload_bytes"], len(payload or b""))
         try:
             parsed = json.loads((payload or b"").decode("utf-8", errors="replace"))
         except (TypeError, ValueError):
             item["parsed_types"].add("non_json")
-            return
+        else:
+            summary = structure_summary(parsed)
+            item["parsed_types"].update(summary["parsed_types"])
+            item["top_level_keys"].update(summary["top_level_keys"])
+            item["key_paths"].update(summary["key_paths"])
+            item["observed_type_values"].update(summary["observed_type_values"])
+        if include_samples:
+            samples = item.setdefault("samples", [])
+            sample = sanitize_discovery_payload(payload)
+            if not samples or samples[-1].get("payload") != sample:
+                samples.append({"seen_utc": now, "payload": sample})
+                del samples[:-3]
 
-        def walk(value: Any, path: str = "") -> None:
-            item["parsed_types"].add(type(value).__name__)
-            if isinstance(value, dict):
-                for key, child in value.items():
-                    child_path = f"{path}.{key}" if path else str(key)
-                    item["key_paths"].add(child_path)
-                    if not path:
-                        item["top_level_keys"].add(str(key))
-                    if str(key) in {"type", "action", "vehicleState", "eventCode"}:
-                        if isinstance(child, (str, int, float, bool)):
-                            item["observed_type_values"].add(f"{key}={child}")
-                    walk(child, child_path)
-            elif isinstance(value, list):
-                for child in value[:25]:
-                    walk(child, f"{path}[]" if path else "[]")
+    def mark_discovery_event(self, name: str) -> dict[str, Any]:
+        """Add a timestamp marker for correlating an app action with traffic."""
+        label = " ".join(str(name or "marker").split())[:80] or "marker"
+        marker = {
+            "name": label,
+            "created_utc": datetime.now(UTC).isoformat(),
+            "mqtt_message_total": sum(int(item.get("count", 0)) for item in self._discovery_inventory.values()),
+        }
+        self._discovery_markers.append(marker)
+        del self._discovery_markers[:-50]
+        return deepcopy(marker)
 
-        walk(parsed)
+    def diagnostic_discovery(self) -> dict[str, Any]:
+        """Return current-device-only passive discovery data."""
+        topics: dict[str, Any] = {}
+        for topic, item in deepcopy(self._discovery_inventory).items():
+            topics[topic] = {
+                **item,
+                "parsed_types": sorted(item["parsed_types"]),
+                "top_level_keys": sorted(item["top_level_keys"]),
+                "key_paths": sorted(item["key_paths"]),
+                "observed_type_values": sorted(item["observed_type_values"]),
+            }
+        wildcard = mqtt_discovery_topic(self._device_id) if self._device_id else None
+        if wildcard and self._device_id:
+            wildcard = wildcard.replace(self._device_id, "<device>")
+        return {
+            "enabled": self._discovery_enabled,
+            "scope": "current_device_only",
+            "wildcard_topic": wildcard,
+            "topic_limit": 64,
+            "sample_limit_per_topic": 3,
+            "marker_limit": 50,
+            "dropped_topic_messages": self._discovery_dropped_topics,
+            "markers": deepcopy(self._discovery_markers),
+            "topics": topics,
+        }
 
     def diagnostic_inventory(self) -> dict[str, Any]:
         """Return the passive MQTT topic/key inventory as JSON-safe data."""
@@ -997,6 +1066,7 @@ class NavimowerMqttBridge:
             "pose_resubscribe_count": self._recovery_total,
             "consecutive_rebuild_count": self._recovery_count,
             "last_any_message_scope": "current_device",
+            "passive_discovery_enabled": self._discovery_enabled,
             "last_recovery_reason": self._last_recovery_reason,
             "last_recovery_utc": self._last_recovery_utc,
             "started_age_s": age(self._started_mono),

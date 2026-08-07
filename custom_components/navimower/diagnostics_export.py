@@ -29,6 +29,7 @@ from .map_identifiers import resolve_map_identifiers
 
 
 _KEYWORDS = (
+    "alert",
     "angle",
     "battery",
     "charge",
@@ -39,6 +40,7 @@ _KEYWORDS = (
     "direction",
     "doodle",
     "edge",
+    "event",
     "firmware",
     "height",
     "image",
@@ -47,9 +49,13 @@ _KEYWORDS = (
     "lidar",
     "map",
     "mow",
+    "message",
     "network",
+    "notification",
+    "notify",
     "oauth",
     "path",
+    "push",
     "resource",
     "rtk",
     "signal",
@@ -57,8 +63,11 @@ _KEYWORDS = (
     "session",
     "sha",
     "snapshot",
+    "stream",
     "terrain",
     "trail",
+    "webrtc",
+    "rtsp",
     "url",
     "vision",
 )
@@ -678,10 +687,16 @@ async def async_build_diagnostics(
     mqtt_bridge = getattr(coordinator, "mqtt_bridge", None)
     mqtt_inventory = None
     mqtt_health = None
+    mqtt_discovery = None
+    cloud_request_inventory = None
     if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory"):
         mqtt_inventory = mqtt_bridge.diagnostic_inventory()
     if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_health"):
         mqtt_health = mqtt_bridge.diagnostic_health()
+    if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_discovery"):
+        mqtt_discovery = mqtt_bridge.diagnostic_discovery()
+    if hasattr(coordinator.client, "discovery_inventory"):
+        cloud_request_inventory = coordinator.client.discovery_inventory()
     private_polling = (
         coordinator.polling_diagnostics()
         if hasattr(coordinator, "polling_diagnostics")
@@ -948,6 +963,8 @@ async def async_build_diagnostics(
         "private_polling": sanitize(deepcopy(private_polling)),
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "mqtt_inventory": sanitize(deepcopy(mqtt_inventory)),
+        "mqtt_discovery": sanitize(deepcopy(mqtt_discovery)),
+        "cloud_request_inventory": sanitize(deepcopy(cloud_request_inventory)),
         "notes": [
             "Account, mower, network and physical GPS identifiers are redacted.",
             "PIN, RTK anchor, ICCID and anti-theft location fields are redacted.",
@@ -957,6 +974,8 @@ async def async_build_diagnostics(
             "Full retained routes remain in authenticated session APIs and HA storage.",
             "commands_sent=false refers to the diagnostics export itself; last_mow_command records the most recent earlier user command.",
             "command_status_at_export is a read-only status lookup for the stored command number.",
+            "Passive discovery is opt-in and current-mower scoped; samples are bounded and sanitized.",
+            "Private-cloud request inventory covers only calls made by this integration and does not intercept mobile-app traffic.",
         ],
     }
 

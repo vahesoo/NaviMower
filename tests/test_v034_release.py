@@ -11,12 +11,12 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta4"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta4.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.1-beta4")
-    assert "MQTT pose-stream stability" in notes
-    assert "pose_degraded" in notes
-    assert "120 seconds" in notes
+    assert manifest["version"] == "0.4.1-beta5"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta5.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta5")
+    assert "Passive protocol discovery" in notes
+    assert "current-device-only" in notes
+    assert "off by default" in notes
 
     stable_040 = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
     assert stable_040.startswith("title: Navimower 0.4.0")

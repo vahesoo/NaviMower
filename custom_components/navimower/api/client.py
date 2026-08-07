@@ -12,6 +12,8 @@ control) that may run in different executor threads and share the token state.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import UTC, datetime
 import hashlib
 import json
 import logging
@@ -22,6 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from ..discovery import structure_summary
 from . import crypto, passport
 from .passport import PassportError, Tokens
 
@@ -89,6 +92,8 @@ class NavimowCloudClient:
         self._region = region or "fra"
         self._language = language or "en"
         self._lock = threading.RLock()
+        self._discovery_enabled = False
+        self._discovery_inventory: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ state
     @property
@@ -116,6 +121,51 @@ class NavimowCloudClient:
             "uid": self._uid,
             "region": self._region,
         }
+
+    def set_discovery_enabled(self, enabled: bool) -> None:
+        """Enable bounded value-free request schema discovery."""
+        self._discovery_enabled = bool(enabled)
+
+    def discovery_inventory(self) -> dict[str, Any]:
+        """Return private-cloud request paths and response structures."""
+        out: dict[str, Any] = {}
+        for path, item in deepcopy(self._discovery_inventory).items():
+            out[path] = {
+                **item,
+                "parsed_types": sorted(item["parsed_types"]),
+                "top_level_keys": sorted(item["top_level_keys"]),
+                "key_paths": sorted(item["key_paths"]),
+                "observed_type_values": sorted(item["observed_type_values"]),
+            }
+        return out
+
+    def _record_discovery(self, path: str, value: Any, code: Any) -> None:
+        if not self._discovery_enabled:
+            return
+        now = datetime.now(UTC).isoformat()
+        item = self._discovery_inventory.setdefault(
+            str(path),
+            {
+                "count": 0,
+                "first_seen_utc": now,
+                "last_seen_utc": now,
+                "last_business_code": None,
+                "parsed_types": set(),
+                "top_level_keys": set(),
+                "key_paths": set(),
+                "observed_type_values": set(),
+            },
+        )
+        item["count"] += 1
+        item["last_seen_utc"] = now
+        item["last_business_code"] = code
+        if value is None:
+            return
+        summary = structure_summary(value)
+        item["parsed_types"].update(summary["parsed_types"])
+        item["top_level_keys"].update(summary["top_level_keys"])
+        item["key_paths"].update(summary["key_paths"])
+        item["observed_type_values"].update(summary["observed_type_values"])
 
     # ------------------------------------------------------------------ auth
     def authenticate(self, email: str, password: str) -> Tokens:
@@ -177,6 +227,7 @@ class NavimowCloudClient:
             uid = self._extract_uid(result)
         if not uid:
             code = result.get("code") if isinstance(result, dict) else None
+            self._record_discovery(path, None, code)
             desc = str(result.get("desc", "")) if isinstance(result, dict) else str(result)
             raise NavimowAuthError(code, f"mower login returned no uid: {desc}")
         self._uid = str(uid)
@@ -252,7 +303,9 @@ class NavimowCloudClient:
             result = self._raw(path, body)
             code = result.get("code") if isinstance(result, dict) else None
             if code == CODE_OK:
-                return result.get("data")
+                data = result.get("data")
+                self._record_discovery(path, data, code)
+                return data
 
             if retry_auth and auth and code in AUTH_ERROR_CODES:
                 _LOGGER.debug("auth code %s on %s -> re-auth + retry", code, path)
@@ -260,7 +313,9 @@ class NavimowCloudClient:
                 body = self._auth_body(extra)
                 result = self._raw(path, body)
                 if isinstance(result, dict) and result.get("code") == CODE_OK:
-                    return result.get("data")
+                    data = result.get("data")
+                    self._record_discovery(path, data, result.get("code"))
+                    return data
 
             desc = str(result.get("desc", "")) if isinstance(result, dict) else str(result)
             if code in AUTH_ERROR_CODES:
