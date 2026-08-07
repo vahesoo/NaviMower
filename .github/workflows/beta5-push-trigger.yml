@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release v4'
+    if: github.event.head_commit.message == 'Trigger beta5 release v5'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -40,10 +40,15 @@ jobs:
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
 
-          # The patch script contains a literal config-flow block. Because it is
-          # embedded in YAML, its continuation-line indentation can differ from
-          # the checked-out Python source. Read that literal from the AST and
-          # normalize only the existing diagnostics field to it before execution.
+          # The extracted Python is already de-indented from the YAML block.
+          # Remove the extra runtime 10-space stripping used by the embedded
+          # writer strings; otherwise deep Python blocks lose indentation.
+          script = script.replace(".replace('\\n          ', '\\n').lstrip()", ".lstrip()")
+          script = script.replace(".replace('\\n          ', '\\n')", "")
+
+          # Normalize the diagnostics option block to the literal expected by
+          # the patch script. This avoids YAML indentation affecting that exact
+          # string match while keeping the resulting config_flow unchanged.
           tree = ast.parse(script)
           expected_anchor = None
           for node in tree.body:
@@ -103,8 +108,8 @@ jobs:
             echo "tests: ${{ steps.tests.outcome }}"
             echo
             echo '```text'
-            tail -n 120 /tmp/beta5-patch.log 2>/dev/null || true
-            tail -n 120 /tmp/beta5-tests.log 2>/dev/null || true
+            tail -n 140 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 140 /tmp/beta5-tests.log 2>/dev/null || true
             echo '```'
           } > /tmp/beta5-failure.md
           gh issue comment 27 --body-file /tmp/beta5-failure.md || true
