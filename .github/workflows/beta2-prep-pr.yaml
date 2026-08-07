@@ -1,0 +1,49 @@
+name: Run 0.4.1-beta2 preparation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'release/0.4.1-beta2'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/0.4.1-beta2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Execute one-shot patch script
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/beta2-prep-temp.yaml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
+          script = '\n'.join(
+              line[10:] if line.startswith('          ') else line
+              for line in body.splitlines()
+          )
+          exec(compile(script, 'beta2-prep-temp.yaml', 'exec'))
+          PY
+          rm -f .github/workflows/beta2-prep-pr.yaml
+      - name: Validate patched tree
+        run: |
+          python -m compileall -q custom_components/navimower
+          python -m pip install --upgrade pytest voluptuous cryptography
+          python -m pytest -q
+      - name: Commit and push beta2
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Prepare Navimower 0.4.1-beta2'
+          git push origin HEAD:release/0.4.1-beta2
