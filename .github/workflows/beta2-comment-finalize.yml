@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.event.comment.body == 'RUN-BETA2-FINALIZE'
+    if: github.event.comment.body == 'RUN-BETA2-FINALIZE-V2'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -32,34 +32,16 @@ jobs:
           set -euo pipefail
           git fetch origin release/0.4.1-beta2
           git show origin/release/0.4.1-beta2:.github/workflows/beta2-prep-temp.yaml > /tmp/beta2-patch.yaml
-          git show origin/release/0.4.1-beta2:sitecustomize.py > /tmp/sitecustomize.py
           git checkout -B release/0.4.1-beta2 75aa6ce2bdae2cc70f8335abefda61cf842109e4
           mkdir -p .github/workflows
           cp /tmp/beta2-patch.yaml .github/workflows/beta2-prep-temp.yaml
-          PYTHONPATH=/tmp python - <<'PY'
+          python - <<'PY'
           from pathlib import Path
           workflow = Path('/tmp/beta2-patch.yaml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
           exec(compile(script, 'beta2-patch.yaml', 'exec'))
-          PY
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('tests/test_history_merge.py')
-          s = p.read_text(encoding='utf-8')
-          old = '''        active_zone_progress=97,
-    )
-    manager.prepare_cycle(
-'''
-          new = '''        active_zone_progress=97,
-        active_progress_zone_id=24,
-    )
-    manager.prepare_cycle(
-'''
-          if old not in s:
-              raise SystemExit('dock completion owner block missing')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
           PY
           python -m compileall -q custom_components/navimower
           python -m pip install --upgrade pytest voluptuous cryptography
@@ -74,10 +56,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "beta2 finalizer outcome: ${{ steps.build.outcome }}"
+            echo "beta2 finalizer v2 outcome: ${{ steps.build.outcome }}"
             echo
             echo '```text'
-            tail -n 100 /tmp/beta2.log 2>/dev/null || true
+            tail -n 120 /tmp/beta2.log 2>/dev/null || true
             echo '```'
           } > /tmp/result.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
