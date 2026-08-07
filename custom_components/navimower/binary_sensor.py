@@ -69,14 +69,10 @@ BINARY_SENSORS: tuple[NavimowBinaryDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda d: (
-            True
-            if d.get("mqtt_pose_valid")
-            else (
-                None
-                if not d.get("mqtt_configured")
-                or d.get("mqtt_stream_expected") is False
-                else False
-            )
+            None
+            if not d.get("mqtt_configured")
+            or d.get("mqtt_stream_expected") is False
+            else (True if d.get("mqtt_pose_valid") else False)
         ),
     ),
     NavimowBinaryDescription(
@@ -146,11 +142,20 @@ class NavimowerChannelBinarySensor(NavimowEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
+        # A dock can physically sit inside a user-defined channel box.  A fresh
+        # stationary pose from that dock must not briefly turn the channel ON.
+        # Keep the optimistic start exception so a just-issued mowing command is
+        # not suppressed while the private-cloud docked state catches up.
+        if (
+            self.data.get("docked") is True
+            and self.coordinator._pending_activity_value() is None
+        ):
+            return False
         return self.coordinator.channel_state(self.channel)
 
     @property
     def available(self) -> bool:
-        return super().available and self.coordinator.channel_state(self.channel) is not None
+        return super().available and self.is_on is not None
 
     @property
     def extra_state_attributes(self) -> dict:
