@@ -77,6 +77,10 @@ MQTT_TELEMETRY_STALE_SECONDS: Final = 180
 MQTT_POSE_RECOVERY_STALE_SECONDS: Final = 25
 MQTT_WATCHDOG_INTERVAL_SECONDS: Final = 5
 MQTT_RESUBSCRIBE_GRACE_SECONDS: Final = 10
+# When broker/current-device traffic is alive but type=1 pose is absent, retry
+# the location subscription only occasionally. Never rebuild the client solely
+# because pose is missing.
+MQTT_POSE_RESUBSCRIBE_COOLDOWN_SECONDS: Final = 120
 MQTT_DISCONNECT_TIMEOUT_SECONDS: Final = 15
 # First rebuild is immediate; repeated failures back off while private-cloud
 # fallback continues to publish state and position.

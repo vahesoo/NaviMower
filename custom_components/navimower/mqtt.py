@@ -37,6 +37,7 @@ from .const import (
     MQTT_PASSWORD,
     MQTT_PORT,
     MQTT_POSE_RECOVERY_STALE_SECONDS,
+    MQTT_POSE_RESUBSCRIBE_COOLDOWN_SECONDS,
     MQTT_POSE_STALE_SECONDS,
     MQTT_RECOVERY_BACKOFF_SECONDS,
     MQTT_RESUBSCRIBE_GRACE_SECONDS,
@@ -426,8 +427,9 @@ class NavimowerMqttBridge:
             if not current():
                 return
             now = time.monotonic()
-            self._last_any_message_mono = now
             self._record_message_inventory(topic, payload, incoming_device_id)
+            if incoming_device_id == device_id:
+                self._last_any_message_mono = now
             if incoming_device_id == device_id and topic.endswith(
                 "/realtimeDate/state"
             ):
@@ -575,7 +577,7 @@ class NavimowerMqttBridge:
                         continue
 
                 if time.monotonic() < self._next_recovery_mono:
-                    self._set_recovery_state("backoff")
+                    self._set_recovery_state("pose_degraded")
                     continue
                 if self._recovery_task is None:
                     reason = (
@@ -594,6 +596,13 @@ class NavimowerMqttBridge:
                 self._watchdog_task = None
 
     async def _async_recovery_cycle(self, reason: str) -> None:
+        """Re-subscribe a degraded pose stream without rebuilding MQTT.
+
+        Field diagnostics show that Navimow can keep the broker connection and
+        current-device state traffic alive while type=1 location/pose packets
+        disappear for minutes. Rebuilding the whole SDK in that condition can
+        create a reconnect storm and does not fix the vendor-side publisher.
+        """
         try:
             self._recovery_total += 1
             sdk = self.sdk
@@ -615,7 +624,13 @@ class NavimowerMqttBridge:
             if age is not None and age <= MQTT_POSE_STALE_SECONDS:
                 self._mark_pose_recovered()
                 return
-            await self._async_rebuild_client(reason)
+            # Transport can be healthy while only pose is missing. Preserve the
+            # client and useful MQTT state/progress traffic; position continues
+            # through the private-cloud freshness fallback.
+            self._set_recovery_state("pose_degraded", reason)
+            self._next_recovery_mono = (
+                time.monotonic() + MQTT_POSE_RESUBSCRIBE_COOLDOWN_SECONDS
+            )
         except asyncio.CancelledError:
             raise
         finally:
@@ -979,7 +994,9 @@ class NavimowerMqttBridge:
             ),
             "stream_state": self._recovery_state,
             "recovery_count": self._recovery_total,
+            "pose_resubscribe_count": self._recovery_total,
             "consecutive_rebuild_count": self._recovery_count,
+            "last_any_message_scope": "current_device",
             "last_recovery_reason": self._last_recovery_reason,
             "last_recovery_utc": self._last_recovery_utc,
             "started_age_s": age(self._started_mono),

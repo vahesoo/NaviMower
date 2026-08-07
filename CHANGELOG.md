@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1-beta4 — MQTT pose-stream stability
+
+- Stop rebuilding the complete MQTT client solely because type=1 pose is absent or stale.
+- Enter `pose_degraded`, retain private-cloud position fallback and preserve useful MQTT traffic.
+- Rate-limit location re-subscribe attempts to one per 120 seconds while pose remains degraded.
+- Scope `last_any_message_age_s` to the current mower on shared accounts.
+- Add pose re-subscribe diagnostics.
+
 ## 0.4.1-beta3 — raw-first telemetry
 
 - Publish Task progress from the selected fresh vendor `mowingPercentage` value without monotonic rewriting.

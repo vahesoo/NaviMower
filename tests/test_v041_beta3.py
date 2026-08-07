@@ -7,9 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta3_version_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta3"
+def test_beta3_release_notes() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta3.md").read_text()
     assert "Raw-first telemetry sensors" in notes
     assert "valid lower value" in notes
