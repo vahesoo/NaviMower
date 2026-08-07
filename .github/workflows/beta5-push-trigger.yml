@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release v3'
+    if: github.event.head_commit.message == 'Trigger beta5 release v4'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -31,6 +31,8 @@ jobs:
             set -euo pipefail
             python - <<'PY'
           from pathlib import Path
+          import ast
+
           workflow = Path('.github/workflows/beta5-passive-discovery-finalizer.yml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
           if marker not in workflow:
@@ -38,39 +40,33 @@ jobs:
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
 
-          # The nested release workflow necessarily indents lines inside the
-          # config-flow triple-quoted patch anchor. Replace that one fragile
-          # source block with a whitespace-stable insertion before executing it.
-          block_start = script.index("anchor = '''", script.index("flow_path = COMPONENT / 'config_flow.py'"))
-          block_end_marker = "flow_path.write_text(flow, encoding='utf-8')"
-          block_end = script.index(block_end_marker, block_start) + len(block_end_marker)
-          stable = r'''schema_tail = '''                    ): vol.In(
-                        {
-                            "standard": "Standard",
-                            "extended": "Extended",
-                        }
-                    ),
-                }
-'''
-          passive_field = '''                    vol.Required(
-                        OPT_PASSIVE_DISCOVERY,
-                        default=bool(
-                            options.get(
-                                OPT_PASSIVE_DISCOVERY,
-                                DEFAULT_PASSIVE_DISCOVERY,
-                            )
-                        ),
-                    ): bool,
-'''
-          if schema_tail not in flow:
-              raise SystemExit('general diagnostics schema tail missing')
-          flow = flow.replace(
-              schema_tail,
-              schema_tail[:-18] + passive_field + '                }\n',
-              1,
-          )
-          flow_path.write_text(flow, encoding='utf-8')'''
-          script = script[:block_start] + stable + script[block_end:]
+          # The patch script contains a literal config-flow block. Because it is
+          # embedded in YAML, its continuation-line indentation can differ from
+          # the checked-out Python source. Read that literal from the AST and
+          # normalize only the existing diagnostics field to it before execution.
+          tree = ast.parse(script)
+          expected_anchor = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'anchor':
+                          expected_anchor = ast.literal_eval(node.value)
+                          break
+              if expected_anchor is not None:
+                  break
+          if not isinstance(expected_anchor, str):
+              raise SystemExit('could not read config-flow anchor from beta5 patch')
+
+          flow_path = Path('custom_components/navimower/config_flow.py')
+          flow = flow_path.read_text(encoding='utf-8')
+          if expected_anchor not in flow:
+              start_marker = '                    vol.Required(\n                        OPT_DIAGNOSTICS_DETAIL,'
+              start = flow.index(start_marker)
+              extended = flow.index('                            "extended": "Extended",', start)
+              end = flow.index('                    ),', extended) + len('                    ),\n')
+              flow = flow[:start] + expected_anchor + flow[end:]
+              flow_path.write_text(flow, encoding='utf-8')
+
           exec(compile(script, 'beta5-passive-discovery-finalizer.yml', 'exec'))
           PY
           } 2>&1 | tee /tmp/beta5-patch.log
@@ -107,8 +103,8 @@ jobs:
             echo "tests: ${{ steps.tests.outcome }}"
             echo
             echo '```text'
-            tail -n 100 /tmp/beta5-patch.log 2>/dev/null || true
-            tail -n 100 /tmp/beta5-tests.log 2>/dev/null || true
+            tail -n 120 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 120 /tmp/beta5-tests.log 2>/dev/null || true
             echo '```'
           } > /tmp/beta5-failure.md
           gh issue comment 27 --body-file /tmp/beta5-failure.md || true
