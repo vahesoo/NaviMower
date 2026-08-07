@@ -2452,7 +2452,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot: dict[str, Any],
         previous_snapshot: dict[str, Any] | None = None,
     ) -> None:
-        """Resolve telemetry by freshness and keep one logical cycle monotonic."""
+        """Resolve telemetry by freshness without rewriting valid vendor values."""
         previous = previous_snapshot or self.data or {}
         activity = str(snapshot.get("activity") or "")
         previous_activity = str(previous.get("activity") or "")
@@ -2572,25 +2572,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 progress = value
                 progress_source = source
                 break
-        progress_was_pending = self._progress_reset_pending
-        if progress_was_pending and reset_guard:
-            if progress is not None and progress <= 25:
-                self._progress_reset_pending = False
-            else:
-                progress = 0
-                progress_source = "cycle_reset_hold"
-        elif self._progress_reset_pending:
-            self._progress_reset_pending = False
-        if (
-            not progress_was_pending
-            and not reset_marked
-            and active
-            and previous_progress is not None
-            and progress is not None
-            and progress < previous_progress
-        ):
-            progress = previous_progress
-            progress_source = "last_known_monotonic"
         if progress is None and previous_progress is not None:
             progress = previous_progress
             progress_source = "last_known"
@@ -2658,17 +2639,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             and active_progress_zone == previous_zone_id
         )
         if (
-            active
-            and same_zone
-            and not reset_marked
-            and not progress_was_pending
-            and previous_zone_progress is not None
-            and active_zone_progress is not None
-            and active_zone_progress < previous_zone_progress
-        ):
-            active_zone_progress = previous_zone_progress
-            active_zone_progress_source = "last_known_zone_monotonic"
-        if (
             active_zone_progress is None
             and same_zone
             and previous_zone_progress is not None
@@ -2715,8 +2685,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._coverage_reset_pending = False
 
         # Session area can arrive both in the official location stream and the
-        # private cloud. Reject transient zero/regressions unless a cycle reset
-        # has been confirmed.
+        # private cloud. Prefer the freshest source and preserve valid decreases.
         mqtt_area_age = self._age_since(self._mqtt_area_last_update)
         mqtt_area = (
             _as_float((self._mqtt_location or {}).get("subtotal_area"))
@@ -2738,37 +2707,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 session_area_source = source
                 break
         previous_area = _as_float(previous.get("session_area"))
-        area_was_pending = self._area_reset_pending
-        if area_was_pending and reset_guard:
-            reset_reference = self._cycle_reset_previous_area or previous_area or 0.0
-            acceptable = max(250.0, reset_reference * 0.25)
-            low_progress = any(
-                value is not None and value <= 25
-                for value in (
-                    _progress_percent(snapshot.get("mowing_progress")),
-                    _progress_percent((snapshot.get("coverage") or {}).get("overall_pct")),
-                )
-            )
-            if session_area is not None and (
-                session_area <= acceptable
-                or (low_progress and session_area <= max(500.0, reset_reference * 0.5))
-            ):
-                self._area_reset_pending = False
-            else:
-                session_area = 0.0
-                session_area_source = "cycle_reset_hold"
-        elif self._area_reset_pending:
-            self._area_reset_pending = False
-        if (
-            not area_was_pending
-            and not reset_marked
-            and active
-            and previous_area is not None
-            and session_area is not None
-            and session_area < previous_area
-        ):
-            session_area = previous_area
-            session_area_source = "last_known_monotonic"
         if session_area is None and previous_area is not None:
             session_area = previous_area
             session_area_source = "last_known"
@@ -2806,15 +2744,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["total_area"] = total_area
         snapshot["total_area_source"] = total_area_source
 
-        snapshot["cycle_value_reset_pending"] = bool(
-            self._progress_reset_pending
-            or self._coverage_reset_pending
-            or self._area_reset_pending
-        )
+        # Raw-first telemetry never holds a valid vendor value behind an
+        # integration-generated reset state. Reset detection still belongs to
+        # history/cycle interpretation, not the public numeric telemetry.
+        self._progress_reset_pending = False
+        self._coverage_reset_pending = False
+        self._area_reset_pending = False
+        snapshot["cycle_value_reset_pending"] = False
         snapshot["cycle_value_reset_reason"] = self._cycle_reset_reason
-        snapshot["cycle_value_reset_age"] = self._age_since(
-            self._cycle_reset_started_mono
-        )
+        snapshot["cycle_value_reset_age"] = None
 
     def _schedule_state_save(
         self, snapshot: dict[str, Any] | None = None

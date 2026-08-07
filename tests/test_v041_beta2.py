@@ -9,8 +9,7 @@ PACKAGE = "navimower_v041_beta2_test"
 def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, path); assert spec and spec.loader
     module = importlib.util.module_from_spec(spec); sys.modules[name] = module; spec.loader.exec_module(module); return module
-def test_release_version_and_notes():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text()); assert manifest["version"] == "0.4.1-beta2"
+def test_beta2_release_notes():
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta2.md").read_text(); assert "Zone progress and coverage ownership" in notes; assert "Mowing-footprint width" in notes; assert "316" in notes
 def test_progress_owner_never_falls_back_to_physical_zone():
     source = (COMPONENT / "coordinator.py").read_text(); block = source.split("mqtt_zone_id = _valid_zone_id", 1)[1].split('snapshot["coverage"]', 1)[0]

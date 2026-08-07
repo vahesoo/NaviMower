@@ -119,7 +119,7 @@ item._stabilize_telemetry(snapshot, previous)
 assert snapshot["battery"] == 58
 assert snapshot["battery_source"] == "private_cloud"
 
-# Starting a new cycle clears task counters, but raw per-zone map coverage is retained.
+# Starting a new cycle preserves the valid vendor counters exactly as received.
 item = mower()
 previous = {
     "activity": "docked",
@@ -139,12 +139,12 @@ snapshot = {
     "total_area_private_cloud": 1751.884,
 }
 item._stabilize_telemetry(snapshot, previous)
-assert snapshot["mowing_progress"] == 0
+assert snapshot["mowing_progress"] == 95
 assert snapshot["coverage"]["overall_pct"] == 95
-assert snapshot["session_area"] == 0.0
-assert snapshot["cycle_value_reset_pending"] is True
+assert snapshot["session_area"] == 1773.48
+assert snapshot["cycle_value_reset_pending"] is False
 
-# A low fresh row confirms the new cycle and releases the hold.
+# A low fresh row is accepted directly as the next vendor value.
 previous = dict(snapshot)
 item._mqtt_location = {
     "mowing_percentage": 5,
@@ -166,7 +166,7 @@ assert snapshot["mowing_progress"] == 5
 assert snapshot["coverage"]["overall_pct"] == 5
 assert snapshot["session_area"] == 105.36
 
-# A one-off zero/regression inside the same cycle is rejected.
+# A valid zero/regression inside the same cycle is preserved.
 item = mower()
 previous = {
     "activity": "mowing",
@@ -187,8 +187,8 @@ snapshot = {
     "map": None,
 }
 item._stabilize_telemetry(snapshot, previous)
-assert snapshot["mowing_progress"] == 51
-assert snapshot["session_area"] == 903.39
+assert snapshot["mowing_progress"] == 48
+assert snapshot["session_area"] == 0.0
 assert snapshot["total_area"] == 1751.884
 assert snapshot["total_area_source"] == "last_known"
 

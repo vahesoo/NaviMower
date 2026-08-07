@@ -46,6 +46,29 @@ def _schedule_summary(schedule: list | None) -> str | None:
     return ", ".join(d for d in days if d) if days else "Off"
 
 
+def _vendor_map_mowed_area(data: dict) -> float | None:
+    """Return the vendor coverage snapshot's summed finished area."""
+    coverage = data.get("coverage") or {}
+    try:
+        value = float(coverage.get("finished_area"))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _vendor_map_coverage(data: dict) -> float | None:
+    """Return coverage derived only from the current vendor area snapshot."""
+    coverage = data.get("coverage") or {}
+    try:
+        area = float(coverage.get("total_area"))
+        finished = float(coverage.get("finished_area"))
+    except (TypeError, ValueError):
+        return None
+    if area <= 0 or finished < 0:
+        return None
+    return round(max(0.0, min(100.0, 100.0 * finished / area)), 1)
+
+
 SENSORS: tuple[NavimowSensorDescription, ...] = (
     NavimowSensorDescription(
         key="battery",
@@ -82,18 +105,21 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:progress-check",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: (d.get("totals") or {}).get("task_progress_pct"),
+        value_fn=lambda d: d.get("mowing_progress"),
         attrs_fn=lambda d: {
             "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
             "task_area_m2": (d.get("totals") or {}).get("task_area_m2"),
             "task_mowed_area_m2": (d.get("totals") or {}).get("task_mowed_area_m2"),
             "active_zone_id": (d.get("totals") or {}).get("active_zone_id"),
             "cycle_id": d.get("active_cycle_id"),
-            "source": (d.get("totals") or {}).get("task_progress_source"),
+            "source": d.get("mowing_progress_source"),
+            "source_age": d.get("mowing_progress_source_age"),
+            "mqtt_task_percentage": (d.get("mowing_progress_mqtt") or {}).get("mowing_percentage"),
+            "private_cloud_task_percentage": d.get("task_progress_private_cloud"),
             "zone_weighted_fallback_pct": (d.get("totals") or {}).get(
                 "task_zone_progress_weighted_pct"
             ),
-            "meaning": "vendor_overall_selected_task_progress",
+            "meaning": "vendor_overall_selected_task_progress_raw_first",
         },
     ),
     NavimowSensorDescription(
@@ -269,13 +295,15 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:grid",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: (d.get("totals") or {}).get("map_coverage_pct"),
+        value_fn=lambda d: _vendor_map_coverage(d),
         attrs_fn=lambda d: {
-            "map_area_m2": (d.get("totals") or {}).get("map_area_m2"),
-            "map_mowed_area_m2": (d.get("totals") or {}).get("map_mowed_area_m2"),
+            "map_area_m2": (d.get("coverage") or {}).get("total_area"),
+            "map_mowed_area_m2": _vendor_map_mowed_area(d),
+            "source": "private_cloud_coverage",
+            "calculation": "vendor_finished_area_over_vendor_area",
+            "interpreted_zone_model_pct": (d.get("totals") or {}).get("map_coverage_pct"),
             "zone_count": (d.get("totals") or {}).get("zone_count"),
             "completed_zone_count": (d.get("totals") or {}).get("completed_zone_count"),
-            "calculation": "area_weighted_latest_zone_cycles",
             "zone_states_revision": d.get("zone_states_revision"),
         },
     ),
@@ -285,12 +313,16 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:texture-box",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: (d.get("totals") or {}).get("task_mowed_area_m2"),
+        value_fn=lambda d: d.get("session_area"),
         attrs_fn=lambda d: {
             "task_area_m2": (d.get("totals") or {}).get("task_area_m2"),
             "task_progress_pct": (d.get("totals") or {}).get("task_progress_pct"),
             "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
-            "source": (d.get("totals") or {}).get("task_mowed_area_source"),
+            "source": d.get("session_area_source"),
+            "source_age": d.get("session_area_source_age"),
+            "mqtt_subtotal_area_m2": d.get("session_area_mqtt"),
+            "private_cloud_subtotal_area_m2": d.get("session_area_private_cloud"),
+            "interpreted_task_mowed_area_m2": (d.get("totals") or {}).get("task_mowed_area_m2"),
         },
     ),
     NavimowSensorDescription(
@@ -299,10 +331,12 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:map-check",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: (d.get("totals") or {}).get("map_mowed_area_m2"),
+        value_fn=lambda d: _vendor_map_mowed_area(d),
         attrs_fn=lambda d: {
-            "map_area_m2": (d.get("totals") or {}).get("map_area_m2"),
-            "map_coverage_pct": (d.get("totals") or {}).get("map_coverage_pct"),
+            "map_area_m2": (d.get("coverage") or {}).get("total_area"),
+            "map_coverage_pct": _vendor_map_coverage(d),
+            "source": "private_cloud_coverage",
+            "interpreted_zone_model_mowed_area_m2": (d.get("totals") or {}).get("map_mowed_area_m2"),
         },
     ),
     NavimowSensorDescription(

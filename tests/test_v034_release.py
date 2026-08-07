@@ -11,13 +11,13 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta2"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta2.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.1-beta2")
-    assert "Zone progress and coverage ownership" in notes
-    assert "Session and daily-trail stability" in notes
-    assert "Mowing-footprint width" in notes
-    assert "316" in notes
+    assert manifest["version"] == "0.4.1-beta3"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta3.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta3")
+    assert "Raw-first telemetry sensors" in notes
+    assert "mowingPercentage" in notes
+    assert "subtotalArea" in notes
+    assert "finishedArea" in notes
 
     stable_040 = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
     assert stable_040.startswith("title: Navimower 0.4.0")

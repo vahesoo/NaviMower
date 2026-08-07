@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1-beta3 — raw-first telemetry
+
+- Publish Task progress from the selected fresh vendor `mowingPercentage` value without monotonic rewriting.
+- Publish Task mowed area from the selected fresh vendor `subtotalArea` without suppressing valid decreases.
+- Publish Map mowed area from the current coverage snapshot's summed vendor `finishedArea`.
+- Calculate Map coverage directly from the same current vendor coverage snapshot instead of retained per-zone cycle history.
+- Keep source/raw comparison attributes so field diagnostics can distinguish vendor behaviour from integration interpretation.
+- Keep session, daily-trail and cycle interpretation internal; those models no longer override the public telemetry sensors above.
+
 ## 0.3.4-beta3 — active-zone progress and map-data performance
 
 - Recover an active zone from a stale/restored 100% session value when both the
