@@ -1,0 +1,78 @@
+name: Build Navimower 0.4.1-beta2 v3
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  build:
+    if: github.event.issue.title == 'RUN NAVIMOWER BETA2 BUILD V3'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build and validate beta2
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          exec > >(tee /tmp/beta2.log) 2>&1
+          set -euo pipefail
+          git fetch origin release/0.4.1-beta2
+          git show cb65852a869c8f1a2431f16f88cc1e71d5e73080:.github/workflows/beta2-prep-temp.yaml > /tmp/beta2-patch.yaml
+          git show cb65852a869c8f1a2431f16f88cc1e71d5e73080:sitecustomize.py > /tmp/sitecustomize.py
+          git checkout -B release/0.4.1-beta2 75aa6ce2bdae2cc70f8335abefda61cf842109e4
+          mkdir -p .github/workflows
+          cp /tmp/beta2-patch.yaml .github/workflows/beta2-prep-temp.yaml
+          PYTHONPATH=/tmp python - <<'PY'
+          from pathlib import Path
+          workflow = Path('/tmp/beta2-patch.yaml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
+          exec(compile(script, 'beta2-patch.yaml', 'exec'))
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/test_history_merge.py')
+          s = p.read_text(encoding='utf-8')
+          old = "        active_zone_progress=97,\n    )\n    manager.prepare_cycle(\n"
+          new = "        active_zone_progress=97,\n        active_progress_zone_id=24,\n    )\n    manager.prepare_cycle(\n"
+          if old not in s:
+              raise SystemExit('dock completion owner block missing')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/beta2-prep-temp.yaml .github/workflows/beta2-prep-pr.yaml .github/workflows/beta2-final-run.yml
+          git show 75aa6ce2bdae2cc70f8335abefda61cf842109e4:.github/workflows/tests.yaml > .github/workflows/tests.yaml
+          python -m compileall -q custom_components/navimower
+          python -m pip install --upgrade pytest voluptuous cryptography
+          python -m pytest -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Prepare Navimower 0.4.1-beta2"
+          git push --force origin HEAD:release/0.4.1-beta2
+      - name: Report result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "beta2 v3 outcome: ${{ steps.build.outcome }}"
+            echo
+            echo '```text'
+            tail -n 120 /tmp/beta2.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/result.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
+      - name: Fail if build failed
+        if: steps.build.outcome != 'success'
+        run: exit 1
