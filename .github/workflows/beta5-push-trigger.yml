@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'Trigger beta5 release v6'
+    if: github.event.head_commit.message == 'Trigger beta5 release v7'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -32,6 +32,7 @@ jobs:
             python - <<'PY'
           from pathlib import Path
           import ast
+          import textwrap
 
           workflow = Path('.github/workflows/beta5-passive-discovery-finalizer.yml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
@@ -61,13 +62,206 @@ jobs:
               flow_path.write_text(flow[:start] + expected_anchor + flow[end:], encoding='utf-8')
 
           exec(compile(script, 'beta5-passive-discovery-finalizer.yml', 'exec'))
+
+          # Normalize the three inserted class/closure blocks. The temporary YAML
+          # finalizer intentionally carries code as strings, and nested indentation
+          # is fragile after extraction; these replacements make the committed
+          # Python source deterministic before validation.
+          client_path = Path('custom_components/navimower/api/client.py')
+          client = client_path.read_text(encoding='utf-8')
+          start = client.index('    def set_discovery_enabled(')
+          end = client.index('    # ------------------------------------------------------------------ auth', start)
+          client_methods = textwrap.indent(textwrap.dedent('''\
+          def set_discovery_enabled(self, enabled: bool) -> None:
+              """Enable bounded value-free request schema discovery."""
+              self._discovery_enabled = bool(enabled)
+
+          def discovery_inventory(self) -> dict[str, Any]:
+              """Return private-cloud request paths and response structures."""
+              out: dict[str, Any] = {}
+              for path, item in deepcopy(self._discovery_inventory).items():
+                  out[path] = {
+                      **item,
+                      "parsed_types": sorted(item["parsed_types"]),
+                      "top_level_keys": sorted(item["top_level_keys"]),
+                      "key_paths": sorted(item["key_paths"]),
+                      "observed_type_values": sorted(item["observed_type_values"]),
+                  }
+              return out
+
+          def _record_discovery(self, path: str, value: Any, code: Any) -> None:
+              if not self._discovery_enabled:
+                  return
+              now = datetime.now(UTC).isoformat()
+              item = self._discovery_inventory.setdefault(
+                  str(path),
+                  {
+                      "count": 0,
+                      "first_seen_utc": now,
+                      "last_seen_utc": now,
+                      "last_business_code": None,
+                      "parsed_types": set(),
+                      "top_level_keys": set(),
+                      "key_paths": set(),
+                      "observed_type_values": set(),
+                  },
+              )
+              item["count"] += 1
+              item["last_seen_utc"] = now
+              item["last_business_code"] = code
+              if value is None:
+                  return
+              summary = structure_summary(value)
+              item["parsed_types"].update(summary["parsed_types"])
+              item["top_level_keys"].update(summary["top_level_keys"])
+              item["key_paths"].update(summary["key_paths"])
+              item["observed_type_values"].update(summary["observed_type_values"])
+
+          '''), '    ')
+          client_path.write_text(client[:start] + client_methods + client[end:], encoding='utf-8')
+
+          mqtt_path = Path('custom_components/navimower/mqtt.py')
+          mqtt = mqtt_path.read_text(encoding='utf-8')
+          start = mqtt.index('    def _record_message_inventory(')
+          end = mqtt.index('    def diagnostic_inventory(', start)
+          mqtt_methods = textwrap.indent(textwrap.dedent('''\
+          def _record_message_inventory(
+              self,
+              topic: str,
+              payload: bytes,
+              incoming_device_id: str,
+          ) -> None:
+              """Keep account-wide schema inventory plus opt-in current-device samples."""
+              safe_topic = str(topic)
+              for candidate in {str(incoming_device_id or ""), str(self._device_id or "")}:
+                  if candidate:
+                      safe_topic = safe_topic.replace(candidate, "<device>")
+              self._record_inventory_item(
+                  self._message_inventory,
+                  safe_topic,
+                  payload,
+                  include_samples=False,
+              )
+              current_device = bool(
+                  incoming_device_id == self._device_id
+                  or (self._device_id and f"/vehicle/{self._device_id}/" in str(topic))
+              )
+              if not self._discovery_enabled or not current_device:
+                  return
+              if safe_topic not in self._discovery_inventory and len(self._discovery_inventory) >= 64:
+                  self._discovery_dropped_topics += 1
+                  return
+              self._record_inventory_item(
+                  self._discovery_inventory,
+                  safe_topic,
+                  payload,
+                  include_samples=True,
+              )
+
+          @staticmethod
+          def _record_inventory_item(
+              store: dict[str, dict[str, Any]],
+              safe_topic: str,
+              payload: bytes,
+              *,
+              include_samples: bool,
+          ) -> None:
+              now = datetime.now(UTC).isoformat()
+              item = store.setdefault(
+                  safe_topic,
+                  {
+                      "count": 0,
+                      "first_seen_utc": now,
+                      "last_seen_utc": now,
+                      "max_payload_bytes": 0,
+                      "parsed_types": set(),
+                      "top_level_keys": set(),
+                      "key_paths": set(),
+                      "observed_type_values": set(),
+                  },
+              )
+              item["count"] += 1
+              item["last_seen_utc"] = now
+              item["max_payload_bytes"] = max(item["max_payload_bytes"], len(payload or b""))
+              try:
+                  parsed = json.loads((payload or b"").decode("utf-8", errors="replace"))
+              except (TypeError, ValueError):
+                  item["parsed_types"].add("non_json")
+              else:
+                  summary = structure_summary(parsed)
+                  item["parsed_types"].update(summary["parsed_types"])
+                  item["top_level_keys"].update(summary["top_level_keys"])
+                  item["key_paths"].update(summary["key_paths"])
+                  item["observed_type_values"].update(summary["observed_type_values"])
+              if include_samples:
+                  samples = item.setdefault("samples", [])
+                  sample = sanitize_discovery_payload(payload)
+                  if not samples or samples[-1].get("payload") != sample:
+                      samples.append({"seen_utc": now, "payload": sample})
+                      del samples[:-3]
+
+          def mark_discovery_event(self, name: str) -> dict[str, Any]:
+              """Add a timestamp marker for correlating an app action with traffic."""
+              label = " ".join(str(name or "marker").split())[:80] or "marker"
+              marker = {
+                  "name": label,
+                  "created_utc": datetime.now(UTC).isoformat(),
+                  "mqtt_message_total": sum(
+                      int(item.get("count", 0)) for item in self._discovery_inventory.values()
+                  ),
+              }
+              self._discovery_markers.append(marker)
+              del self._discovery_markers[:-50]
+              return deepcopy(marker)
+
+          def diagnostic_discovery(self) -> dict[str, Any]:
+              """Return current-device-only passive discovery data."""
+              topics: dict[str, Any] = {}
+              for topic, item in deepcopy(self._discovery_inventory).items():
+                  topics[topic] = {
+                      **item,
+                      "parsed_types": sorted(item["parsed_types"]),
+                      "top_level_keys": sorted(item["top_level_keys"]),
+                      "key_paths": sorted(item["key_paths"]),
+                      "observed_type_values": sorted(item["observed_type_values"]),
+                  }
+              wildcard = mqtt_discovery_topic(self._device_id) if self._device_id else None
+              if wildcard and self._device_id:
+                  wildcard = wildcard.replace(self._device_id, "<device>")
+              return {
+                  "enabled": self._discovery_enabled,
+                  "scope": "current_device_only",
+                  "wildcard_topic": wildcard,
+                  "topic_limit": 64,
+                  "sample_limit_per_topic": 3,
+                  "marker_limit": 50,
+                  "dropped_topic_messages": self._discovery_dropped_topics,
+                  "markers": deepcopy(self._discovery_markers),
+                  "topics": topics,
+              }
+
+          '''), '    ')
+          mqtt_path.write_text(mqtt[:start] + mqtt_methods + mqtt[end:], encoding='utf-8')
+
+          services_path = Path('custom_components/navimower/services.py')
+          services = services_path.read_text(encoding='utf-8')
+          start = services.index('    async def _mark_discovery_event(')
+          end = services.index('    async def _mow(', start)
+          service_method = textwrap.indent(textwrap.dedent('''\
+          async def _mark_discovery_event(call: ServiceCall) -> None:
+              coordinator = _resolve_coordinator(call)
+              bridge = getattr(coordinator, "mqtt_bridge", None)
+              if bridge is None or not hasattr(bridge, "mark_discovery_event"):
+                  raise ServiceValidationError("MQTT discovery bridge is not available")
+              if not getattr(bridge, "discovery_enabled", False):
+                  raise ServiceValidationError(
+                      "Passive discovery is disabled; enable it in Navimower options first"
+                  )
+              bridge.mark_discovery_event(str(call.data["name"]))
+
+          '''), '    ')
+          services_path.write_text(services[:start] + service_method + services[end:], encoding='utf-8')
           PY
-          echo '--- client.py 115-155 ---'
-          nl -ba custom_components/navimower/api/client.py | sed -n '115,155p'
-          echo '--- mqtt.py 920-965 ---'
-          nl -ba custom_components/navimower/mqtt.py | sed -n '920,965p'
-          echo '--- services.py 200-235 ---'
-          nl -ba custom_components/navimower/services.py | sed -n '200,235p'
           } 2>&1 | tee /tmp/beta5-patch.log
       - name: Validate full test suite
         id: tests
@@ -102,8 +296,8 @@ jobs:
             echo "tests: ${{ steps.tests.outcome }}"
             echo
             echo '```text'
-            tail -n 220 /tmp/beta5-patch.log 2>/dev/null || true
-            tail -n 140 /tmp/beta5-tests.log 2>/dev/null || true
+            tail -n 180 /tmp/beta5-patch.log 2>/dev/null || true
+            tail -n 180 /tmp/beta5-tests.log 2>/dev/null || true
             echo '```'
           } > /tmp/beta5-failure.md
           gh issue comment 27 --body-file /tmp/beta5-failure.md || true
