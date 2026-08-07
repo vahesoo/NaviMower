@@ -2,21 +2,15 @@ name: Build 0.4.1-beta2 release branch
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/beta2-builder.yaml
-  pull_request:
-    branches:
-      - main
-    types: [reopened]
 
 permissions:
   contents: write
 
 jobs:
   build:
-    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'release/0.4.1-beta2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,27 +18,31 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-      - name: Check out beta2 branch
+          python-version: "3.13"
+
+      - name: Reset beta2 to clean beta1 and apply product patch
+        shell: bash
         run: |
+          set -euo pipefail
           git fetch origin release/0.4.1-beta2
-          git checkout -B release/0.4.1-beta2 origin/release/0.4.1-beta2
-      - name: Apply beta2 product patch
-        run: |
+          git show origin/release/0.4.1-beta2:.github/workflows/beta2-prep-temp.yaml > /tmp/beta2-patch.yaml
+          git checkout -B release/0.4.1-beta2 75aa6ce2bdae2cc70f8335abefda61cf842109e4
           python - <<'PY'
           from pathlib import Path
-          workflow = Path('.github/workflows/beta2-prep-temp.yaml').read_text(encoding='utf-8')
+          workflow = Path('/tmp/beta2-patch.yaml').read_text(encoding='utf-8')
           marker = "          python - <<'PY'\n"
           body = workflow.split(marker, 1)[1].split("\n          PY\n", 1)[0]
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
-          exec(compile(script, 'beta2-prep-temp.yaml', 'exec'))
+          exec(compile(script, 'beta2-patch.yaml', 'exec'))
           PY
-      - name: Update regressions for per-zone boundaries
+
+      - name: Update existing history regressions for per-zone boundaries
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('tests/test_history_merge.py')
-          text = path.read_text(encoding='utf-8')
+          p = Path('tests/test_history_merge.py')
+          s = p.read_text(encoding='utf-8')
           old = '''    # The vendor can publish the reset during the brief non-cutting handover
     # between two scheduled passes. The old route must still be finalized.
     assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
@@ -70,9 +68,7 @@ jobs:
     assert not history._sessions_can_merge(first, manager._cache[second_id])
     zone_history = manager.zone_history()["24"]
 '''
-          new = '''    # A vendor reset belongs to this zone only and must not fragment the
-    # whole multi-zone mowing task.
-    reset["active_zone_progress_zone_id"] = 24
+          new = '''    reset["active_zone_progress_zone_id"] = 24
     assert manager.prepare_cycle(reset, pose_time=2_200_000_020) is True
     assert manager._active_id == first_id
 
@@ -97,9 +93,9 @@ jobs:
     assert boundaries[0]["previous_peak"] == 98
     zone_history = manager.zone_history()["24"]
 '''
-          if old not in text:
-              raise SystemExit('cycle_reset_split_test block not found')
-          text = text.replace(old, new, 1)
+          if old not in s:
+              raise SystemExit('cycle reset regression block missing')
+          s = s.replace(old, new, 1)
           old = '''    assert manager.prepare_cycle(high, pose_time=2_250_000_010) is False
     assert manager.prepare_cycle(low, pose_time=2_250_000_020) is True
     assert manager._active_id is None
@@ -115,9 +111,9 @@ jobs:
     assert len(manager._sessions) == 1
     manager.process_pose(
 '''
-          if old not in text:
-              raise SystemExit('provisional reset block not found')
-          text = text.replace(old, new, 1)
+          if old not in s:
+              raise SystemExit('provisional reset regression block missing')
+          s = s.replace(old, new, 1)
           old = '''    assert len(manager._sessions) == 1
     if hass.tasks:
 '''
@@ -126,9 +122,9 @@ jobs:
     assert (manager._cache[stub_id].get("zone_cycle_boundaries") or [])[0]["zone_id"] == 24
     if hass.tasks:
 '''
-          if old not in text:
-              raise SystemExit('provisional final assertion block not found')
-          text = text.replace(old, new, 1)
+          if old not in s:
+              raise SystemExit('provisional final regression block missing')
+          s = s.replace(old, new, 1)
           old = '''        active_zone_progress=97,
     )
 '''
@@ -136,26 +132,27 @@ jobs:
         active_progress_zone_id=13,
     )
 '''
-          if old not in text:
-              raise SystemExit('practical completion owner block not found')
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
+          if old not in s:
+              raise SystemExit('completion owner regression block missing')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
 
-          path = Path('tests/test_v041_beta2.py')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace('split("snapshot["coverage"]", 1)', "split('snapshot[\"coverage\"]', 1)")
-          path.write_text(text, encoding='utf-8')
+          p = Path('tests/test_v041_beta2.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('split("snapshot["coverage"]", 1)', "split('snapshot[\"coverage\"]', 1)")
+          p.write_text(s, encoding='utf-8')
           PY
-          rm -f .github/workflows/beta2-prep-temp.yaml .github/workflows/beta2-prep-pr.yaml
+
       - name: Validate beta2
         run: |
           python -m compileall -q custom_components/navimower
           python -m pip install --upgrade pytest voluptuous cryptography
           python -m pytest -q
-      - name: Commit beta2 branch
+
+      - name: Commit and force-push clean beta2 branch
+        shell: bash
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m 'Prepare Navimower 0.4.1-beta2'
-          git push origin HEAD:release/0.4.1-beta2
+          git commit -m "Prepare Navimower 0.4.1-beta2"
+          git push --force origin HEAD:release/0.4.1-beta2
