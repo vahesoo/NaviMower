@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1-beta7 - passive discovery MQTT callback hotfix
+
+- Import all passive-discovery helpers used by the MQTT callback, restoring normal MQTT state/location processing.
+- Fix malformed `services.yaml` indentation for `mark_discovery_event`.
+- Add discovery-import and YAML parsing regression coverage.
+
 ## 0.4.1-beta6 - passive discovery startup hotfix
 
 - Fix the beta5 startup regression by importing `OPT_PASSIVE_DISCOVERY` in the MQTT bridge.

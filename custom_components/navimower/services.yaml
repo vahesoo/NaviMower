@@ -115,7 +115,7 @@ mark_discovery_event:
       required: false
       selector:
         device:
-integration: navimower
+          integration: navimower
     name:
       name: Marker name
       description: Short label such as before_camera, after_notification, or lidar_view.

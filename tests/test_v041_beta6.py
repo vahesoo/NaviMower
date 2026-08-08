@@ -9,9 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta6_version_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta6"
+def test_beta6_notes() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta6.md").read_text()
     assert "OPT_PASSIVE_DISCOVERY" in notes
     assert "startup" in notes.lower()

@@ -46,6 +46,7 @@ from .const import (
     MQTT_USERNAME,
     MQTT_WATCHDOG_INTERVAL_SECONDS,
 )
+from .discovery import mqtt_discovery_topic, sanitize_discovery_payload, structure_summary
 from .location import extract_mqtt_battery, location_topic, parse_location_payload
 
 _LOGGER = logging.getLogger(__name__)
