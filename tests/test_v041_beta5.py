@@ -65,7 +65,7 @@ def test_beta5_option_service_and_diagnostics_are_wired():
     assert 'OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"' in const
     assert "DEFAULT_PASSIVE_DISCOVERY: Final = False" in const
     assert "OPT_PASSIVE_DISCOVERY" in flow
-    assert "mqtt_discovery_topic(device_id)" in mqtt
+    assert "mqtt_discovery_topics(device_id)" in mqtt
     assert "diagnostic_discovery" in mqtt
     assert "mark_discovery_event" in services
     assert '"mqtt_discovery"' in diagnostics

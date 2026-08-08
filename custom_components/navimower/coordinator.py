@@ -1061,6 +1061,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_last_message_update: float | None = None
         self._mqtt_state_last_update: float | None = None
         self._mqtt_action_last_update: float | None = None
+        self._mqtt_named_state: str | None = None
+        self._mqtt_named_state_last_update: float | None = None
         self._mqtt_battery: int | None = None
         self._mqtt_battery_last_update: float | None = None
         self._mqtt_progress_last_update: float | None = None
@@ -1072,6 +1074,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._last_private_error: str | None = None
         self._last_oauth_error: str | None = None
         self._last_mqtt_error: str | None = None
+        self._problem_latched = False
+        self._problem_latched_since_mono: float | None = None
+        self._problem_source: str | None = None
+        self._last_problem: dict[str, Any] | None = None
+        self._problem_events: list[dict[str, Any]] = []
         self.channels: list[NavimowerChannel] = parse_channels(
             entry.options.get(OPT_CHANNELS)
         )
@@ -1137,6 +1144,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             telemetry = cached.get("telemetry")
             if isinstance(telemetry, dict):
                 self._restored_telemetry = dict(telemetry)
+            problem = cached.get("problem")
+            if isinstance(problem, dict):
+                self._problem_latched = bool(problem.get("latched"))
+                self._problem_source = str(problem.get("source") or "") or None
+                last_problem = problem.get("last_problem")
+                if isinstance(last_problem, dict):
+                    self._last_problem = dict(last_problem)
+                self._problem_events = [
+                    dict(item)
+                    for item in (problem.get("events") or [])
+                    if isinstance(item, dict)
+                ][-20:]
+                if self._problem_latched:
+                    self._problem_latched_since_mono = time.monotonic()
 
         # Always expose a bootstrap snapshot before the network branches start.
         # Cached geometry/history is included when present; otherwise entities can
@@ -1189,12 +1210,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "vehicle_type": self.vehicle_type,
             "name": self.entry.title,
             "model": self.entry.data.get("model", ""),
-            "state": "Unknown",
-            "state_code": "",
-            "activity": None,
+            "state": (
+                str((self._last_problem or {}).get("state") or "Problem")
+                if self._problem_latched
+                else "Unknown"
+            ),
+            "state_code": (
+                str((self._last_problem or {}).get("state_code") or "")
+                if self._problem_latched
+                else ""
+            ),
+            "activity": ACTIVITY_ERROR if self._problem_latched else None,
             "online": None,
-            "docked": None,
-            "error": False,
+            "docked": False if self._problem_latched else None,
+            "error": bool(self._problem_latched),
+            "error_text": (
+                (self._last_problem or {}).get("error_text")
+                if self._problem_latched
+                else None
+            ),
+            "problem_latched": bool(self._problem_latched),
+            "problem_source": self._problem_source,
+            "last_problem": deepcopy(self._last_problem),
+            "problem_event_count": len(self._problem_events),
             "battery": _as_int(self._restored_telemetry.get("battery")),
             "battery_source": self._restored_telemetry.get("battery_source")
             or "persisted_last_known",
@@ -1275,6 +1313,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "map_cache_key": list(self._map_cache_key)
             if self._map_cache_key
             else None,
+            "problem": {
+                "latched": bool(self._problem_latched),
+                "source": self._problem_source,
+                "last_problem": deepcopy(self._last_problem),
+                "events": deepcopy(self._problem_events[-20:]),
+            },
             "telemetry": {
                 "battery": data.get("battery"),
                 "battery_source": data.get("battery_source"),
@@ -2039,6 +2083,117 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             detail["progress_source"] = source
             break
 
+    def _private_problem_clear_confirmed(self) -> bool:
+        """Return whether index2 confirmed a clear after the problem assertion.
+
+        Cached private data must never clear a problem latch. A named MQTT
+        ``isLifted`` state remains authoritative for its freshness window; when
+        MQTT explicitly moves away from that state, require a newer private
+        index2 success before clearing the latch.
+        """
+        if not self._problem_latched:
+            return False
+        status = self._endpoint_status.get("index2") or {}
+        last_success = _as_float(status.get("last_success_mono"))
+        if last_success is None:
+            return False
+        threshold = self._problem_latched_since_mono or 0.0
+        named_at = self._mqtt_named_state_last_update
+        if self._mqtt_named_state == "isLifted" and named_at is not None:
+            threshold = max(threshold, named_at + MQTT_STATE_STALE_SECONDS)
+        elif self._mqtt_named_state and named_at is not None:
+            threshold = max(threshold, named_at)
+        return last_success >= threshold
+
+    def _set_problem_latch(
+        self,
+        active: bool,
+        *,
+        source: str,
+        state: str | None = None,
+        state_code: str | None = None,
+        error_text: str | None = None,
+        confirmed_clear: bool = False,
+    ) -> None:
+        """Record one bounded problem transition and keep the latest details."""
+        now_utc = datetime.now(UTC).isoformat()
+        if active:
+            was_latched = self._problem_latched
+            previous = dict(self._last_problem or {})
+            if not was_latched:
+                self._problem_latched_since_mono = time.monotonic()
+            self._problem_latched = True
+            self._problem_source = str(source)
+            resolved_state = str(state or previous.get("state") or "Problem")
+            resolved_code = str(state_code or previous.get("state_code") or "")
+            resolved_text = str(error_text or previous.get("error_text") or "Problem")
+            self._last_problem = {
+                "active": True,
+                "source": str(source),
+                "state": resolved_state,
+                "state_code": resolved_code,
+                "error_text": resolved_text,
+                "first_seen_utc": (
+                    previous.get("first_seen_utc") if was_latched else now_utc
+                ),
+                "last_seen_utc": now_utc,
+            }
+            if not was_latched:
+                self._problem_events.append(
+                    {
+                        "active": True,
+                        "source": str(source),
+                        "state": resolved_state,
+                        "state_code": resolved_code,
+                        "error_text": resolved_text,
+                        "created_utc": now_utc,
+                    }
+                )
+        elif confirmed_clear and self._problem_latched:
+            self._problem_latched = False
+            self._problem_latched_since_mono = None
+            self._problem_source = str(source)
+            self._problem_events.append(
+                {
+                    "active": False,
+                    "source": str(source),
+                    "state": state,
+                    "state_code": str(state_code or ""),
+                    "error_text": None,
+                    "created_utc": now_utc,
+                }
+            )
+        del self._problem_events[:-20]
+
+    def _apply_problem_latch(self, snapshot: dict[str, Any]) -> None:
+        """Make a latched problem authoritative over ordinary state refreshes."""
+        snapshot["problem_latched"] = bool(self._problem_latched)
+        snapshot["problem_source"] = self._problem_source
+        snapshot["last_problem"] = deepcopy(self._last_problem)
+        snapshot["problem_event_count"] = len(self._problem_events)
+        if not self._problem_latched:
+            return
+        last = self._last_problem or {}
+        snapshot["error"] = True
+        snapshot["error_text"] = snapshot.get("error_text") or last.get("error_text") or "Problem"
+        snapshot["activity"] = ACTIVITY_ERROR
+        snapshot["docked"] = False
+        snapshot["docked_source"] = "problem_latched"
+        if last.get("state") == "Lifted" or self._fresh_mqtt_named_state() == "isLifted":
+            snapshot["state"] = "Lifted"
+        if not snapshot.get("state_code") and last.get("state_code"):
+            snapshot["state_code"] = str(last.get("state_code"))
+
+    def problem_diagnostics(self) -> dict[str, Any]:
+        """Return persisted problem history without account identifiers."""
+        return {
+            "latched": bool(self._problem_latched),
+            "source": self._problem_source,
+            "last_problem": deepcopy(self._last_problem),
+            "event_limit": 20,
+            "events": deepcopy(self._problem_events[-20:]),
+        }
+
     def _parse(self, raw: dict) -> dict:
         index2 = raw.get("index2") or {}
         auth = self._auth_item(raw.get("auth_list"))
@@ -2059,17 +2214,51 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         network_status = _as_int(index2.get("network_status"))
         online = network_status == 1 if network_status is not None else None
 
-        # Error detection from index2's inline error array (the hint-error
-        # endpoint returns a compressed blob we intentionally do not decode).
+        # Error arbitration. The compressed hint catalog is diagnostic only;
+        # authoritative problem signals are inline private errors, private 0302,
+        # and a fresh official MQTT named state of isLifted.
         error_list = index2.get("error_data") or _find(index2, "errorData", "error_list") or []
-        has_error = bool(error_list)
         error_text = None
-        if has_error and isinstance(error_list, list) and error_list:
+        if isinstance(error_list, list) and error_list:
             first = error_list[0]
             if isinstance(first, dict):
                 error_text = str(
                     first.get("desc") or first.get("message") or first.get("code") or "error"
                 )
+            elif first is not None:
+                error_text = str(first)
+        private_problem = bool(error_list) or state_code == STATE_LIFTED
+        mqtt_named_state = self._fresh_mqtt_named_state()
+        mqtt_problem = mqtt_named_state == "isLifted"
+        if private_problem:
+            self._set_problem_latch(
+                True,
+                source=(
+                    "private_cloud_error_data" if bool(error_list) else "private_cloud_state"
+                ),
+                state="Lifted" if state_code == STATE_LIFTED else "Problem",
+                state_code=state_code,
+                error_text=error_text or ("Lifted" if state_code == STATE_LIFTED else "Problem"),
+            )
+        elif state_code and not mqtt_problem and self._private_problem_clear_confirmed():
+            self._set_problem_latch(
+                False,
+                source="private_cloud_clear",
+                state=VEHICLE_STATE_LABELS.get(state_code) or state_code,
+                state_code=state_code,
+                confirmed_clear=True,
+            )
+        if mqtt_problem:
+            self._set_problem_latch(
+                True,
+                source="mqtt_state",
+                state="Lifted",
+                state_code=STATE_LIFTED,
+                error_text="Lifted",
+            )
+        has_error = bool(private_problem or mqtt_problem or self._problem_latched)
+        if has_error and not error_text:
+            error_text = str((self._last_problem or {}).get("error_text") or "Problem")
 
         # Current zone(s) from index2.partitionIdList (big-endian). An EMPTY
         # list means "all zones / whole map" -> show "All", never "Unknown".
@@ -2140,10 +2329,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if state_label is None:
             normalized = str(activity or "transitioning").replace("_", " ").title()
             state_label = f"{normalized} ({state_code})" if state_code else normalized
+        if mqtt_problem or (
+            self._problem_latched and (self._last_problem or {}).get("state") == "Lifted"
+        ):
+            state_label = "Lifted"
 
         docked, docked_source = self._resolved_docked_state(
             state_code, mqtt_vehicle_state, activity, pending_activity
         )
+        if has_error:
+            docked = False
+            docked_source = "problem_state"
         self._last_docked_source = docked_source
 
         # --- settings (MowerSettingBean; snake_case in set-list, camelCase in bean)
@@ -2288,6 +2484,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "docked_source": docked_source,
             "error": has_error,
             "error_text": error_text,
+            "problem_latched": bool(self._problem_latched),
+            "problem_source": self._problem_source,
+            "last_problem": deepcopy(self._last_problem),
+            "problem_event_count": len(self._problem_events),
             # progress / areas
             # The cloud exposes separate counters: mowing_percentage is the
             # whole selected task; map_work_position.progress is the immediate
@@ -2791,6 +2991,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if age is None or age > MQTT_STATE_STALE_SECONDS:
             return None
         return _as_int((self._mqtt_location or {}).get("vehicle_state"))
+
+    def _fresh_mqtt_named_state(self) -> str | None:
+        age = self._age_since(self._mqtt_named_state_last_update)
+        if age is None or age > MQTT_STATE_STALE_SECONDS:
+            return None
+        value = str(self._mqtt_named_state or "").strip()
+        return value or None
 
     def _fresh_mqtt_action(self) -> int | None:
         age = self.mqtt_action_age()
@@ -3649,7 +3856,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         snapshot["docked"] = docked
         snapshot["docked_source"] = docked_source
-        self._last_docked_source = docked_source
+        self._apply_problem_latch(snapshot)
+        self._last_docked_source = str(snapshot.get("docked_source") or docked_source)
         snapshot.update(self._connectivity_fields())
         snapshot.update(self._navigation_fields(snapshot))
         # MQTT ingestion owns every live route point. A private refresh may
@@ -3778,7 +3986,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         snapshot["docked"] = docked
         snapshot["docked_source"] = docked_source
-        self._last_docked_source = docked_source
+        self._apply_problem_latch(snapshot)
+        self._last_docked_source = str(snapshot.get("docked_source") or docked_source)
 
         route_progress = _progress_percent(merged.get("mow_progress"))
         work_zone_progress = _progress_percent(merged.get("work_progress"))
@@ -3845,30 +4054,53 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self.request_fast_refresh("MQTT pose stream became live")
 
     def ingest_mqtt_state(self, state: dict[str, Any]) -> None:
-        """Merge the official MQTT state packet used for dense battery data."""
+        """Merge official MQTT battery and named state independently."""
         if not isinstance(state, dict):
             return
         battery = _as_int(state.get("battery"))
         state_name = str(state.get("state") or "").strip()
-        if battery is None or not 0 <= battery <= 100:
+        valid_battery = battery is not None and 0 <= battery <= 100
+        if not valid_battery and not state_name:
             return
         previous_snapshot = dict(self.data or {})
-        previous_state = str(previous_snapshot.get("state") or "")
-        self._mqtt_battery = battery
-        self._mqtt_battery_last_update = time.monotonic()
+        previous_named_state = self._fresh_mqtt_named_state()
+        now_monotonic = time.monotonic()
+        if valid_battery:
+            self._mqtt_battery = battery
+            self._mqtt_battery_last_update = now_monotonic
+        if state_name:
+            self._mqtt_named_state = state_name
+            self._mqtt_named_state_last_update = now_monotonic
         self._mqtt_connected = True
         snapshot = dict(self.data or self._bootstrap_snapshot())
         if state_name == "isLifted":
+            self._set_problem_latch(
+                True,
+                source="mqtt_state",
+                state="Lifted",
+                state_code=STATE_LIFTED,
+                error_text="Lifted",
+            )
+            self.clear_pending_activity()
             snapshot["state"] = "Lifted"
             snapshot["activity"] = ACTIVITY_ERROR
+            snapshot["error"] = True
+            snapshot["error_text"] = "Lifted"
             snapshot["docked"] = False
             snapshot["docked_source"] = "mqtt_lifted_state"
+        self._apply_problem_latch(snapshot)
         self._stabilize_telemetry(snapshot, previous_snapshot)
         snapshot.update(self._connectivity_fields())
         self._schedule_state_save(snapshot)
         self.async_set_updated_data(snapshot)
-        if state_name == "isLifted" and previous_state != "Lifted":
+        if state_name == "isLifted" and previous_named_state != "isLifted":
             self.request_fast_refresh("MQTT state changed to isLifted")
+        elif (
+            state_name
+            and previous_named_state == "isLifted"
+            and state_name != "isLifted"
+        ):
+            self.request_fast_refresh("MQTT state changed away from isLifted")
 
     def start_new_mowing_cycle(
         self,

@@ -703,6 +703,12 @@ async def async_build_diagnostics(
         else None
     )
 
+    problem_history = (
+        coordinator.problem_diagnostics()
+        if hasattr(coordinator, "problem_diagnostics")
+        else None
+    )
+
     last_mow_command = (
         coordinator.mow_command_diagnostics()
         if hasattr(coordinator, "mow_command_diagnostics")
@@ -815,11 +821,16 @@ async def async_build_diagnostics(
         "commands_sent": False,
         "map_writes_performed": False,
         "last_mow_command": sanitize(deepcopy(last_mow_command)),
+        "problem_history": sanitize(deepcopy(problem_history)),
         "mower": {
             "serial": f"{sn[:3]}***{sn[-4:]}" if len(sn) >= 8 else "***",
             "vehicle_type": vehicle_type,
             "state_code": data.get("state_code"),
             "activity": data.get("activity"),
+            "problem": data.get("error"),
+            "error_text": data.get("error_text"),
+            "problem_source": data.get("problem_source"),
+            "last_problem": sanitize(deepcopy(data.get("last_problem"))),
             "private_cloud_connected": data.get("private_cloud_connected"),
             "private_cloud_error": data.get("private_cloud_error"),
             "oauth_configured": data.get("oauth_configured"),
@@ -974,7 +985,7 @@ async def async_build_diagnostics(
             "Full retained routes remain in authenticated session APIs and HA storage.",
             "commands_sent=false refers to the diagnostics export itself; last_mow_command records the most recent earlier user command.",
             "command_status_at_export is a read-only status lookup for the stored command number.",
-            "Passive discovery is opt-in and current-mower scoped; samples are bounded and sanitized.",
+            "Passive discovery is opt-in; samples are bounded and sanitized, and other mower vehicle topics are excluded from sampled discovery data.",
             "Private-cloud request inventory covers only calls made by this integration and does not intercept mobile-app traffic.",
         ],
     }

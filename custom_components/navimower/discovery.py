@@ -26,8 +26,14 @@ _MAX_STRING = 512
 
 
 def mqtt_discovery_topic(device_id: str) -> str:
-    """Return the current mower-only downlink wildcard used in discovery mode."""
+    """Return the legacy current mower-only discovery wildcard."""
     return f"/downlink/vehicle/{device_id}/#"
+
+
+def mqtt_discovery_topics(device_id: str) -> tuple[str, ...]:
+    """Return wider opt-in downlink subscriptions for notification research."""
+    del device_id
+    return ("/downlink/#",)
 
 
 def _is_sensitive_key(key: str) -> bool:

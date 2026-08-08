@@ -9,8 +9,6 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def test_beta8_version_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta8"
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta8.md").read_text()
     assert "0302" in notes
     assert "get-hint-error-compress" in notes

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1-beta9 - authoritative problem state and notification discovery
+
+- Make private state `0302`, inline private error data and official MQTT `state=isLifted` authoritative for the Problem entity and error activity.
+- Process MQTT named state independently of battery, so a lift event is not discarded when the packet omits battery data.
+- Persist the Problem latch across reload/restart and clear it only after a newer successful private `index2` confirmation reports a non-problem state.
+- Expose the latest problem source/details and a bounded transition history in diagnostics.
+- Widen opt-in passive MQTT discovery to `/downlink/#` for notification research while sampling only the current mower and non-vehicle account-level topics; other mower vehicle payloads remain excluded from discovery samples.
+- Keep passive discovery off by default and preserve all existing redaction and sample limits.
+
 ## 0.4.1-beta8 - lifted state and error catalog
 
 - Map the observed private-cloud state code `0302` to **Lifted** and error activity.

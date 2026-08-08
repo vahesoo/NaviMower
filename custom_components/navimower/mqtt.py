@@ -46,7 +46,12 @@ from .const import (
     MQTT_USERNAME,
     MQTT_WATCHDOG_INTERVAL_SECONDS,
 )
-from .discovery import mqtt_discovery_topic, sanitize_discovery_payload, structure_summary
+from .discovery import (
+    mqtt_discovery_topic,
+    mqtt_discovery_topics,
+    sanitize_discovery_payload,
+    structure_summary,
+)
 from .location import extract_mqtt_battery, location_topic, parse_location_payload
 
 _LOGGER = logging.getLogger(__name__)
@@ -546,10 +551,15 @@ class NavimowerMqttBridge:
             _LOGGER.warning("Could not subscribe to Navimow location: %s", err)
             return False
         if self._discovery_enabled:
-            try:
-                sdk._mqtt.client.subscribe(mqtt_discovery_topic(device_id))
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Could not subscribe to Navimower passive discovery: %s", err)
+            for discovery_topic in mqtt_discovery_topics(device_id):
+                try:
+                    sdk._mqtt.client.subscribe(discovery_topic)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "Could not subscribe to Navimower passive discovery %s: %s",
+                        discovery_topic,
+                        err,
+                    )
         self._subscribed_mono = time.monotonic()
         self._set_recovery_state("subscribed")
         return True
@@ -945,11 +955,15 @@ class NavimowerMqttBridge:
             if candidate:
                 safe_topic = safe_topic.replace(candidate, "<device>")
         self._record_inventory_item(self._message_inventory, safe_topic, payload, include_samples=False)
+        topic_text = str(topic)
         current_device = bool(
             incoming_device_id == self._device_id
-            or (self._device_id and f"/vehicle/{self._device_id}/" in str(topic))
+            or (self._device_id and f"/vehicle/{self._device_id}/" in topic_text)
         )
-        if not self._discovery_enabled or not current_device:
+        account_event = bool(
+            topic_text.startswith("/downlink/") and "/vehicle/" not in topic_text
+        )
+        if not self._discovery_enabled or not (current_device or account_event):
             return
         if safe_topic not in self._discovery_inventory and len(self._discovery_inventory) >= 64:
             self._discovery_dropped_topics += 1
@@ -1024,10 +1038,16 @@ class NavimowerMqttBridge:
         wildcard = mqtt_discovery_topic(self._device_id) if self._device_id else None
         if wildcard and self._device_id:
             wildcard = wildcard.replace(self._device_id, "<device>")
+        wildcard_topics = list(mqtt_discovery_topics(self._device_id))
+        if self._device_id:
+            wildcard_topics = [
+                item.replace(self._device_id, "<device>") for item in wildcard_topics
+            ]
         return {
             "enabled": self._discovery_enabled,
-            "scope": "current_device_only",
+            "scope": "current_device_and_account_events",
             "wildcard_topic": wildcard,
+            "wildcard_topics": wildcard_topics,
             "topic_limit": 64,
             "sample_limit_per_topic": 3,
             "marker_limit": 50,
