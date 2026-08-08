@@ -116,6 +116,7 @@ PRIVATE_ENDPOINT_TTLS_ACTIVE: Final[dict[str, int]] = {
     "today_plan": 30,
     "map_list": 60,
     "maintenance": 600,
+    "errors": 30,
 }
 PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
     "device_info": 86400,
@@ -127,6 +128,7 @@ PRIVATE_ENDPOINT_TTLS_IDLE: Final[dict[str, int]] = {
     "today_plan": 60,
     "map_list": 120,
     "maintenance": 600,
+    "errors": 60,
 }
 
 # --- Map/history API -------------------------------------------------------
@@ -173,6 +175,7 @@ STATE_MAP_EDIT_MANUAL: Final = "0258"
 STATE_MOWING: Final = "0210"
 STATE_PAUSED: Final = "0211"
 STATE_RETURNING: Final = "0220"
+STATE_LIFTED: Final = "0302"
 
 ACTIVITY_MOWING: Final = "mowing"
 ACTIVITY_PAUSED: Final = "paused"
@@ -190,6 +193,7 @@ VEHICLE_STATE_TO_ACTIVITY: Final[dict[str, str]] = {
     STATE_MOWING: ACTIVITY_MOWING,
     STATE_PAUSED: ACTIVITY_PAUSED,
     STATE_RETURNING: ACTIVITY_RETURNING,
+    STATE_LIFTED: ACTIVITY_ERROR,
 }
 
 VEHICLE_STATE_LABELS: Final[dict[str, str]] = {
@@ -200,6 +204,7 @@ VEHICLE_STATE_LABELS: Final[dict[str, str]] = {
     STATE_MOWING: "Mowing",
     STATE_PAUSED: "Paused",
     STATE_RETURNING: "Returning to dock",
+    STATE_LIFTED: "Lifted",
 }
 
 DOCKED_STATES: Final = {STATE_IDLE_DOCKED, STATE_IDLE_DOCKED_POST}

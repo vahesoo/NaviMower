@@ -86,6 +86,7 @@ from .const import (
     PRIVATE_FAST_REFRESH_MIN_SECONDS,
     STATE_MOWING,
     STATE_RETURNING,
+    STATE_LIFTED,
     TUNNEL_DETECTION_RADIUS_M,
     ZONE_EDGE_TOLERANCE_M,
     VEHICLE_STATE_LABELS,
@@ -1558,6 +1559,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "path_info_time": lambda: self.client.path_info_time(sn),
             "set_list": lambda: self.client.set_list(sn),
             "maintenance": lambda: self.client.maintenance(sn),
+            "errors": lambda: self.client.errors(sn, vtype),
             "today_plan": lambda: self.client.today_plan(sn, vtype),
             "map_list": lambda: self.client.map_list(sn),
         }
@@ -2043,6 +2045,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         location = raw.get("location") or {}
         set_list = raw.get("set_list") or {}
         maintenance = raw.get("maintenance") or {}
+        hint_errors = raw.get("errors")
         today_plan = raw.get("today_plan") or {}
 
         state_code = str(index2.get("vehicle_state") or auth.get("vehicle_state") or "")
@@ -2369,6 +2372,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "location": location,
                 "set_list": set_list,
                 "maintenance": maintenance,
+                "hint_error_compress": hint_errors,
                 "today_plan": today_plan,
                 "path_info_time": raw.get("path_info_time") or [],
                 "device_info": raw.get("device_info") or {},
@@ -3845,17 +3849,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if not isinstance(state, dict):
             return
         battery = _as_int(state.get("battery"))
+        state_name = str(state.get("state") or "").strip()
         if battery is None or not 0 <= battery <= 100:
             return
         previous_snapshot = dict(self.data or {})
+        previous_state = str(previous_snapshot.get("state") or "")
         self._mqtt_battery = battery
         self._mqtt_battery_last_update = time.monotonic()
         self._mqtt_connected = True
         snapshot = dict(self.data or self._bootstrap_snapshot())
+        if state_name == "isLifted":
+            snapshot["state"] = "Lifted"
+            snapshot["activity"] = ACTIVITY_ERROR
+            snapshot["docked"] = False
+            snapshot["docked_source"] = "mqtt_lifted_state"
         self._stabilize_telemetry(snapshot, previous_snapshot)
         snapshot.update(self._connectivity_fields())
         self._schedule_state_save(snapshot)
         self.async_set_updated_data(snapshot)
+        if state_name == "isLifted" and previous_state != "Lifted":
+            self.request_fast_refresh("MQTT state changed to isLifted")
 
     def start_new_mowing_cycle(
         self,

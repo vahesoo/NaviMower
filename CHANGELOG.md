@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1-beta8 - lifted state and error catalog
+
+- Map the observed private-cloud state code `0302` to **Lifted** and error activity.
+- React immediately to official MQTT `state=isLifted`, publishing **Lifted** and requesting a fast private-cloud refresh.
+- Poll and retain `/vehicle/vehicle/get-hint-error-compress` in the normal private-cloud cache (30 s active / 60 s idle) for ongoing error-catalog investigation.
+- Keep the endpoint read-only and include its cached value in the snapshot raw diagnostics payload.
+
 ## 0.4.1-beta7 - passive discovery MQTT callback hotfix
 
 - Import all passive-discovery helpers used by the MQTT callback, restoring normal MQTT state/location processing.
