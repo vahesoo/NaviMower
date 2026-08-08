@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1-beta6 - passive discovery startup hotfix
+
+- Fix the beta5 startup regression by importing `OPT_PASSIVE_DISCOVERY` in the MQTT bridge.
+- Add a release regression test that verifies the passive-discovery option constants are actually imported where they are used.
+- Preserve beta5 Passive protocol discovery behaviour unchanged; the feature remains opt-in and off by default.
+
 ## 0.4.1-beta5 - passive protocol discovery
 
 - Add an opt-in Passive protocol discovery option for temporary vendor-protocol investigation.

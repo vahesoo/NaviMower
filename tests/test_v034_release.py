@@ -11,12 +11,12 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta5"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta5.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.1-beta5")
+    assert manifest["version"] == "0.4.1-beta6"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta6.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta6")
+    assert "startup hotfix" in notes.lower()
+    assert "OPT_PASSIVE_DISCOVERY" in notes
     assert "Passive protocol discovery" in notes
-    assert "current-device-only" in notes
-    assert "off by default" in notes
 
     stable_040 = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
     assert stable_040.startswith("title: Navimower 0.4.0")

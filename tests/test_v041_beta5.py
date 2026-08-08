@@ -18,9 +18,7 @@ def _load_discovery():
     return module
 
 
-def test_beta5_version_and_notes():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta5"
+def test_beta5_discovery_notes():
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta5.md").read_text()
     assert "Passive protocol discovery" in notes
     assert "current-device-only" in notes
