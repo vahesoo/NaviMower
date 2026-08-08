@@ -1,0 +1,111 @@
+name: Temporary beta8 release
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: github.event.issue.number == 30 && github.event.comment.body == '/release-beta8'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply beta8 changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('.')
+          const = root / 'custom_components/navimower/const.py'
+          text = const.read_text()
+          text = text.replace('    "maintenance": 600,\n}', '    "maintenance": 600,\n    "errors": 30,\n}', 1)
+          text = text.replace('    "maintenance": 600,\n}', '    "maintenance": 600,\n    "errors": 60,\n}', 1)
+          text = text.replace('STATE_RETURNING: Final = "0220"\n', 'STATE_RETURNING: Final = "0220"\nSTATE_LIFTED: Final = "0302"\n')
+          text = text.replace('    STATE_RETURNING: ACTIVITY_RETURNING,\n}', '    STATE_RETURNING: ACTIVITY_RETURNING,\n    STATE_LIFTED: ACTIVITY_ERROR,\n}')
+          text = text.replace('    STATE_RETURNING: "Returning to dock",\n}', '    STATE_RETURNING: "Returning to dock",\n    STATE_LIFTED: "Lifted",\n}')
+          const.write_text(text)
+
+          coord = root / 'custom_components/navimower/coordinator.py'
+          text = coord.read_text()
+          text = text.replace('    STATE_MOWING,\n    STATE_RETURNING,', '    STATE_MOWING,\n    STATE_RETURNING,\n    STATE_LIFTED,')
+          text = text.replace('            "maintenance": lambda: self.client.maintenance(sn),\n', '            "maintenance": lambda: self.client.maintenance(sn),\n            "errors": lambda: self.client.errors(sn, vtype),\n')
+          text = text.replace('        maintenance = raw.get("maintenance") or {}\n', '        maintenance = raw.get("maintenance") or {}\n        hint_errors = raw.get("errors")\n')
+          text = text.replace('                "maintenance": maintenance,\n                "today_plan": today_plan,', '                "maintenance": maintenance,\n                "hint_error_compress": hint_errors,\n                "today_plan": today_plan,')
+          old = '''        battery = _as_int(state.get("battery"))\n        if battery is None or not 0 <= battery <= 100:\n            return\n        previous_snapshot = dict(self.data or {})\n        self._mqtt_battery = battery\n        self._mqtt_battery_last_update = time.monotonic()\n        self._mqtt_connected = True\n        snapshot = dict(self.data or self._bootstrap_snapshot())\n        self._stabilize_telemetry(snapshot, previous_snapshot)\n        snapshot.update(self._connectivity_fields())\n        self._schedule_state_save(snapshot)\n        self.async_set_updated_data(snapshot)\n'''
+          new = '''        battery = _as_int(state.get("battery"))\n        state_name = str(state.get("state") or "").strip()\n        if battery is None or not 0 <= battery <= 100:\n            return\n        previous_snapshot = dict(self.data or {})\n        previous_state = str(previous_snapshot.get("state") or "")\n        self._mqtt_battery = battery\n        self._mqtt_battery_last_update = time.monotonic()\n        self._mqtt_connected = True\n        snapshot = dict(self.data or self._bootstrap_snapshot())\n        if state_name == "isLifted":\n            snapshot["state"] = "Lifted"\n            snapshot["activity"] = ACTIVITY_ERROR\n            snapshot["docked"] = False\n            snapshot["docked_source"] = "mqtt_lifted_state"\n        self._stabilize_telemetry(snapshot, previous_snapshot)\n        snapshot.update(self._connectivity_fields())\n        self._schedule_state_save(snapshot)\n        self.async_set_updated_data(snapshot)\n        if state_name == "isLifted" and previous_state != "Lifted":\n            self.request_fast_refresh("MQTT state changed to isLifted")\n'''
+          if old not in text:
+              raise SystemExit('ingest_mqtt_state block not found')
+          text = text.replace(old, new)
+          coord.write_text(text)
+
+          manifest_path = root / 'custom_components/navimower/manifest.json'
+          manifest = json.loads(manifest_path.read_text())
+          manifest['version'] = '0.4.1-beta8'
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+
+          changelog = root / 'CHANGELOG.md'
+          old = changelog.read_text()
+          header = '''# Changelog\n\n## 0.4.1-beta8 - lifted state and error catalog\n\n- Map the observed private-cloud state code `0302` to **Lifted** and error activity.\n- React immediately to official MQTT `state=isLifted`, publishing **Lifted** and requesting a fast private-cloud refresh.\n- Poll and retain `/vehicle/vehicle/get-hint-error-compress` in the normal private-cloud cache (30 s active / 60 s idle) for ongoing error-catalog investigation.\n- Keep the endpoint read-only and include its cached value in the snapshot raw diagnostics payload.\n\n'''
+          if not old.startswith('# Changelog\n'):
+              raise SystemExit('unexpected changelog header')
+          changelog.write_text(header + old[len('# Changelog\n\n'):])
+
+          notes = root / '.github/release-notes/0.4.1-beta8.md'
+          notes.write_text('''# Navimower 0.4.1-beta8\n\nThis beta adds the state/error observations confirmed during H215 lift-alarm testing.\n\n- Private-cloud state `0302` is now exposed as **Lifted**.\n- Official MQTT `state=isLifted` updates the mower state immediately instead of waiting for the next cloud poll.\n- `/vehicle/vehicle/get-hint-error-compress` is now part of normal read-only polling and last-good caching, using a 30-second active and 60-second idle TTL.\n- The cached compressed hint/error catalog is retained in raw diagnostic state for further reverse engineering.\n\nNo mower command behavior or Map Card code changes are included.\n''')
+
+          test = root / 'tests/test_v041_beta8.py'
+          test.write_text('''"""Regression contracts for Navimower 0.4.1-beta8."""\nfrom __future__ import annotations\n\nimport json\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[1]\nCOMPONENT = ROOT / "custom_components" / "navimower"\n\n\ndef test_beta8_version_and_notes() -> None:\n    manifest = json.loads((COMPONENT / "manifest.json").read_text())\n    assert manifest["version"] == "0.4.1-beta8"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta8.md").read_text()\n    assert "0302" in notes\n    assert "get-hint-error-compress" in notes\n\n\ndef test_lifted_state_mapping_is_explicit() -> None:\n    source = (COMPONENT / "const.py").read_text()\n    assert 'STATE_LIFTED: Final = "0302"' in source\n    assert 'STATE_LIFTED: ACTIVITY_ERROR' in source\n    assert 'STATE_LIFTED: "Lifted"' in source\n\n\ndef test_hint_error_endpoint_is_polled_and_cached() -> None:\n    const = (COMPONENT / "const.py").read_text()\n    coordinator = (COMPONENT / "coordinator.py").read_text()\n    assert '"errors": 30' in const\n    assert '"errors": 60' in const\n    assert '"errors": lambda: self.client.errors(sn, vtype)' in coordinator\n    assert '"hint_error_compress": hint_errors' in coordinator\n\n\ndef test_mqtt_lifted_state_is_published_immediately() -> None:\n    source = (COMPONENT / "coordinator.py").read_text()\n    assert 'state_name == "isLifted"' in source\n    assert 'snapshot["state"] = "Lifted"' in source\n    assert 'snapshot["activity"] = ACTIVITY_ERROR' in source\n    assert 'request_fast_refresh("MQTT state changed to isLifted")' in source\n''')
+          PY
+
+      - name: Validate source
+        run: |
+          python -m compileall -q custom_components/navimower
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          yaml.safe_load(Path('custom_components/navimower/services.yaml').read_text())
+          PY
+
+      - name: Run tests
+        run: |
+          python -m pip install -q pytest pyyaml
+          pytest -q
+
+      - name: Commit beta8
+        id: commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add custom_components/navimower/const.py custom_components/navimower/coordinator.py custom_components/navimower/manifest.json CHANGELOG.md .github/release-notes/0.4.1-beta8.md tests/test_v041_beta8.py
+          git commit -m "Release Navimower 0.4.1-beta8"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git push origin HEAD:main
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag v0.4.1-beta8
+          git push origin v0.4.1-beta8
+          gh release create v0.4.1-beta8 --prerelease --title "Navimower 0.4.1-beta8" --notes-file .github/release-notes/0.4.1-beta8.md
+
+      - name: Remove temporary workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git rm .github/workflows/beta8-release.yml
+          git commit -m "Remove temporary beta8 release workflow"
+          git push origin HEAD:main
+
+      - name: Close trigger issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close 30 --comment "Released v0.4.1-beta8 successfully from commit ${{ steps.commit.outputs.sha }}."
