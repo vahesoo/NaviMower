@@ -1,0 +1,85 @@
+name: Temporary Navimower beta9 release
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: github.event.issue.number == 31 && github.event.comment.body == 'RUN-BETA9-RELEASE'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply beta9 changes
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/beta9_release.py
+
+      - name: Validate full test suite
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q custom_components/navimower
+          python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+          python -m pytest -q
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          if manifest.get('version') != '0.4.1-beta9':
+              raise SystemExit(f"unexpected manifest version: {manifest.get('version')}")
+          yaml.safe_load(Path('custom_components/navimower/services.yaml').read_text())
+          source = Path('custom_components/navimower/coordinator.py').read_text()
+          required = [
+              '_private_problem_clear_confirmed',
+              'problem_diagnostics',
+              'snapshot["error"] = True',
+              'state_name == "isLifted"',
+              'valid_battery = battery is not None and 0 <= battery <= 100',
+          ]
+          missing = [item for item in required if item not in source]
+          if missing:
+              raise SystemExit(f'missing beta9 coordinator contracts: {missing}')
+          mqtt = Path('custom_components/navimower/mqtt.py').read_text()
+          if 'mqtt_discovery_topics(device_id)' not in mqtt or 'current_device_and_account_events' not in mqtt:
+              raise SystemExit('missing beta9 discovery contracts')
+          PY
+
+      - name: Publish beta9
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/beta9-release.yml .github/beta9_release.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release Navimower 0.4.1-beta9"
+          git push origin HEAD:main
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          gh release create v0.4.1-beta9 --prerelease --target "$RELEASE_SHA" --title "Navimower 0.4.1-beta9" --notes-file .github/release-notes/0.4.1-beta9.md
+          gh issue comment 31 --body "beta9 release published successfully at commit $RELEASE_SHA; full regression suite and problem-state/discovery validation passed."
+          gh issue close 31 --reason completed
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          gh issue comment 31 --body "beta9 release workflow failed. patch=${{ steps.patch.outcome }}, tests=${{ steps.tests.outcome }}, publish=${{ steps.publish.outcome }}" || true
