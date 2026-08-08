@@ -1,0 +1,83 @@
+name: Temporary Navimower beta7 hotfix release v3
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: github.event.issue.number == 29 && github.event.comment.body == 'RUN-BETA7-RELEASE-V3'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply corrected beta7 hotfix
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/beta7-hotfix-release-v2.yml').read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "          PY\n\n      - name: Validate full test suite"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          # v2 accidentally emitted two literal backslashes after opening triple
+          # quoted strings. Collapse those to the single line-continuation
+          # backslash intended by textwrap.dedent.
+          script = script.replace("'''\\\\\n", "'''\\\n")
+          compile(script, '<beta7-patch>', 'exec')
+          exec(compile(script, '<beta7-patch>', 'exec'), {})
+          PY
+
+      - name: Validate full test suite
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q custom_components/navimower tests
+          python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+          python -m pytest -q 2>&1 | tee /tmp/beta7-pytest.log
+
+      - name: Publish beta7
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/beta7-hotfix-release.yml .github/workflows/beta7-hotfix-release-v2.yml .github/workflows/beta7-hotfix-release-v3.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release Navimower 0.4.1-beta7"
+          git push origin HEAD:main
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          gh release create v0.4.1-beta7 --prerelease --target "$RELEASE_SHA" --title "Navimower 0.4.1-beta7" --notes-file .github/release-notes/0.4.1-beta7.md
+          gh issue comment 29 --body "beta7 release published successfully at commit $RELEASE_SHA; full test suite passed."
+          gh issue close 29 --reason completed
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f /tmp/beta7-pytest.log ]; then
+            tail -n 80 /tmp/beta7-pytest.log > /tmp/beta7-tail.log
+            gh issue comment 29 --body "beta7 v3 release workflow failed. patch=${{ steps.patch.outcome }}, tests=${{ steps.tests.outcome }}, publish=${{ steps.publish.outcome }}\n\n\`\`\`text\n$(cat /tmp/beta7-tail.log)\n\`\`\`" || true
+          else
+            gh issue comment 29 --body "beta7 v3 release workflow failed. patch=${{ steps.patch.outcome }}, tests=${{ steps.tests.outcome }}, publish=${{ steps.publish.outcome }}" || true
+          fi
