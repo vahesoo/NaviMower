@@ -1,0 +1,133 @@
+name: Temporary Navimower beta9 release v5
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: github.event.issue.number == 31 && github.event.comment.body == 'RUN-BETA9-RELEASE-V5'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply beta9 changes
+        id: patch
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/beta9_release.py')
+          text = path.read_text()
+          old = "    2,\n)\n\nold_ingest_state ="
+          new = "    1,\n)\n\nold_ingest_state ="
+          if old not in text:
+              raise SystemExit('beta9 replace_n count anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python .github/beta9_release.py > /tmp/beta9-patch.log 2>&1
+          STATUS=$?
+          if [ "$STATUS" -eq 0 ]; then
+            python - <<'PY' >> /tmp/beta9-patch.log 2>&1
+          from pathlib import Path
+          coordinator = Path('custom_components/navimower/coordinator.py')
+          text = coordinator.read_text()
+          old = '        self._last_docked_source = docked_source\n\n        route_progress = _progress_percent(merged.get("mow_progress"))'
+          new = '        self._apply_problem_latch(snapshot)\n        self._last_docked_source = str(snapshot.get("docked_source") or docked_source)\n\n        route_progress = _progress_percent(merged.get("mow_progress"))'
+          if old not in text:
+              raise SystemExit('stable ingest_mqtt_location anchor missing')
+          coordinator.write_text(text.replace(old, new, 1))
+
+          beta5 = Path('tests/test_v041_beta5.py')
+          tests = beta5.read_text()
+          old_test = '    assert "mqtt_discovery_topic(device_id)" in mqtt\n'
+          new_test = '    assert "mqtt_discovery_topics(device_id)" in mqtt\n'
+          if old_test not in tests:
+              raise SystemExit('beta5 discovery regression anchor missing')
+          beta5.write_text(tests.replace(old_test, new_test, 1))
+          PY
+            STATUS=$?
+          fi
+          cat /tmp/beta9-patch.log
+          if [ "$STATUS" -ne 0 ]; then
+            TAIL="$(tail -n 60 /tmp/beta9-patch.log)"
+            gh issue comment 31 --body "beta9 v5 patch failed with status $STATUS:\n\n\`\`\`text\n${TAIL}\n\`\`\`"
+            exit "$STATUS"
+          fi
+
+      - name: Validate full test suite
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          {
+            python -m compileall -q custom_components/navimower &&
+            python -m pip install --upgrade pytest voluptuous cryptography pyyaml &&
+            python -m pytest -q
+          } > /tmp/beta9-tests.log 2>&1
+          STATUS=$?
+          cat /tmp/beta9-tests.log
+          if [ "$STATUS" -ne 0 ]; then
+            TAIL="$(tail -n 100 /tmp/beta9-tests.log)"
+            gh issue comment 31 --body "beta9 v5 tests failed with status $STATUS:\n\n\`\`\`text\n${TAIL}\n\`\`\`"
+            exit "$STATUS"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          assert manifest.get('version') == '0.4.1-beta9', manifest
+          yaml.safe_load(Path('custom_components/navimower/services.yaml').read_text())
+          coordinator = Path('custom_components/navimower/coordinator.py').read_text()
+          for item in (
+              '_private_problem_clear_confirmed',
+              'problem_diagnostics',
+              'snapshot["error"] = True',
+              'state_name == "isLifted"',
+              'valid_battery = battery is not None and 0 <= battery <= 100',
+              'self._apply_problem_latch(snapshot)',
+          ):
+              assert item in coordinator, item
+          assert coordinator.count('self._apply_problem_latch(snapshot)') >= 3
+          mqtt = Path('custom_components/navimower/mqtt.py').read_text()
+          assert 'mqtt_discovery_topics(device_id)' in mqtt
+          assert 'current_device_and_account_events' in mqtt
+          PY
+
+      - name: Publish beta9
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/beta9-release.yml .github/workflows/beta9-release-v2.yml .github/workflows/beta9-release-v3.yml .github/workflows/beta9-release-v4.yml .github/workflows/beta9-release-v5.yml .github/beta9_release.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release Navimower 0.4.1-beta9"
+          git push origin HEAD:main
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          if ! gh release view v0.4.1-beta9 >/dev/null 2>&1; then
+            gh release create v0.4.1-beta9 --prerelease --target "$RELEASE_SHA" --title "Navimower 0.4.1-beta9" --notes-file .github/release-notes/0.4.1-beta9.md
+          fi
+          gh issue comment 31 --body "beta9 release published successfully at commit $RELEASE_SHA; full regression suite and problem-state/discovery validation passed."
+          gh issue close 31 --reason completed
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          gh issue comment 31 --body "beta9 v5 release workflow failed. patch=${{ steps.patch.outcome }}, tests=${{ steps.tests.outcome }}, publish=${{ steps.publish.outcome }}" || true
