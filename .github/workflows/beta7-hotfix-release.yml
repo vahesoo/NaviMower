@@ -1,0 +1,201 @@
+name: Temporary Navimower beta7 hotfix release
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: github.event.issue.number == 29 && github.event.comment.body == 'RUN-BETA7-RELEASE'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply beta7 hotfix
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import textwrap
+
+          root = Path('.')
+          component = root / 'custom_components' / 'navimower'
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'missing patch anchor in {path}: {old!r}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # MQTT callback runtime fix: discovery helpers were referenced by mqtt.py
+          # without being imported. This broke every JSON MQTT message before the
+          # normal state/location handling could run.
+          replace_once(
+              component / 'mqtt.py',
+              'from .location import extract_mqtt_battery, location_topic, parse_location_payload\n',
+              'from .discovery import mqtt_discovery_topic, sanitize_discovery_payload, structure_summary\nfrom .location import extract_mqtt_battery, location_topic, parse_location_payload\n',
+          )
+
+          # Repair malformed Home Assistant service metadata introduced with the
+          # discovery marker service.
+          replace_once(
+              component / 'services.yaml',
+              '      selector:\n        device:\nintegration: navimower\n    name:\n',
+              '      selector:\n        device:\n          integration: navimower\n    name:\n',
+          )
+
+          manifest_path = component / 'manifest.json'
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          if manifest.get('version') != '0.4.1-beta6':
+              raise SystemExit(f"unexpected manifest version: {manifest.get('version')}")
+          manifest['version'] = '0.4.1-beta7'
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
+          current_test = root / 'tests' / 'test_v034_release.py'
+          current_text = current_test.read_text(encoding='utf-8')
+          old = '''    assert manifest["version"] == "0.4.1-beta6"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta6.md").read_text()\n    assert notes.startswith("title: Navimower 0.4.1-beta6")\n    assert "startup hotfix" in notes.lower()\n    assert "OPT_PASSIVE_DISCOVERY" in notes\n    assert "Passive protocol discovery" in notes\n'''
+          new = '''    assert manifest["version"] == "0.4.1-beta7"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta7.md").read_text()\n    assert notes.startswith("title: Navimower 0.4.1-beta7")\n    assert "mqtt callback" in notes.lower()\n    assert "structure_summary" in notes\n    assert "services.yaml" in notes\n'''
+          if old not in current_text:
+              raise SystemExit('current release test anchor missing')
+          current_test.write_text(current_text.replace(old, new, 1), encoding='utf-8')
+
+          beta7_test = textwrap.dedent('''\\
+              """Regression contracts for Navimower 0.4.1-beta7 runtime hotfix."""
+              from __future__ import annotations
+
+              import ast
+              import json
+              from pathlib import Path
+
+              import yaml
+
+              ROOT = Path(__file__).resolve().parents[1]
+              COMPONENT = ROOT / "custom_components" / "navimower"
+
+
+              def test_beta7_version_and_notes() -> None:
+                  manifest = json.loads((COMPONENT / "manifest.json").read_text())
+                  assert manifest["version"] == "0.4.1-beta7"
+                  notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta7.md").read_text()
+                  assert "structure_summary" in notes
+                  assert "services.yaml" in notes
+
+
+              def test_mqtt_bridge_imports_all_discovery_helpers_it_calls() -> None:
+                  source = (COMPONENT / "mqtt.py").read_text()
+                  tree = ast.parse(source)
+                  imported: set[str] = set()
+                  for node in ast.walk(tree):
+                      if isinstance(node, ast.ImportFrom) and node.module == "discovery":
+                          imported.update(alias.name for alias in node.names)
+                  required = {"mqtt_discovery_topic", "sanitize_discovery_payload", "structure_summary"}
+                  assert required <= imported
+                  loaded = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+                  assert required <= loaded
+
+
+              def test_services_yaml_is_valid_and_marker_selector_targets_navimower() -> None:
+                  services = yaml.safe_load((COMPONENT / "services.yaml").read_text())
+                  marker = services["mark_discovery_event"]
+                  selector = marker["fields"]["device_id"]["selector"]["device"]
+                  assert selector["integration"] == "navimower"
+          ''')
+          (root / 'tests' / 'test_v041_beta7.py').write_text(beta7_test, encoding='utf-8')
+
+          notes = textwrap.dedent('''\\
+              title: Navimower 0.4.1-beta7
+
+              ## Passive discovery MQTT callback hotfix
+
+              Beta6 restored config-entry startup, but field testing exposed two additional beta5 passive-discovery regressions.
+
+              - Import `mqtt_discovery_topic`, `sanitize_discovery_payload` and `structure_summary` from `discovery.py` in the MQTT bridge. Without these imports, every incoming JSON MQTT message failed in inventory collection before normal state/location processing, leaving the broker connected while live pose stayed unavailable.
+              - Repair the malformed `services.yaml` indentation for the `mark_discovery_event` mower selector so Home Assistant can parse Navimower service metadata again.
+              - Add regression contracts that verify all discovery helpers used by `mqtt.py` are imported and that `services.yaml` parses successfully with the expected Navimower device selector.
+              - Keep Passive protocol discovery opt-in and off by default.
+              - Keep beta4 pose-degraded recovery and beta3 raw-first telemetry behaviour unchanged.
+
+              Beta7 supersedes the withdrawn beta6 prerelease. Users who installed beta6 should update to beta7 and restart or reload Navimower.
+          ''')
+          notes_path = root / '.github' / 'release-notes' / '0.4.1-beta7.md'
+          notes_path.write_text(notes, encoding='utf-8')
+
+          changelog = root / 'CHANGELOG.md'
+          changelog_text = changelog.read_text(encoding='utf-8')
+          heading = '# Changelog\n\n'
+          if not changelog_text.startswith(heading):
+              raise SystemExit('changelog heading missing')
+          entry = textwrap.dedent('''\\
+              ## 0.4.1-beta7 - passive discovery MQTT callback hotfix
+
+              - Import all passive-discovery helpers used by the MQTT callback, restoring normal MQTT state/location processing.
+              - Fix malformed `services.yaml` indentation for `mark_discovery_event`.
+              - Add import/runtime-contract and YAML parsing regressions for the discovery path.
+
+          ''')
+          changelog.write_text(heading + entry + changelog_text[len(heading):], encoding='utf-8')
+          PY
+
+      - name: Validate full test suite
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q custom_components/navimower
+          python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+          python -m pytest -q
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import yaml
+
+          mqtt = Path('custom_components/navimower/mqtt.py')
+          tree = ast.parse(mqtt.read_text(encoding='utf-8'))
+          imported = set()
+          for node in ast.walk(tree):
+              if isinstance(node, ast.ImportFrom) and node.module == 'discovery':
+                  imported.update(alias.name for alias in node.names)
+          required = {'mqtt_discovery_topic', 'sanitize_discovery_payload', 'structure_summary'}
+          if not required <= imported:
+              raise SystemExit(f'missing discovery imports: {required - imported}')
+          services = yaml.safe_load(Path('custom_components/navimower/services.yaml').read_text(encoding='utf-8'))
+          if services['mark_discovery_event']['fields']['device_id']['selector']['device']['integration'] != 'navimower':
+              raise SystemExit('invalid mark_discovery_event device selector')
+          PY
+
+      - name: Publish beta7
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/beta7-hotfix-release.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release Navimower 0.4.1-beta7"
+          git push origin HEAD:main
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          gh release create v0.4.1-beta7 --prerelease --target "$RELEASE_SHA" --title "Navimower 0.4.1-beta7" --notes-file .github/release-notes/0.4.1-beta7.md
+          gh issue comment 29 --body "beta7 release published successfully at commit $RELEASE_SHA; full test suite and YAML/import validation passed."
+          gh issue close 29 --reason completed
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          gh issue comment 29 --body "beta7 release workflow failed. patch=${{ steps.patch.outcome }}, tests=${{ steps.tests.outcome }}, publish=${{ steps.publish.outcome }}" || true
