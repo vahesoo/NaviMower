@@ -1,0 +1,66 @@
+name: Temporary beta8 push release
+
+on:
+  push:
+    paths:
+      - '.github/beta8-trigger'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply beta8 changes
+        run: python .github/beta8_release.py
+
+      - name: Validate source
+        run: |
+          python -m compileall -q custom_components/navimower
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          yaml.safe_load(Path('custom_components/navimower/services.yaml').read_text())
+          PY
+
+      - name: Run tests
+        run: |
+          python -m pip install -q pytest pyyaml
+          pytest -q
+
+      - name: Commit beta8
+        id: commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add custom_components/navimower/const.py custom_components/navimower/coordinator.py custom_components/navimower/manifest.json CHANGELOG.md .github/release-notes/0.4.1-beta8.md tests/test_v041_beta8.py
+          git commit -m "Release Navimower 0.4.1-beta8"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git push origin HEAD:main
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag v0.4.1-beta8
+          git push origin v0.4.1-beta8
+          gh release create v0.4.1-beta8 --prerelease --title "Navimower 0.4.1-beta8" --notes-file .github/release-notes/0.4.1-beta8.md
+
+      - name: Remove temporary release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git rm .github/workflows/beta8-release.yml .github/workflows/beta8-push-release.yml .github/beta8_release.py .github/beta8-trigger
+          git commit -m "Remove temporary beta8 release files"
+          git push origin HEAD:main
+
+      - name: Close trigger issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close 30 --comment "Released v0.4.1-beta8 successfully from commit ${{ steps.commit.outputs.sha }}."
