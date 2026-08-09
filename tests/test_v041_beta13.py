@@ -21,10 +21,12 @@ def _probe():
     return module
 
 
-def test_beta13_manifest_has_no_zstd_runtime_requirement() -> None:
+def test_beta13_release_keeps_zstd_optional() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta13"
     assert all(not requirement.startswith("zstandard") for requirement in manifest["requirements"])
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta13.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta13")
+    assert "libzstd" in notes
 
 
 def test_beta13_normal_decoder_reports_backend() -> None:
