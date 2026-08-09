@@ -29,8 +29,13 @@ async def async_get_config_entry_diagnostics(
 
     # Native HA diagnostics should remain reasonably sized. The uncompressed map
     # endpoint is still included in full; the compressed copy is redundant here.
-    return await async_build_diagnostics(
+    document = await async_build_diagnostics(
         hass,
         coordinator,
         include_compressed_map=False,
     )
+    if hasattr(coordinator, "state_transition_diagnostics"):
+        document["state_transition_capture"] = sanitize(
+            coordinator.state_transition_diagnostics()
+        )
+    return document
