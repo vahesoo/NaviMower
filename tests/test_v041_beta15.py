@@ -16,7 +16,7 @@ def test_beta15_manifest_and_release_notes() -> None:
     assert "state transition" in notes.lower()
     assert "index2" in notes
     assert "boolState" in notes
-    assert "0 s" in notes and "1 s" in notes and "5 s" in notes
+    assert "immediately" in notes and "after 1 s" in notes and "after 5 s" in notes
 
 
 def test_beta15_capture_reads_state_endpoints_and_is_bounded() -> None:
