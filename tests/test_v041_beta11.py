@@ -6,7 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-import zstandard
+from compression import zstd
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
@@ -21,10 +21,7 @@ def _probe():
     return module
 
 
-def test_beta11_runtime_dependency_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta11"
-    assert "zstandard==0.25.0" in manifest["requirements"]
+def test_beta11_notes_record_runtime_decoder_attempt() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta11.md").read_text()
     assert "Zstandard" in notes
     assert "runtime" in notes
@@ -41,7 +38,7 @@ def test_hint_error_probe_decodes_base64_zstd_json() -> None:
         ],
         "catalog": True,
     }
-    compressed = zstandard.ZstdCompressor().compress(json.dumps(payload).encode())
+    compressed = zstd.compress(json.dumps(payload).encode())
     raw = base64.b64encode(compressed).decode()
     result = probe.inspect_hint_error_payload(raw)
     assert [layer["operation"] for layer in result["layers"]] == ["base64", "zstd"]
