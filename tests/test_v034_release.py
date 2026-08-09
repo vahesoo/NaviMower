@@ -11,12 +11,12 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta13"
+    assert manifest["version"] == "0.4.1-beta14"
     assert "zstandard==0.25.0" not in manifest["requirements"]
-    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta13.md").read_text()
-    assert notes.startswith("title: Navimower 0.4.1-beta13")
-    assert "libzstd" in notes
-    assert "ctypes" in notes
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta14.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta14")
+    assert "vendor code lookup" in notes.lower()
+    assert "Passive discovery" in notes
     assert "Problem" in notes
     assert "Error" in notes
 
