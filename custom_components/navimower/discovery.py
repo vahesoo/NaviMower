@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import json
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,12 +18,21 @@ _SENSITIVE_EXACT = {
     "antitheftpoint", "origin_gps", "center_gps", "ne_gps", "sw_gps",
 }
 _OBSERVED_VALUE_KEYS = {
-    "type", "action", "subAction", "vehicleState", "eventCode", "code", "status",
-    "state", "messageType", "notificationType",
+    "type", "action", "subaction", "vehiclestate", "eventcode", "code", "status",
+    "state", "messagetype", "notificationtype", "errorcode", "error_code",
+    "faultcode", "fault_code", "warningcode", "warning_code", "alarmcode",
+    "alarm_code", "event", "eventtype", "event_type", "notification",
+    "message", "title", "reason",
 }
+_SIGNAL_KEY_MARKERS = (
+    "error", "fault", "event", "notification", "message", "title", "warning",
+    "alarm", "reason", "code",
+)
+_CODE_TOKEN_RE = re.compile(r"(?i)(?<![0-9a-f])([0-9a-f]{3,8})(?![0-9a-f])")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 50
 _MAX_STRING = 512
+_MAX_OBSERVED_VALUE = 180
 
 
 def mqtt_discovery_topic(device_id: str) -> str:
@@ -36,8 +46,16 @@ def mqtt_discovery_topics(device_id: str) -> tuple[str, ...]:
     return ("/downlink/#",)
 
 
+def _normalize_key(key: str) -> str:
+    return str(key).strip().lower().replace("-", "_")
+
+
+def _compact_key(key: str) -> str:
+    return "".join(ch for ch in _normalize_key(key) if ch.isalnum())
+
+
 def _is_sensitive_key(key: str) -> bool:
-    normalized = str(key).strip().lower().replace("-", "_")
+    normalized = _normalize_key(key)
     return (
         normalized in _SENSITIVE_EXACT
         or "token" in normalized
@@ -125,12 +143,44 @@ def sanitize_discovery_payload(payload: bytes) -> Any:
     return sanitize_discovery_value(parsed)
 
 
+def _signal_key(key: str) -> bool:
+    compact = _compact_key(key)
+    return compact in {_compact_key(item) for item in _OBSERVED_VALUE_KEYS} or any(
+        marker in compact for marker in _SIGNAL_KEY_MARKERS
+    )
+
+
+def _render_observed(key: str, value: Any) -> str | None:
+    if _is_sensitive_key(key) or isinstance(value, (Mapping, list, tuple, bytes, bytearray)):
+        return None
+    safe = sanitize_discovery_value(value, key=key)
+    if isinstance(safe, (dict, list)):
+        return None
+    rendered = " ".join(str(safe).split())
+    if len(rendered) > _MAX_OBSERVED_VALUE:
+        rendered = rendered[: _MAX_OBSERVED_VALUE - 3] + "..."
+    return rendered
+
+
+def _code_candidates(value: Any) -> set[str]:
+    if value is None or isinstance(value, (Mapping, list, tuple, bytes, bytearray)):
+        return set()
+    text = str(value).upper()
+    out: set[str] = set()
+    for match in _CODE_TOKEN_RE.finditer(text):
+        token = match.group(1).upper()
+        if any(ch.isdigit() for ch in token):
+            out.add(token)
+    return out
+
+
 def structure_summary(value: Any) -> dict[str, list[str]]:
-    """Describe JSON structure without retaining ordinary field values."""
+    """Describe JSON structure and retain bounded notification/error signal values."""
     parsed_types: set[str] = set()
     top_level_keys: set[str] = set()
     key_paths: set[str] = set()
     observed_values: set[str] = set()
+    code_candidates: set[str] = set()
 
     def walk(current: Any, path: str = "", depth: int = 0) -> None:
         if depth >= _MAX_DEPTH:
@@ -145,14 +195,20 @@ def structure_summary(value: Any) -> dict[str, list[str]]:
                 key_paths.add(child_path)
                 if not path:
                     top_level_keys.add(key)
-                if key in _OBSERVED_VALUE_KEYS and isinstance(child, (str, int, float, bool)):
-                    observed_values.add(f"{key}={child}")
+                compact = _compact_key(key)
+                legacy_observed = compact in {_compact_key(item) for item in _OBSERVED_VALUE_KEYS}
+                if (legacy_observed or _signal_key(key)) and isinstance(child, (str, int, float, bool)):
+                    rendered = _render_observed(key, child)
+                    if rendered is not None:
+                        observed_values.add(f"{key}={rendered}")
+                    code_candidates.update(_code_candidates(child))
                 walk(child, child_path, depth + 1)
         elif isinstance(current, (list, tuple)):
             for child in current[:_MAX_ITEMS]:
                 walk(child, f"{path}[]" if path else "[]", depth + 1)
 
     walk(value)
+    observed_values.update(f"code_candidate={code}" for code in code_candidates)
     return {
         "parsed_types": sorted(parsed_types),
         "top_level_keys": sorted(top_level_keys),
