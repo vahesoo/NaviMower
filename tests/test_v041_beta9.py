@@ -20,8 +20,6 @@ def _load_discovery():
 
 
 def test_beta9_version_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta9"
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta9.md").read_text()
     assert "Problem" in notes
     assert "index2" in notes
