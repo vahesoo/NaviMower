@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import binascii
 import bz2
+import ctypes
+import ctypes.util
 import hashlib
 import json
 import lzma
@@ -16,6 +18,8 @@ _MAX_INPUT_CHARS = 1_000_000
 _MAX_DECODED_BYTES = 2_000_000
 _MAX_JSON_EXPORT_BYTES = 1_000_000
 _MAX_TEXT_PREVIEW = 2_048
+_ZSTD_CONTENTSIZE_UNKNOWN = (1 << 64) - 1
+_ZSTD_CONTENTSIZE_ERROR = (1 << 64) - 2
 _CODE_RE = re.compile(r"(?<!\d)(\d{4,6})(?!\d)")
 _BASE64_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 _HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
@@ -99,33 +103,119 @@ def _zlib(data: bytes, wbits: int) -> bytes:
     return out
 
 
-def _decompress(data: bytes, kind: str) -> bytes:
+def _zstd_stdlib(data: bytes) -> bytes:
+    import compression.zstd as zstd  # type: ignore[import-not-found]
+
+    return zstd.decompress(data)
+
+
+def _zstd_third_party(data: bytes) -> bytes:
+    import zstandard  # type: ignore[import-not-found]
+
+    return zstandard.ZstdDecompressor().decompress(
+        data, max_output_size=_MAX_DECODED_BYTES + 1
+    )
+
+
+def _load_libzstd() -> ctypes.CDLL:
+    candidates = [
+        ctypes.util.find_library("zstd"),
+        "libzstd.so.1",
+        "libzstd.so",
+        "libzstd.dylib",
+        "zstd.dll",
+    ]
+    errors: list[str] = []
+    for candidate in dict.fromkeys(item for item in candidates if item):
+        try:
+            return ctypes.CDLL(candidate)
+        except OSError as err:
+            errors.append(f"{candidate}: {err}")
+    detail = "; ".join(errors[-3:]) if errors else "library not found"
+    raise ImportError(f"native libzstd unavailable: {detail}")
+
+
+def _zstd_native(data: bytes) -> bytes:
+    """Decompress one Zstandard frame through the system libzstd C API."""
+    lib = _load_libzstd()
+    size_t = ctypes.c_size_t
+    source = ctypes.create_string_buffer(data)
+    source_ptr = ctypes.cast(source, ctypes.c_void_p)
+
+    lib.ZSTD_getFrameContentSize.argtypes = [ctypes.c_void_p, size_t]
+    lib.ZSTD_getFrameContentSize.restype = ctypes.c_ulonglong
+    frame_size = int(lib.ZSTD_getFrameContentSize(source_ptr, len(data)))
+    if frame_size == _ZSTD_CONTENTSIZE_ERROR:
+        raise ValueError("invalid zstd frame")
+    if frame_size == _ZSTD_CONTENTSIZE_UNKNOWN:
+        if not hasattr(lib, "ZSTD_decompressBound"):
+            raise ValueError("zstd frame size is unknown and decompress bound is unavailable")
+        lib.ZSTD_decompressBound.argtypes = [ctypes.c_void_p, size_t]
+        lib.ZSTD_decompressBound.restype = ctypes.c_ulonglong
+        frame_size = int(lib.ZSTD_decompressBound(source_ptr, len(data)))
+    if frame_size < 0 or frame_size > _MAX_DECODED_BYTES:
+        raise ValueError("decoded output exceeds safety limit")
+
+    capacity = max(frame_size, 1)
+    destination = ctypes.create_string_buffer(capacity)
+    lib.ZSTD_decompress.argtypes = [ctypes.c_void_p, size_t, ctypes.c_void_p, size_t]
+    lib.ZSTD_decompress.restype = size_t
+    lib.ZSTD_isError.argtypes = [size_t]
+    lib.ZSTD_isError.restype = ctypes.c_uint
+    lib.ZSTD_getErrorName.argtypes = [size_t]
+    lib.ZSTD_getErrorName.restype = ctypes.c_char_p
+
+    written = int(
+        lib.ZSTD_decompress(
+            ctypes.cast(destination, ctypes.c_void_p),
+            capacity,
+            source_ptr,
+            len(data),
+        )
+    )
+    if lib.ZSTD_isError(written):
+        raw_name = lib.ZSTD_getErrorName(written)
+        name = raw_name.decode("utf-8", errors="replace") if raw_name else "unknown"
+        raise ValueError(f"libzstd decode failed: {name}")
+    if written > _MAX_DECODED_BYTES:
+        raise ValueError("decoded output exceeds safety limit")
+    return destination.raw[:written]
+
+
+def _zstd(data: bytes) -> tuple[bytes, str]:
+    unavailable: list[str] = []
+    for backend, decoder in (
+        ("compression.zstd", _zstd_stdlib),
+        ("zstandard", _zstd_third_party),
+        ("libzstd", _zstd_native),
+    ):
+        try:
+            return decoder(data), backend
+        except (ImportError, ModuleNotFoundError) as err:
+            unavailable.append(f"{backend}: {err}")
+    detail = "; ".join(unavailable) if unavailable else "no backend available"
+    raise RuntimeError(f"zstd decoder unavailable ({detail})")
+
+
+def _decompress(data: bytes, kind: str) -> tuple[bytes, str | None]:
     if kind == "gzip":
-        return _zlib(data, 16 + zlib.MAX_WBITS)
+        return _zlib(data, 16 + zlib.MAX_WBITS), None
     if kind == "zlib":
-        return _zlib(data, zlib.MAX_WBITS)
+        return _zlib(data, zlib.MAX_WBITS), None
     if kind == "bzip2":
         out = bz2.BZ2Decompressor().decompress(data, max_length=_MAX_DECODED_BYTES + 1)
     elif kind == "xz":
         out = lzma.LZMADecompressor().decompress(data, max_length=_MAX_DECODED_BYTES + 1)
     elif kind == "zstd":
-        try:
-            import compression.zstd as zstd  # type: ignore[import-not-found]
-
-            out = zstd.decompress(data)
-        except ImportError:
-            try:
-                import zstandard  # type: ignore[import-not-found]
-            except ImportError as err:
-                raise RuntimeError("zstd decoder unavailable") from err
-            out = zstandard.ZstdDecompressor().decompress(
-                data, max_output_size=_MAX_DECODED_BYTES + 1
-            )
+        out, backend = _zstd(data)
+        if len(out) > _MAX_DECODED_BYTES:
+            raise ValueError("decoded output exceeds safety limit")
+        return out, backend
     else:
         raise ValueError(f"unsupported compression: {kind}")
     if len(out) > _MAX_DECODED_BYTES:
         raise ValueError("decoded output exceeds safety limit")
-    return out
+    return out, None
 
 
 def _text(data: bytes) -> tuple[str | None, str | None]:
@@ -263,7 +353,7 @@ def inspect_hint_error_payload(
         if kind is None:
             break
         try:
-            decoded = _decompress(raw, kind)
+            decoded, backend = _decompress(raw, kind)
         except Exception as err:  # noqa: BLE001 - report the failed probe diagnostically.
             result["layers"].append(
                 {
@@ -273,14 +363,15 @@ def inspect_hint_error_payload(
                 }
             )
             break
-        result["layers"].append(
-            {
-                "operation": kind,
-                "input_length": len(raw),
-                "output_length": len(decoded),
-                "output_sha256": _sha(decoded),
-            }
-        )
+        layer = {
+            "operation": kind,
+            "input_length": len(raw),
+            "output_length": len(decoded),
+            "output_sha256": _sha(decoded),
+        }
+        if backend:
+            layer["backend"] = backend
+        result["layers"].append(layer)
         raw = decoded
 
     decoded_meta: dict[str, Any] = {
