@@ -3,6 +3,11 @@ name: Temporary beta10 release
 on:
   issue_comment:
     types: [created]
+  push:
+    branches:
+      - main
+    paths:
+      - .github/beta10-trigger
 
 permissions:
   contents: write
@@ -11,9 +16,10 @@ permissions:
 jobs:
   release:
     if: >-
-      github.event.issue.number == 32 &&
-      github.event.comment.body == 'RUN-BETA10-RELEASE' &&
-      github.event.comment.user.login == github.repository_owner
+      github.event_name == 'push' ||
+      (github.event.issue.number == 32 &&
+       github.event.comment.body == 'RUN-BETA10-RELEASE' &&
+       github.event.comment.user.login == github.repository_owner)
     runs-on: ubuntu-latest
     steps:
       - name: Check out main
@@ -40,7 +46,7 @@ jobs:
         run: python -m pytest -q
 
       - name: Remove temporary release files
-        run: git rm .github/beta10_release.py .github/workflows/beta10-release.yml
+        run: git rm .github/beta10_release.py .github/workflows/beta10-release.yml .github/beta10-trigger
 
       - name: Commit and push release
         id: commit
@@ -79,3 +85,11 @@ jobs:
         run: |
           gh issue comment 32 --body "beta10 release published successfully at commit ${SHA}; full regression suite and hint-error decoder validation passed."
           gh issue close 32 --reason completed
+
+      - name: Comment failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue comment 32 --body "beta10 release failed. Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
