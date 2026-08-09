@@ -1,0 +1,81 @@
+name: Temporary beta10 release
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: >-
+      github.event.issue.number == 32 &&
+      github.event.comment.body == 'RUN-BETA10-RELEASE' &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Apply beta10 patch
+        run: python .github/beta10_release.py
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography zstandard
+
+      - name: Compile integration
+        run: python -m compileall -q custom_components/navimower
+
+      - name: Run full regression suite
+        run: python -m pytest -q
+
+      - name: Remove temporary release files
+        run: git rm .github/beta10_release.py .github/workflows/beta10-release.yml
+
+      - name: Commit and push release
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Release Navimower 0.4.1-beta10'
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish prerelease if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='v0.4.1-beta10'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          git tag "$TAG" "$SHA"
+          git push origin "$TAG"
+          tail -n +3 .github/release-notes/0.4.1-beta10.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --target "$SHA" --title 'Navimower 0.4.1-beta10' --notes-file "$RUNNER_TEMP/notes.md" --prerelease
+
+      - name: Comment success and close issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        shell: bash
+        run: |
+          gh issue comment 32 --body "beta10 release published successfully at commit ${SHA}; full regression suite and hint-error decoder validation passed."
+          gh issue close 32 --reason completed
