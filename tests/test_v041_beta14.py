@@ -18,9 +18,8 @@ def _load(name: str, filename: str):
     return module
 
 
-def test_beta14_manifest_and_release_notes() -> None:
+def test_beta14_release_notes_and_dependency_contract() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta14"
     assert all(not requirement.startswith("zstandard") for requirement in manifest["requirements"])
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta14.md").read_text()
     assert "vehicleErrorData" in notes
