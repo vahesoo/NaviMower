@@ -19,6 +19,13 @@ def _load_route_dedupe():
     return module
 
 
+def _capability_source() -> str:
+    return "\n".join(
+        (COMPONENT / filename).read_text()
+        for filename in ("beta17_runtime.py", "switch.py", "select.py", "number.py")
+    )
+
+
 def test_beta17_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
     assert manifest["version"] == "0.4.1-beta17"
@@ -35,8 +42,9 @@ def test_beta17_manifest_and_release_notes() -> None:
 
 
 def test_beta17_runtime_exposes_i2_awds_observed_settings() -> None:
-    source = (COMPONENT / "beta17_runtime.py").read_text()
-    ast.parse(source)
+    runtime = (COMPONENT / "beta17_runtime.py").read_text()
+    ast.parse(runtime)
+    source = _capability_source()
     for model in ("i205 AWD", "i206 AWD", "i208 AWD", "i210 AWD"):
         assert model in source
     for vendor_key in (
@@ -67,7 +75,7 @@ def test_beta17_runtime_exposes_i2_awds_observed_settings() -> None:
 
 
 def test_beta17_battery_limits_and_global_cutting_height_are_dynamic() -> None:
-    source = (COMPONENT / "beta17_runtime.py").read_text()
+    source = _capability_source()
     assert 'key="return_battery_level"' in source
     assert "native_max_value=20" in source
     assert 'key="charging_limit"' in source
