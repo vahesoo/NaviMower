@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta15."""
+"""Historical regression contracts for Navimower 0.4.1-beta15."""
 from __future__ import annotations
 
 import json
@@ -8,11 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta15_manifest_and_release_notes() -> None:
+def test_beta15_release_notes_remain_historical() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta15"
+    assert manifest["version"].startswith("0.4.1-") or manifest["version"] == "0.4.1"
     assert all(not requirement.startswith("zstandard") for requirement in manifest["requirements"])
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta15.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta15")
     assert "state transition" in notes.lower()
     assert "index2" in notes
     assert "boolState" in notes
