@@ -11,7 +11,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta16_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta16"
+    version = manifest["version"]
+    assert version.startswith("0.4.1-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 16
     assert all(not requirement.startswith("zstandard") for requirement in manifest["requirements"])
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta16.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta16")

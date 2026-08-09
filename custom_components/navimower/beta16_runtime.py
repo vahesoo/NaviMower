@@ -24,6 +24,7 @@ from typing import Any
 
 from . import const as _const
 from . import coordinator as _coordinator
+from .beta17_runtime import install_beta17_runtime
 
 _STATE_IDLE = "0103"
 _STATE_FAULT = "0301"
@@ -122,6 +123,7 @@ def install_beta16_runtime() -> None:
     """Install beta16 state/error semantics once per interpreter."""
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_beta16_runtime_installed", False):
+        install_beta17_runtime()
         return
 
     # The coordinator imported these mutable objects by reference, so mutating
@@ -254,3 +256,4 @@ def install_beta16_runtime() -> None:
     cls.ingest_mqtt_state = ingest_mqtt_state
     cls._beta16_runtime_installed = True
     _install_error_sensor_attributes()
+    install_beta17_runtime()
