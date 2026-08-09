@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta12."""
+"""Historical regression contracts for Navimower 0.4.1-beta12."""
 from __future__ import annotations
 
 import base64
@@ -23,8 +23,10 @@ def _probe():
 
 def test_beta12_uses_python314_stdlib_zstd() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta12"
     assert all(not requirement.startswith("zstandard") for requirement in manifest["requirements"])
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta12.md").read_text()
+    assert notes.startswith("title: Navimower 0.4.1-beta12")
+    assert "compression.zstd" in notes
 
     payload = {"code": 6108, "message": "Mower got stuck"}
     raw = base64.b64encode(zstd.compress(json.dumps(payload).encode())).decode()
