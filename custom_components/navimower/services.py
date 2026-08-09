@@ -29,6 +29,11 @@ from .const import (
     mow_setup,
 )
 from .model_support import supports_ordered_zone_mowing
+from .state_transition_capture import install_state_transition_capture
+
+# Beta15 diagnostic hook: capture private-cloud state immediately around MQTT
+# state/action transitions without changing any public Problem/Error semantics.
+install_state_transition_capture()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
