@@ -21,9 +21,7 @@ def _probe():
     return module
 
 
-def test_beta10_version_and_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta10"
+def test_beta10_notes_remain_available() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta10.md").read_text()
     assert "get-hint-error-compress" in notes
     assert "Base64" in notes
