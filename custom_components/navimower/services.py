@@ -28,12 +28,14 @@ from .const import (
     encode_partition_ids,
     mow_setup,
 )
+from .beta16_runtime import install_beta16_runtime
 from .model_support import supports_ordered_zone_mowing
 from .state_transition_capture import install_state_transition_capture
 
-# Beta15 diagnostic hook: capture private-cloud state immediately around MQTT
-# state/action transitions without changing any public Problem/Error semantics.
+# Keep beta15's diagnostic transition capture for further field testing, then
+# layer the beta16 public state/error semantics over the already-wrapped methods.
 install_state_transition_capture()
+install_beta16_runtime()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
@@ -53,8 +55,8 @@ _WEEKDAY_TO_NUM = {
 
 _PERIOD_SCHEMA = vol.Schema(
     {
-        vol.Required("start"): cv.string,  # "HH:MM"
-        vol.Required("end"): cv.string,  # "HH:MM"
+        vol.Required("start"): cv.string,
+        vol.Required("end"): cv.string,
         vol.Optional("zones", default=list): vol.All(cv.ensure_list, [vol.Coerce(int)]),
     }
 )
@@ -71,9 +73,7 @@ SET_SCHEDULE_SCHEMA = vol.Schema(
 MOW_SCHEMA = vol.Schema(
     {
         vol.Optional("device_id"): cv.string,
-        # Region ids to mow; empty = all available zones.
         vol.Optional("zones", default=list): vol.All(cv.ensure_list, [vol.Coerce(int)]),
-        # True = riparti da zero (clear progress); False = continua.
         vol.Optional("reset", default=True): cv.boolean,
     }
 )
@@ -109,9 +109,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     def _resolve_coordinator(call: ServiceCall):
         store = hass.data.get(DOMAIN) or {}
-        # ``hass.data[DOMAIN]`` also contains private helper state such as the
-        # options snapshot. Only config-entry coordinators are valid service
-        # targets.
         coords = [
             value
             for key, value in store.items()
@@ -151,7 +148,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 raise ServiceValidationError(
                     f"Invalid schedule time; use HH:MM: {err}"
                 ) from err
-            # An end of "00:00" means end-of-day (24:00 = slot 96), never 0.
             if end_min == 0:
                 end_min = 1440
             if start_min % 15 or end_min % 15:
@@ -192,7 +188,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 enabled,
                 periods,
             )
-        except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
+        except Exception as err:
             raise HomeAssistantError(f"Navimow set_schedule failed: {err}") from err
 
     async def _export_diagnostics(call: ServiceCall) -> None:
@@ -203,7 +199,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator,
                 include_compressed_map=call.data["include_compressed_map"],
             )
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             raise HomeAssistantError(f"Navimower diagnostics export failed: {err}") from err
         persistent_notification.async_create(
             hass,
@@ -275,7 +271,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.start_new_mowing_cycle(
                     zones, source="navimower.mow_reset"
                 )
-        except Exception as err:  # noqa: BLE001 - surface a clean error to the UI
+        except Exception as err:
             coordinator.record_mow_command_error(err)
             coordinator.clear_pending_activity()
             if requested_ordered:
