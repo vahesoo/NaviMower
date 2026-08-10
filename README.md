@@ -41,10 +41,10 @@ for making the original project available to the community.
 ## Recommended account arrangement
 
 Use a dedicated shared Navimow account for the private app-cloud session and
-share the mower to it from the primary account:
+share the mower or mowers to it from their primary owner accounts:
 
 ```text
-Primary account  -> official phone app and Smart Home OAuth
+Owner account(s) -> official phone app and Smart Home OAuth
 Shared account   -> Navimower private-cloud login only
 ```
 
@@ -58,15 +58,15 @@ long as both can access the same mower. Navimower matches the mower by its store
 identity before starting MQTT.
 
 > [!IMPORTANT]
-> For multiple mowers, use a separate dedicated private-cloud account for each
-> Navimower config entry. Reusing one private-cloud account across parallel
-> entries is currently unsupported and has caused session invalidation during
-> field testing.
+> Multiple mower config entries may use the **same dedicated private-cloud
+> account**. Add each mower as its own Navimower config entry. Entries that use
+> the same private-cloud account automatically converge on one stable app/device
+> identity, preventing parallel entries from invalidating each other merely
+> because the account is shared.
 
-Multiple-mower support is present: each mower can be added as its own Navimower
-config entry and receives its own entities, map and history. This area is still
-experimental and needs further development and broader testing, especially when
-several mowers are accessed through the same private-cloud account.
+This shared-account arrangement has been field-tested with three mowers. Each
+mower still receives its own entities, map and history, while the private-cloud
+login identity is shared at account scope.
 
 ## Main features
 
@@ -134,7 +134,8 @@ individually in Home Assistant `.storage`.
 
 ### Physical zones, mapped Channels, Gate areas and gates
 
-- current physical zone derived from fresh MQTT `X/Y` and decoded polygons;
+- current physical zone resolved from fresh MQTT `X/Y`, then private-cloud
+  `X/Y`, then a last-known display value;
 - target zone kept separate from the physical zone;
 - current mapped Channel detection;
 - zone-transition sensor;
@@ -146,9 +147,17 @@ individually in Home Assistant `.storage`.
 - gate-required sensor remains latched through the configured arrival delay.
 
 The intention-based gate sensor can open a gate before the mower reaches it.
-Gate areas remain available as a precise physical fallback. Gate and Gate-area
-safety uses only a fresh MQTT position; stale private-cloud fallback coordinates
-are never used to issue a false physical close signal.
+Fresh MQTT pose is always authoritative. If MQTT X/Y is unavailable, a recent
+private-cloud pose may be used as a Gate / Gate-area fallback. Cloud freshness
+is measured from the mower/vendor `report_time`, not from the Home Assistant HTTP
+poll time. Stale private-cloud coordinates are display-only and never override a
+fresh MQTT pose or issue a physical close decision.
+
+For an already-open gate, a cloud fallback does not close or clear the latch on
+the first arrival/outside sample. Two distinct fresh private-cloud position
+reports must confirm the transition. Gate-area OFF transitions use the same
+two-report rule. This intentionally prefers a gate remaining open slightly
+longer over closing from a single delayed cloud coordinate.
 
 When mowing is started from Home Assistant with an explicit zone list, the
 clicked zone order is sent unchanged and the first requested zone is latched
@@ -160,15 +169,13 @@ configured close delay expires.
 
 Normal empty navigation states are exposed as readable values (`No active
 target`, `Not in channel`, or a last-known/stale physical zone) rather than
-generic `unknown`. Current channel keeps its last confirmed display value when
-the pose stream ages instead of alternating with `Position unavailable`; a
-confirmed dock is reported as `Not in channel`. The sensor exposes source,
-staleness and pose age, while all Gate and Gate-area safety decisions continue
-to require a fresh MQTT position. During a brief start, pause or dock
-acknowledgement, the lawn-mower entity preserves the explicit command activity
-instead of falling back to a false Docked state. Target and gate attributes
-include the chosen source, command age, direction and pose validity for
-troubleshooting.
+generic `unknown`. Current physical zone and Current channel expose the selected
+position source, source age and stale state. The `Live position valid` diagnostic
+remains specifically about a fresh official MQTT pose. During a brief start,
+pause or dock acknowledgement, the lawn-mower entity preserves the explicit
+command activity instead of falling back to a false Docked state. Target and gate
+attributes include the chosen source, command age, direction and pose validity
+for troubleshooting.
 
 ### Mower entities and controls
 
@@ -228,12 +235,12 @@ Assistant generates the final entity IDs from the mower and entity names.
 | Zone Area, Mowed area, Last mowed and Last completed | Optional supporting entities for each zone | Created per zone and disabled by default |
 | Cutting height | Current global/effective cutting height | Models reporting a trustworthy remote height; field-tested on H215 |
 | Current physical zone, Target zone and Current channel | Physical location, intended destination and mapped-channel state | Decoded map plus live/private position data |
-| Zone transition | Previous and current physical zone transition | Mowers with decoded zones and fresh pose data |
+| Zone transition | Previous and current physical zone transition | Mowers with decoded zones and usable position context |
 | Position X/Y, Heading and source/age | Local map pose and source diagnostics | Mowers reporting position data |
 | Schedule and Next mow | Parsed weekly schedule, zones and next planned start | When schedule data is reported |
 | Blades life and Chassis life | Maintenance reminder percentage and runtime details | When maintenance data is reported |
 | Connectivity and diagnostics | Private-cloud, OAuth, MQTT, stream, signal and source status | All configured mowers; detailed fields depend on available sources |
-| Gate area and Gate required | Fresh-pose presence and intent-based gate automation state | Only for configured Gate areas or zone-pair gates |
+| Gate area and Gate required | MQTT-primary presence/intent with fresh private-cloud fallback | Only for configured Gate areas or zone-pair gates |
 | Map data and SVG camera | Lightweight API metadata and renderable map image | Mowers with decoded map data |
 
 #### Setting controls
@@ -313,19 +320,18 @@ credentials before reconnecting.
 Navimower treats MQTT transport and the live position stream as separate health
 signals. `MQTT connected` means the broker connection is open; `Live position
 valid` means a real X/Y packet has arrived within the freshness window. A broker
-can remain connected while the location subscription is silent.
+can remain connected while the location subscription is silent, including while
+the mower is stopped in some error or idle states.
 
 While the mower is active, a five-second watchdog checks the pose stream. When
 the latest pose is more than 25 seconds old, Navimower first re-subscribes to the
-location topic. If no pose arrives within 10 seconds, it rebuilds only the MQTT
-client with increasing backoff. The watchdog and prolonged startup-retry loop
-are registered as Home Assistant background tasks, so they do not delay
-integration startup. The config entry, entities, active session and map APIs
-stay loaded during recovery.
+location topic. If no pose arrives within 10 seconds, it keeps the useful MQTT
+state/progress transport and lets position fall back independently instead of
+letting a missing pose overwrite the rest of MQTT state.
 
 | Data | Preferred source | Fallback |
 | --- | --- | --- |
-| X/Y, heading and exact route | official MQTT | private-cloud location |
+| X/Y, heading and exact route | official MQTT | private-cloud location for current position; exact dense route is not invented |
 | live activity changes | official MQTT | private-cloud `index2` |
 | battery while mowing/returning | fresh official MQTT state | private-cloud SOC, then last-known |
 | battery while docked/charging | private-cloud SOC | fresh MQTT state, then last-known |
@@ -336,8 +342,9 @@ stay loaded during recovery.
 | Map area | decoded map-zone geometry | persisted map cache |
 | Route progress | official MQTT/vendor route counter | unavailable; diagnostic only |
 | map, zones, settings and schedule | private cloud | persisted/local cache |
-| Current channel display | fresh MQTT pose | confirmed dock or last-known display value |
-| physical Gate-area/gate safety | fresh MQTT only | unavailable, never stale X/Y |
+| Current physical zone display | fresh MQTT pose | private-cloud X/Y, then last-known display value |
+| Current channel display | fresh MQTT pose | private-cloud X/Y, confirmed dock or last-known display value |
+| physical Gate-area/gate safety | fresh MQTT pose | fresh private-cloud pose by vendor `report_time`; stale cloud is display-only and cloud close/clear needs two distinct confirming reports |
 
 Private-cloud polling is currently intentionally aggressive while field testing:
 
@@ -359,9 +366,8 @@ does not interpolate synthetic battery percentages.
 Reauthentication is started only for a real authentication rejection. The
 diagnostic `Position source` sensor shows whether current X/Y came from `mqtt`
 or `private_cloud`; `MQTT position stream` shows states such as `live`,
-`resubscribing`, `rebuilding` or `backoff`. Battery, progress, area and Current
-channel entities expose their selected source and freshness context as
-attributes.
+`resubscribing`, `pose_degraded` or `idle`. Battery, progress, area and navigation
+entities expose their selected source and freshness context as attributes.
 
 ## Navimower Map Card
 
@@ -478,10 +484,25 @@ safety logic or automatic-close behaviour.
 ### Gate areas
 
 Gate areas are optional local-coordinate rectangles managed with Add/Edit/Delete
-steps. They can describe a gate passage or any other area that needs exact
-physical presence from fresh MQTT coordinates.
+steps. They can describe a gate passage or any other area that needs physical
+presence. Fresh MQTT coordinates remain primary; a recent private-cloud pose may
+be used when MQTT pose is unavailable. A cloud-based OFF transition requires two
+distinct fresh vendor position reports, and stale cloud coordinates remain
+display-only.
 
 ## Upgrade notes
+
+### v0.4.1-beta18
+
+- Current physical zone and Current channel now use fresh MQTT first, then
+  private-cloud X/Y, then last-known display context.
+- Fresh private-cloud X/Y may back up Gate and Gate-area logic while MQTT pose is
+  unavailable; stale cloud coordinates never override MQTT or close a gate.
+- Cloud-based gate close/clear and Gate-area OFF require two distinct confirming
+  vendor position reports.
+- Multiple mowers may share one dedicated private-cloud account; account-sharing
+  entries automatically use one stable app/device identity.
+- No configuration migration is required. Restart Home Assistant after updating.
 
 ### v0.3.4
 
@@ -535,7 +556,7 @@ physical presence from fresh MQTT coordinates.
   immediately and waits for low new-cycle telemetry.
 - Current channel no longer alternates with `Position unavailable` only because
   the idle pose exceeded its freshness window. Gate safety remains fresh-pose
-  only.
+  only in that historical release; beta18 adds a guarded private-cloud fallback.
 - Total area and the main public telemetry values survive short source outages
   and Home Assistant restarts.
 - No configuration migration or Map API change is required. Restart Home
@@ -652,10 +673,9 @@ earlier by the user.
 - This is an **alpha release** and has not been tested across all mower models,
   accounts, firmware versions or regions.
 - Current OAuth/private endpoints target the European/FRA service.
-- A dedicated private-cloud shared account is strongly recommended. Reusing
-  one private-cloud account across parallel entries is currently unsupported.
-- Multiple-mower support is available through separate config entries, but it
-  remains experimental and needs further development and broader field testing.
+- A dedicated private-cloud shared account is strongly recommended; multiple
+  mower config entries may use that same account and share one stable app/device
+  identity.
 - Exact state codes and some settings remain firmware-specific.
 - The standalone map card does not currently render temporary doodles, although
   their raw metadata remains available in the API and diagnostics.
@@ -664,6 +684,8 @@ earlier by the user.
 - The immediate target of multi-zone tasks is decoded from vendor data. When
   Home Assistant starts an explicit ordered-zone task, the first requested zone
   is latched locally so delayed vendor target fields do not delay gate opening.
+- Private-cloud navigation fallback depends on the vendor location `report_time`;
+  stale cloud points are never trusted for gate close/clear decisions.
 - Map writes, boundary edits, edge-mowing changes and `clock_direction` writes
   are deliberately not included.
 

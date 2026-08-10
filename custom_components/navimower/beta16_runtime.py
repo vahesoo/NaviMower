@@ -25,6 +25,7 @@ from typing import Any
 from . import const as _const
 from . import coordinator as _coordinator
 from .beta17_runtime import install_beta17_runtime
+from .beta18_runtime import install_beta18_runtime
 
 _STATE_IDLE = "0103"
 _STATE_FAULT = "0301"
@@ -124,6 +125,7 @@ def install_beta16_runtime() -> None:
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_beta16_runtime_installed", False):
         install_beta17_runtime()
+        install_beta18_runtime()
         return
 
     # The coordinator imported these mutable objects by reference, so mutating
@@ -257,3 +259,4 @@ def install_beta16_runtime() -> None:
     cls._beta16_runtime_installed = True
     _install_error_sensor_attributes()
     install_beta17_runtime()
+    install_beta18_runtime()

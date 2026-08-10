@@ -28,7 +28,9 @@ def _capability_source() -> str:
 
 def test_beta17_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta17"
+    version = manifest["version"]
+    assert version.startswith("0.4.1-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 17
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta17.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta17")
     for phrase in (
