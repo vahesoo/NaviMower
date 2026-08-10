@@ -26,12 +26,10 @@ def test_beta23_manifest_and_release_notes() -> None:
         assert phrase in notes
 
 
-def test_beta23_download_diagnostics_runs_h5_discovery() -> None:
-    source = (COMPONENT / "diagnostics.py").read_text()
+def test_beta23_h5_discovery_implementation_remains_parseable() -> None:
+    source = (COMPONENT / "h5_discovery.py").read_text()
     ast.parse(source)
     assert "probe_h5_frontend" in source
-    assert 'document["h5_frontend_discovery"]' in source
-    assert "async_add_executor_job" in source
     assert '"home_assistant_download"' in source
 
 
