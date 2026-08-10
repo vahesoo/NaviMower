@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta23."""
+"""Regression contracts carried forward from Navimower 0.4.1-beta23."""
 from __future__ import annotations
 
 import ast
@@ -11,7 +11,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta23_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta23"
+    version = manifest["version"]
+    assert version.startswith("0.4.1-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 23
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta23.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta23")
     for phrase in (
