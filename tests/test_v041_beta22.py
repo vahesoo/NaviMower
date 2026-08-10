@@ -53,11 +53,10 @@ def test_beta22_transport_probe_covers_host_method_and_encoding() -> None:
         '"p101_query"',
         '"plain_json"',
         '"plain_query"',
-        'method="POST"',
     ):
         assert phrase in source
-    assert '"GET"' in source
-    assert '"POST"' in source
+    assert '("GET", "p101_query", True)' in source
+    assert '("POST", "p101_json_text_html", True)' in source
     assert source.count('"/message/') >= 3
     assert source.count('"/push/') >= 2
 
