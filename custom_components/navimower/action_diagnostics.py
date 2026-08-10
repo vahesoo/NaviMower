@@ -16,7 +16,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .diagnostics_export import async_build_diagnostics, sanitize
-from .event_transport_probe import probe_event_transports
+from .event_transport_probe import probe_event_transports as probe_event_endpoints
 
 
 def _write_json(path: Path, document: dict[str, Any]) -> None:
@@ -45,7 +45,7 @@ async def async_export_action_diagnostics(
         )
 
     document["notification_event_probe"] = await hass.async_add_executor_job(
-        probe_event_transports,
+        probe_event_endpoints,
         coordinator.client,
         coordinator.sn,
         coordinator.vehicle_type,
