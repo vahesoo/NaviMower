@@ -103,7 +103,6 @@ def _risky_cloud_gate_transition(coordinator: Any, snapshot: dict[str, Any], con
             confirmations.pop(slug, None)
             continue
 
-        key = f"{physical_id}:{report_key}"
         previous = confirmations.get(slug) or {}
         count = int(previous.get("count") or 0)
         previous_report = str(previous.get("report") or "")
@@ -115,7 +114,6 @@ def _risky_cloud_gate_transition(coordinator: Any, snapshot: dict[str, Any], con
         confirmations[slug] = {
             "zone": physical_id,
             "report": report_key,
-            "key": key,
             "count": count,
         }
         if count < 2:
@@ -136,9 +134,10 @@ def _decorate_navigation_result(
     stale = bool(context.get("stale"))
     position = context.get("position")
 
-    # If cloud is too old for gate logic, still use it for display-only zone and
-    # channel identification. The gate result was already calculated without it.
-    if source == "private_cloud" and position is not None and not context.get("gate_usable"):
+    # Display follows the best available position independently from gate safety.
+    # This also means the first cloud arrival sample may update the visible zone
+    # while a gate latch still waits for the second confirming cloud report.
+    if source == "private_cloud" and position is not None:
         map_data = snapshot.get("map") or {}
         zones = map_data.get("zones") or snapshot.get("zones") or []
         channels = map_data.get("channels") or []
