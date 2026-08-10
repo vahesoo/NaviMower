@@ -8,7 +8,6 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_export import async_build_diagnostics, sanitize
-from .event_probe import probe_event_endpoints
 
 
 async def async_get_config_entry_diagnostics(
@@ -28,8 +27,9 @@ async def async_get_config_entry_diagnostics(
             },
         }
 
-    # Native HA diagnostics should remain reasonably sized. The uncompressed map
-    # endpoint is still included in full; the compressed copy is redundant here.
+    # Native HA diagnostics stays fast and predictable. Slow notification/event
+    # endpoint discovery is intentionally reserved for the explicit
+    # navimower.export_diagnostics action in beta21.
     document = await async_build_diagnostics(
         hass,
         coordinator,
@@ -39,15 +39,5 @@ async def async_get_config_entry_diagnostics(
         document["state_transition_capture"] = sanitize(
             coordinator.state_transition_diagnostics()
         )
-
-    # Beta19: the Navimow phone app exposes a Device notification timeline, but
-    # its runtime API endpoint is still unknown. Probe likely *read* endpoints
-    # only when diagnostics are explicitly downloaded. This is intentionally not
-    # part of normal polling and never calls a setting/control/map-write route.
-    document["notification_event_probe"] = await hass.async_add_executor_job(
-        probe_event_endpoints,
-        coordinator.client,
-        coordinator.sn,
-        coordinator.vehicle_type,
-    )
+    document["diagnostics_source"] = "home_assistant_download"
     return document
