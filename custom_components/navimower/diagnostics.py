@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_export import async_build_diagnostics, sanitize
+from .h5_discovery import probe_h5_frontend
 
 
 async def async_get_config_entry_diagnostics(
@@ -27,9 +28,6 @@ async def async_get_config_entry_diagnostics(
             },
         }
 
-    # Native HA diagnostics stays fast and predictable. Slow notification/event
-    # endpoint discovery is intentionally reserved for the explicit
-    # navimower.export_diagnostics action in beta21.
     document = await async_build_diagnostics(
         hass,
         coordinator,
@@ -39,5 +37,13 @@ async def async_get_config_entry_diagnostics(
         document["state_transition_capture"] = sanitize(
             coordinator.state_transition_diagnostics()
         )
+
+    # Beta23 moves notification discovery back to the native Download diagnostics
+    # flow, but no longer brute-forces API paths. It follows only public H5 HTML
+    # and a bounded set of referenced JavaScript assets, storing structural clues.
+    document["h5_frontend_discovery"] = await hass.async_add_executor_job(
+        probe_h5_frontend,
+        coordinator.client,
+    )
     document["diagnostics_source"] = "home_assistant_download"
     return document

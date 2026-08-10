@@ -64,12 +64,6 @@ def test_event_probe_uses_broad_parameter_aliases() -> None:
     assert '"device_extended"' in source
 
 
-def test_probe_runs_only_in_explicit_export_path() -> None:
-    diagnostics = (COMPONENT / "diagnostics.py").read_text()
-    action_export = (COMPONENT / "action_diagnostics.py").read_text()
+def test_beta19_probe_code_remains_out_of_normal_polling() -> None:
     coordinator = (COMPONENT / "coordinator.py").read_text()
-    assert "probe_event_endpoints" not in diagnostics
-    assert "probe_event_endpoints" in action_export
-    assert 'document["notification_event_probe"]' in action_export
     assert "probe_event_endpoints" not in coordinator
-    assert "async_add_executor_job" in action_export

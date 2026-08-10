@@ -25,34 +25,22 @@ def test_beta21_manifest_and_release_notes() -> None:
         assert phrase in notes
 
 
-def test_native_download_diagnostics_has_no_notification_probe() -> None:
-    source = (COMPONENT / "diagnostics.py").read_text()
-    ast.parse(source)
-    assert "probe_event_endpoints" not in source
-    assert '"notification_event_probe"' not in source
-    assert '"home_assistant_download"' in source
-    assert "state_transition_diagnostics" in source
-
-
-def test_action_export_contains_notification_probe_and_writes_latest() -> None:
+def test_action_export_still_writes_latest_and_state_capture() -> None:
     source = (COMPONENT / "action_diagnostics.py").read_text()
     ast.parse(source)
-    assert "probe_event_endpoints" in source
-    assert 'document["notification_event_probe"]' in source
     assert '"navimower.export_diagnostics"' in source
     assert '"navimower_diagnostics_latest.json"' in source
     assert "state_transition_diagnostics" in source
     assert "async_build_diagnostics" in source
 
 
-def test_export_service_uses_extended_action_export() -> None:
+def test_export_service_still_uses_action_export() -> None:
     services = (COMPONENT / "services.py").read_text()
     assert "async_export_action_diagnostics" in services
     assert "async_export_diagnostics(" not in services
-    assert "includes notification/event discovery" in services
 
 
-def test_action_probe_remains_read_only() -> None:
+def test_legacy_action_probe_code_remains_read_only() -> None:
     source = (COMPONENT / "event_probe.py").read_text()
     for forbidden in (
         "/vehicle/set/send",

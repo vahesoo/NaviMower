@@ -32,8 +32,6 @@ from .beta16_runtime import install_beta16_runtime
 from .model_support import supports_ordered_zone_mowing
 from .state_transition_capture import install_state_transition_capture
 
-# Keep beta15's diagnostic transition capture for further field testing, then
-# layer the beta16 public state/error semantics over the already-wrapped methods.
 install_state_transition_capture()
 install_beta16_runtime()
 
@@ -42,7 +40,6 @@ SERVICE_MOW = "mow"
 SERVICE_EXPORT_DIAGNOSTICS = "export_diagnostics"
 SERVICE_MARK_DISCOVERY_EVENT = "mark_discovery_event"
 
-# Navimow weekday numbering is 1=Sun .. 7=Sat.
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
     "monday": 2,
@@ -206,7 +203,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
             (
                 "Extended read-only Navimower diagnostics export completed.\n\n"
                 f"File: `{path}`\n\n"
-                "This action export includes notification/event discovery and may take longer. "
+                "Beta23 does not run notification/H5 discovery from this action. "
+                "Use Home Assistant Download diagnostics for the H5 discovery block. "
                 "The export is sanitized, but review it before publishing."
             ),
             title="Navimower extended diagnostics export",
