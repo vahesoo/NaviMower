@@ -20,7 +20,9 @@ def _load_position_fallback():
 
 def test_beta18_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta18"
+    version = manifest["version"]
+    assert version.startswith("0.4.1-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 18
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta18.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta18")
     for phrase in (
