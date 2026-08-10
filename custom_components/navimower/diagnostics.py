@@ -7,8 +7,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .diagnostics_export import async_build_diagnostics, sanitize
-from .h5_discovery import probe_h5_frontend
+from .diagnostics_export import async_build_diagnostics, inventory, sanitize
+
+_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
 
 
 async def async_get_config_entry_diagnostics(
@@ -38,12 +39,43 @@ async def async_get_config_entry_diagnostics(
             coordinator.state_transition_diagnostics()
         )
 
-    # Beta23 moves notification discovery back to the native Download diagnostics
-    # flow, but no longer brute-forces API paths. It follows only public H5 HTML
-    # and a bounded set of referenced JavaScript assets, storing structural clues.
-    document["h5_frontend_discovery"] = await hass.async_add_executor_job(
-        probe_h5_frontend,
-        coordinator.client,
-    )
+    # Beta26 replaces public-H5 source scanning with the exact read-only vendor
+    # endpoint recovered in beta25. The private-cloud client still owns auth,
+    # p:101 encryption and session refresh; diagnostics receives only decoded data.
+    try:
+        response = await hass.async_add_executor_job(
+            coordinator.client.notification_history,
+            coordinator.sn,
+            1,
+            20,
+        )
+    except Exception as err:  # noqa: BLE001 - diagnostics records probe failure.
+        document["notification_history_probe"] = {
+            "ok": False,
+            "read_only": True,
+            "endpoint": _NOTIFICATION_PATH,
+            "request": {
+                "vehicle_sn": "<redacted>",
+                "page": 1,
+                "size": 20,
+            },
+            "error_type": type(err).__name__,
+            "error": str(err),
+        }
+    else:
+        clean = sanitize(response)
+        document["notification_history_probe"] = {
+            "ok": True,
+            "read_only": True,
+            "endpoint": _NOTIFICATION_PATH,
+            "request": {
+                "vehicle_sn": "<redacted>",
+                "page": 1,
+                "size": 20,
+            },
+            "response": clean,
+            "inventory": inventory(clean),
+        }
+
     document["diagnostics_source"] = "home_assistant_download"
     return document
