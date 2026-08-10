@@ -29,11 +29,13 @@ from .const import (
     mow_setup,
 )
 from .beta16_runtime import install_beta16_runtime
+from .beta26_runtime import install_beta26_runtime
 from .model_support import supports_ordered_zone_mowing
 from .state_transition_capture import install_state_transition_capture
 
 install_state_transition_capture()
 install_beta16_runtime()
+install_beta26_runtime()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
@@ -203,9 +205,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
             (
                 "Extended read-only Navimower diagnostics export completed.\n\n"
                 f"File: `{path}`\n\n"
-                "Beta23 does not run notification/H5 discovery from this action. "
-                "Use Home Assistant Download diagnostics for the H5 discovery block. "
-                "The export is sanitized, but review it before publishing."
+                "The action export stays on the normal diagnostics path. "
+                "Use Home Assistant Download diagnostics for the fresh vendor "
+                "notification-history probe. The export is sanitized, but review "
+                "it before publishing."
             ),
             title="Navimower extended diagnostics export",
             notification_id="navimower_diagnostics_export",

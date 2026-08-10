@@ -11,7 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta25_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta25"
+    assert manifest["version"].startswith("0.4.1-beta")
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta25.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta25")
     for phrase in (
@@ -56,15 +56,13 @@ def test_beta25_dynamic_chunk_discovery_is_thematic_and_bounded() -> None:
         assert phrase in source
 
 
-def test_beta25_stays_download_only_public_and_read_only() -> None:
+def test_beta25_h5_scanner_remains_public_and_read_only_if_reused() -> None:
     h5 = (COMPONENT / "h5_discovery.py").read_text()
-    diagnostics = (COMPONENT / "diagnostics.py").read_text()
     action = (COMPONENT / "action_diagnostics.py").read_text()
     coordinator = (COMPONENT / "coordinator.py").read_text()
     assert '"source": "home_assistant_download"' in h5
     assert '"public_unauthenticated_only": True' in h5
     assert 'method="GET"' in h5
-    assert "probe_h5_frontend" in diagnostics
     assert "probe_h5_frontend" not in action
     assert "probe_h5_frontend" not in coordinator
     fetch_fn = h5[h5.index("def _fetch"):h5.index("def _extract_script_urls")]
