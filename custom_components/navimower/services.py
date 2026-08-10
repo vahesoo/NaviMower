@@ -20,7 +20,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
-from .diagnostics_export import async_export_diagnostics
+from .action_diagnostics import async_export_action_diagnostics
 
 from .const import (
     ACTIVITY_MOWING,
@@ -194,7 +194,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _export_diagnostics(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         try:
-            path = await async_export_diagnostics(
+            path = await async_export_action_diagnostics(
                 hass,
                 coordinator,
                 include_compressed_map=call.data["include_compressed_map"],
@@ -204,11 +204,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         persistent_notification.async_create(
             hass,
             (
-                "Read-only Navimower diagnostics export completed.\n\n"
+                "Extended read-only Navimower diagnostics export completed.\n\n"
                 f"File: `{path}`\n\n"
+                "This action export includes notification/event discovery and may take longer. "
                 "The export is sanitized, but review it before publishing."
             ),
-            title="Navimower diagnostics export",
+            title="Navimower extended diagnostics export",
             notification_id="navimower_diagnostics_export",
         )
 
