@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta19."""
+"""Regression contracts carried forward from Navimower 0.4.1-beta19."""
 from __future__ import annotations
 
 import ast
@@ -64,10 +64,12 @@ def test_event_probe_uses_broad_parameter_aliases() -> None:
     assert '"device_extended"' in source
 
 
-def test_native_diagnostics_executes_probe_only_on_export() -> None:
+def test_probe_runs_only_in_explicit_export_path() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
+    action_export = (COMPONENT / "action_diagnostics.py").read_text()
     coordinator = (COMPONENT / "coordinator.py").read_text()
-    assert "probe_event_endpoints" in diagnostics
-    assert 'document["notification_event_probe"]' in diagnostics
+    assert "probe_event_endpoints" not in diagnostics
+    assert "probe_event_endpoints" in action_export
+    assert 'document["notification_event_probe"]' in action_export
     assert "probe_event_endpoints" not in coordinator
-    assert "async_add_executor_job" in diagnostics
+    assert "async_add_executor_job" in action_export
