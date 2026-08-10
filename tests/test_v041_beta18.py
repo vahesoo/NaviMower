@@ -96,7 +96,8 @@ def test_beta18_runtime_chains_and_protects_cloud_gate_release() -> None:
 
 def test_readme_documents_shared_account_and_fallback_rules() -> None:
     readme = (ROOT / "README.md").read_text()
-    assert "same dedicated private-cloud account" in readme
+    assert "Multiple mower config entries may use" in readme
+    assert "dedicated private-cloud" in readme
     assert "stable app/device identity" in readme
     assert "currently unsupported" not in readme
     assert "private-cloud" in readme and "report_time" in readme
