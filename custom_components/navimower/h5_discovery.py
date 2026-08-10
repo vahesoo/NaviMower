@@ -1,9 +1,10 @@
 """Read-only H5/native-bridge discovery for Home Assistant diagnostics.
 
-Beta24 builds on beta23's public H5 asset discovery. It still fetches only public,
-unauthenticated HTML/JavaScript, but now extracts higher-value structural clues:
-native bridge method/callback literals, bounded context around bridge/notification
-keywords, and literal API-like strings passed to fetch/axios/get/post patterns.
+Beta25 keeps beta24's bounded public H5 inspection, but follows the evidence from
+real Navimow bundles more closely: minified helper aliases such as ``Rd.callNative``
+and ``je.sendEncryptionData`` are parsed generically, and message/notification/
+history-related lazy JavaScript chunks referenced by inspected bundles can be
+followed with strict request and size limits.
 
 No Navimow credentials, mower identifiers or p:101 payloads are sent to H5.
 Fetched source bodies are never stored in diagnostics.
@@ -29,29 +30,46 @@ _KEYWORDS: tuple[str, ...] = (
     "notice",
     "push",
     "event",
+    "history",
+    "newmessages",
     "baseurl",
     "graphql",
     "axios",
     "sendmessagetonative",
     "messagehandlers",
     "androidandjs",
-    "newmessages",
+    "callnative",
+    "sendencryptiondata",
 )
 _CONTEXT_TERMS: tuple[str, ...] = (
     "sendMessageToNative",
     "messageHandlers",
     "AndroidAndJs",
+    "callNative",
+    "sendEncryptionData",
     "newMessages",
     "notification",
     "notice_title",
     "noticeTitle",
+    "messageHistory",
+    "history",
+)
+_CHUNK_THEME_TERMS: tuple[str, ...] = (
+    "message",
+    "notification",
+    "notice",
+    "push",
+    "history",
+    "newmessages",
 )
 _MAX_HTML_BYTES = 256 * 1024
 _MAX_JS_BYTES = 2 * 1024 * 1024
 _MAX_SCRIPT_ASSETS = 6
+_MAX_DYNAMIC_CHUNKS = 4
 _MAX_FINDINGS = 80
-_MAX_CONTEXTS = 24
-_CONTEXT_RADIUS = 260
+_MAX_CONTEXTS = 32
+_CONTEXT_RADIUS = 320
+_CHUNK_CONTEXT_RADIUS = 700
 _TIMEOUT_SECONDS = 5
 
 _SCRIPT_SRC_RE = re.compile(
@@ -65,16 +83,15 @@ _QUOTED_STRING_RE = re.compile(r"[\"']([^\"'\r\n]{2,300})[\"']")
 _BASE_URL_RE = re.compile(
     r"(?:baseURL|baseUrl|apiBase|apiBaseUrl|baseApi)\s*[:=]\s*[\"']([^\"']{1,300})[\"']"
 )
-_PATH_LITERAL_RE = re.compile(
-    r"[\"'](/[^\"'\r\n]{1,240})[\"']"
-)
+_PATH_LITERAL_RE = re.compile(r"[\"'](/[^\"'\r\n]{1,240})[\"']")
 _CALL_LITERAL_RE = re.compile(
     r"(?:fetch|axios(?:\.(?:get|post|put|delete|request))?|\.(?:get|post|put|delete))"
     r"\s*\(\s*[\"']([^\"'\r\n]{1,240})[\"']",
     re.IGNORECASE,
 )
 _BRIDGE_OBJECT_RE = re.compile(
-    r"(?:sendMessageToNative\s*\(|postMessage\s*\()(?P<body>.{0,800}?)(?:\)|;)",
+    r"(?:sendMessageToNative|postMessage|callNative|sendEncryptionData)\s*\("
+    r"(?P<body>.{0,1200}?)(?:\)|;)",
     re.IGNORECASE | re.DOTALL,
 )
 _METHOD_LITERAL_RE = re.compile(
@@ -86,7 +103,19 @@ _CALLBACK_LITERAL_RE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_BRIDGE_RE = re.compile(
-    r"sendMessageToNative\s*\(\s*[\"']([^\"']{1,120})[\"']",
+    r"(?:[A-Za-z_$][\w$]*\s*\.\s*)*"
+    r"(?:sendMessageToNative|callNative|sendEncryptionData)\s*\(\s*"
+    r"[\"']([^\"']{1,120})[\"']",
+    re.IGNORECASE,
+)
+_GENERIC_BRIDGE_CALL_RE = re.compile(
+    r"(?P<callee>(?:[A-Za-z_$][\w$]*\s*\.\s*)*"
+    r"(?:callNative|sendEncryptionData|sendMessageToNative))\s*\("
+    r"\s*[\"'](?P<method>[^\"']{1,120})[\"']",
+    re.IGNORECASE,
+)
+_JS_LITERAL_RE = re.compile(
+    r"[\"']([^\"'\r\n]{1,360}\.js(?:\?[^\"'\r\n]{0,120})?)[\"']",
     re.IGNORECASE,
 )
 
@@ -106,7 +135,7 @@ def _fetch(url: str, max_bytes: int) -> dict[str, Any]:
         url,
         headers={
             "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.1-beta24",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.1-beta25",
         },
         method="GET",
     )
@@ -168,7 +197,7 @@ def _prioritize_scripts(urls: list[str]) -> list[str]:
 def _interesting_path(value: str) -> bool:
     low = value.lower()
     return (
-        any(token in low for token in ("message", "notification", "notice", "push", "event"))
+        any(token in low for token in ("message", "notification", "notice", "push", "event", "history"))
         or "/api/" in low
         or low.startswith("/api")
         or low.startswith("api/")
@@ -179,6 +208,17 @@ def _bridge_findings(text: str) -> dict[str, Any]:
     methods: set[str] = set(_DIRECT_BRIDGE_RE.findall(text))
     callbacks: set[str] = set()
     bridge_objects: list[dict[str, Any]] = []
+    calls: list[dict[str, str]] = []
+
+    for match in _GENERIC_BRIDGE_CALL_RE.finditer(text):
+        method = match.group("method")
+        callee = re.sub(r"\s+", "", match.group("callee"))
+        methods.add(method)
+        row = {"callee": callee, "method": method}
+        if row not in calls:
+            calls.append(row)
+        if len(calls) >= _MAX_FINDINGS:
+            break
 
     for match in _BRIDGE_OBJECT_RE.finditer(text):
         body = match.group("body")
@@ -187,18 +227,19 @@ def _bridge_findings(text: str) -> dict[str, Any]:
         methods.update(obj_methods)
         callbacks.update(obj_callbacks)
         if obj_methods or obj_callbacks:
-            bridge_objects.append(
-                {
-                    "methods": obj_methods[:8],
-                    "callbacks": obj_callbacks[:8],
-                }
-            )
+            bridge_objects.append({"methods": obj_methods[:8], "callbacks": obj_callbacks[:8]})
         if len(bridge_objects) >= _MAX_FINDINGS:
             break
+
+    for method in list(methods):
+        callback = f"{method}Callback"
+        if callback in text:
+            callbacks.add(callback)
 
     return {
         "methods": sorted(methods)[:_MAX_FINDINGS],
         "callbacks": sorted(callbacks)[:_MAX_FINDINGS],
+        "calls": calls[:_MAX_FINDINGS],
         "objects": bridge_objects[:_MAX_FINDINGS],
     }
 
@@ -226,8 +267,7 @@ def _contexts(text: str) -> list[dict[str, str]]:
                 break
             lo = max(0, idx - _CONTEXT_RADIUS)
             hi = min(len(text), idx + len(term) + _CONTEXT_RADIUS)
-            snippet = text[lo:hi]
-            snippet = re.sub(r"\s+", " ", snippet).strip()
+            snippet = re.sub(r"\s+", " ", text[lo:hi]).strip()
             key = (term.lower(), snippet)
             if key not in seen:
                 seen.add(key)
@@ -236,6 +276,45 @@ def _contexts(text: str) -> list[dict[str, str]]:
         if len(rows) >= _MAX_CONTEXTS:
             break
     return rows
+
+
+def _dynamic_chunk_candidates(text: str, base_url: str) -> list[dict[str, Any]]:
+    """Find JS literals whose URL or nearby source context is notification-themed."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    lower = text.lower()
+    for match in _JS_LITERAL_RE.finditer(text):
+        raw = match.group(1).strip()
+        url = urllib.parse.urljoin(base_url, raw)
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            continue
+        safe = _safe_url(url)
+        if safe in seen:
+            continue
+        lo = max(0, match.start() - _CHUNK_CONTEXT_RADIUS)
+        hi = min(len(text), match.end() + _CHUNK_CONTEXT_RADIUS)
+        nearby = lower[lo:hi]
+        url_low = safe.lower()
+        terms = sorted(
+            {
+                term
+                for term in _CHUNK_THEME_TERMS
+                if term in url_low or term in nearby
+            }
+        )
+        if not terms:
+            continue
+        seen.add(safe)
+        rows.append(
+            {
+                "url": safe,
+                "theme_terms": terms,
+                "score": sum(3 if term in url_low else 1 for term in terms),
+            }
+        )
+    rows.sort(key=lambda row: (-int(row["score"]), str(row["url"])))
+    return rows[:_MAX_FINDINGS]
 
 
 def _scan_text(text: str) -> dict[str, Any]:
@@ -289,7 +368,9 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
     merged_calls: set[str] = set()
     merged_methods: set[str] = set()
     merged_callbacks: set[str] = set()
+    merged_bridge_calls: list[dict[str, str]] = []
     merged_contexts: list[dict[str, str]] = []
+    chunk_candidates: dict[str, dict[str, Any]] = {}
 
     def merge(findings: dict[str, Any]) -> None:
         merged_hosts.update(findings["hosts"])
@@ -300,6 +381,9 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
         merged_calls.update(findings["http_call_literals"])
         merged_methods.update(findings["native_bridge"]["methods"])
         merged_callbacks.update(findings["native_bridge"]["callbacks"])
+        for row in findings["native_bridge"]["calls"]:
+            if row not in merged_bridge_calls and len(merged_bridge_calls) < _MAX_FINDINGS:
+                merged_bridge_calls.append(row)
         for row in findings["contexts"]:
             if row not in merged_contexts and len(merged_contexts) < _MAX_CONTEXTS:
                 merged_contexts.append(row)
@@ -330,7 +414,8 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
         unique_scripts.append(url)
 
     assets: list[dict[str, Any]] = []
-    for url in _prioritize_scripts(unique_scripts):
+    selected_scripts = _prioritize_scripts(unique_scripts)
+    for url in selected_scripts:
         result = _fetch(url, _MAX_JS_BYTES)
         text = str(result.get("_text") or "")
         row = _public_result(result)
@@ -338,7 +423,37 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
             findings = _scan_text(text)
             row["findings"] = findings
             merge(findings)
+            candidates = _dynamic_chunk_candidates(text, url)
+            row["dynamic_chunk_candidate_count"] = len(candidates)
+            row["dynamic_chunk_candidates"] = candidates[:20]
+            for candidate in candidates:
+                current = chunk_candidates.get(str(candidate["url"]))
+                if current is None or int(candidate["score"]) > int(current["score"]):
+                    chunk_candidates[str(candidate["url"])] = candidate
         assets.append(row)
+
+    ranked_chunks = sorted(
+        chunk_candidates.values(),
+        key=lambda row: (-int(row["score"]), str(row["url"])),
+    )
+    dynamic_assets: list[dict[str, Any]] = []
+    selected_set = set(selected_scripts)
+    for candidate in ranked_chunks:
+        if len(dynamic_assets) >= _MAX_DYNAMIC_CHUNKS:
+            break
+        url = str(candidate["url"])
+        if url in selected_set:
+            continue
+        result = _fetch(url, _MAX_JS_BYTES)
+        text = str(result.get("_text") or "")
+        row = _public_result(result)
+        row["theme_terms"] = candidate["theme_terms"]
+        row["score"] = candidate["score"]
+        if text:
+            findings = _scan_text(text)
+            row["findings"] = findings
+            merge(findings)
+        dynamic_assets.append(row)
 
     return {
         "read_only": True,
@@ -352,9 +467,11 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
             "max_html_bytes": _MAX_HTML_BYTES,
             "max_js_bytes_per_asset": _MAX_JS_BYTES,
             "max_script_assets": _MAX_SCRIPT_ASSETS,
+            "max_dynamic_chunks": _MAX_DYNAMIC_CHUNKS,
             "max_findings_per_category": _MAX_FINDINGS,
             "max_contexts": _MAX_CONTEXTS,
             "context_radius_chars": _CONTEXT_RADIUS,
+            "chunk_context_radius_chars": _CHUNK_CONTEXT_RADIUS,
         },
         "credential_safety": (
             "H5 discovery sends no uid, access token, device id, vehicle serial "
@@ -363,6 +480,8 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
         "page_count": len(pages),
         "discovered_script_count": len(unique_scripts),
         "inspected_script_count": len(assets),
+        "dynamic_chunk_candidate_count": len(ranked_chunks),
+        "inspected_dynamic_chunk_count": len(dynamic_assets),
         "summary": {
             "hosts": sorted(merged_hosts)[:_MAX_FINDINGS],
             "absolute_urls": sorted(merged_urls)[:_MAX_FINDINGS],
@@ -372,12 +491,15 @@ def probe_h5_frontend(client: Any) -> dict[str, Any]:
             "http_call_literals": sorted(merged_calls)[:_MAX_FINDINGS],
             "native_bridge_methods": sorted(merged_methods)[:_MAX_FINDINGS],
             "native_bridge_callbacks": sorted(merged_callbacks)[:_MAX_FINDINGS],
+            "native_bridge_calls": merged_bridge_calls[:_MAX_FINDINGS],
+            "dynamic_chunk_candidates": ranked_chunks[:20],
             "contexts": merged_contexts[:_MAX_CONTEXTS],
         },
         "pages": pages,
         "assets": assets,
+        "dynamic_assets": dynamic_assets,
         "note": (
-            "Beta24 focuses on native WebView bridge and literal HTTP-route discovery "
-            "inside the already-discovered public Navimow H5 bundles."
+            "Beta25 recognizes aliased callNative/sendEncryptionData bridge calls and "
+            "follows only bounded message/notification/history-themed lazy JS chunks."
         ),
     }
