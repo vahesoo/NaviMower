@@ -19,7 +19,7 @@ def test_beta26_manifest_and_release_notes() -> None:
         "get-vehicle-history-message",
         "60 seconds",
         "Download diagnostics",
-        "does not mark notifications read",
+        "does **not** mark notifications read",
     ):
         assert phrase in notes
 
@@ -54,7 +54,6 @@ def test_beta26_notification_sensor_is_bounded_and_last_good() -> None:
         "_beta26_notification_cache",
     ):
         assert phrase in source
-    # Failure path records an error and returns without clearing the cache.
     failure = source[source.index("except Exception as err"):source.index("def _install_notification_sensor")]
     assert "_beta26_notification_error" in failure
     assert "_beta26_notification_cache = None" not in failure
