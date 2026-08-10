@@ -1,10 +1,8 @@
 """Extended diagnostics written by the navimower.export_diagnostics action.
 
-Beta21 moved slow notification discovery out of Home Assistant's native
-Download diagnostics flow. Beta22 keeps that separation and pivots the explicit
-action probe from parameter guessing to host/method/request-encoding discovery.
-The explicit action may take longer and writes its result to
-/config/navimower_diagnostics for retrieval.
+Beta23 removes notification/H5 discovery from this action. The action returns to
+being a predictable extended on-disk export; H5 frontend discovery now runs only
+from Home Assistant's native Download diagnostics flow.
 """
 from __future__ import annotations
 
@@ -16,7 +14,6 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .diagnostics_export import async_build_diagnostics, sanitize
-from .event_transport_probe import probe_event_transports as probe_event_endpoints
 
 
 def _write_json(path: Path, document: dict[str, Any]) -> None:
@@ -33,7 +30,7 @@ async def async_export_action_diagnostics(
     *,
     include_compressed_map: bool = True,
 ) -> str:
-    """Write extended diagnostics including notification transport discovery."""
+    """Write extended diagnostics to /config without H5/notification probing."""
     document = await async_build_diagnostics(
         hass,
         coordinator,
@@ -43,13 +40,6 @@ async def async_export_action_diagnostics(
         document["state_transition_capture"] = sanitize(
             coordinator.state_transition_diagnostics()
         )
-
-    document["notification_event_probe"] = await hass.async_add_executor_job(
-        probe_event_endpoints,
-        coordinator.client,
-        coordinator.sn,
-        coordinator.vehicle_type,
-    )
     document["diagnostics_source"] = "navimower.export_diagnostics"
 
     now = datetime.now(timezone.utc)
