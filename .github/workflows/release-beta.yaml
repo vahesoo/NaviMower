@@ -1,0 +1,52 @@
+name: Release beta
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "custom_components/navimower/manifest.json"
+      - ".github/release-notes/**"
+      - ".github/workflows/release-beta.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import json; print(json.load(open("custom_components/navimower/manifest.json"))["version"])')
+          case "$VERSION" in
+            *-beta*) ;;
+            *) echo "Refusing to prerelease non-beta version: $VERSION" >&2; exit 1 ;;
+          esac
+          NOTES=".github/release-notes/${VERSION}.md"
+          test -f "$NOTES"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
+
+      - name: Create prerelease if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NOTES: ${{ steps.version.outputs.notes }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Navimower $VERSION" \
+            --notes-file "$NOTES" \
+            --prerelease
