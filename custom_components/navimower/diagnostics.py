@@ -254,6 +254,11 @@ async def async_get_config_entry_diagnostics(
             "error": sanitize(str(err)),
         }
     else:
-        document["notification_read_h5_discovery"] = sanitize(discovery)
+        # The discovery module reads only public unauthenticated H5 source and
+        # already strips query/fragment data from source URLs. Do not run its JS
+        # context through the generic diagnostics sanitizer: that helper treats
+        # any string containing :// as one URL and would destroy the bounded
+        # payload syntax we are explicitly trying to inspect.
+        document["notification_read_h5_discovery"] = discovery
 
     return document
