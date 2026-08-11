@@ -49,14 +49,13 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.NUMBER,
     Platform.TIME,
-    Platform.CAMERA,
     Platform.CALENDAR,
 ]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Development-only options used during the 0.4.1 beta investigation. Stable
-# 0.4.1 uses only Home Assistant's native Download diagnostics path.
+# releases use only Home Assistant's native Download diagnostics path.
 _DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}
 
 # The standalone map card, Mow Now dialog and schedule editor are distributed
