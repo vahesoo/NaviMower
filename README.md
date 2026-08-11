@@ -53,8 +53,8 @@ long as both can access the same mower.
 > [!IMPORTANT]
 > Multiple mower config entries may use the **same dedicated private-cloud
 > account**. Add each mower as its own Navimower config entry. Entries using the
-> same account share one stable private-cloud app/device identity while keeping
-> separate entities, maps and histories.
+> same account share one stable app/device identity at private-cloud account
+> scope while keeping separate entities, maps and histories.
 
 ## Main features
 
@@ -205,13 +205,18 @@ vendor fields are present.
 Default battery-setting ranges are 5–20% for return-to-dock and 70–100% for the
 charging limit unless the mower reports its own supported min/max limits.
 
-## Model support
+### Entity reference and model support
 
-Primary live testing has been performed on **H215** in the European/FRA region.
-An **X390** has been used for secondary map, telemetry, notification and
-multi-mower validation. First-generation H-series compatibility is retained for
-zone selection and map fallback behavior. Other models are capability-driven and
-best effort.
+Primary field testing has been performed on an **H215** in the European/FRA
+region. An **X390** has been used for secondary map, telemetry, notification,
+multi-mower and model-specific settings validation. First-generation H-series
+compatibility is retained for zone selection and map fallback behavior. Other
+models are capability-driven and best effort.
+
+Representative capability-dependent controls include **Night light brightness**,
+**Terrain adapt**, Edge sense, weather controls, battery thresholds and remote
+cutting height. Entities are exposed only when the model/capability mapping and
+reported vendor settings support them.
 
 The private and OAuth endpoints currently target the European/FRA service.
 
@@ -357,6 +362,12 @@ Highlights include:
 See [CHANGELOG.md](CHANGELOG.md) and
 [`.github/release-notes/0.4.1.md`](.github/release-notes/0.4.1.md) for the release
 summary.
+
+### v0.3.4
+
+The 0.3.4 release established the current capability-driven settings model and
+field-tested H215 control baseline. 0.4.1 retains those controls while adding the
+runtime, notification, error and model-support changes described above.
 
 ## Current limitations
 
