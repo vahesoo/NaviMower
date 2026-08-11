@@ -13,16 +13,19 @@ def _version() -> str:
 
 
 def pytest_ignore_collect(collection_path, config) -> bool:  # noqa: ARG001
-    """Keep historical prerelease contracts from becoming stable contracts.
-
-    The beta test files document the exact temporary surface of the 0.4.1 beta
-    investigation, including diagnostics/probe features intentionally removed
-    before stable. Stable 0.4.1 has its own release contract suite instead.
-    """
+    """Keep historical prerelease contracts from becoming later contracts."""
     version = _version()
     name = collection_path.name
     if name.startswith("test_v041_beta") and not version.startswith("0.4.1-beta"):
         return True
     if name == "test_v041_release.py" and version != "0.4.1":
         return True
+
+    # Each 0.4.2 beta suite records that beta's temporary contract. This keeps
+    # beta1's H5 discovery assertions from leaking into beta2 after the scanner
+    # is intentionally removed, and gives stable 0.4.2 a clean release suite.
+    if name.startswith("test_v042_beta") and name.endswith(".py"):
+        beta_name = name.removeprefix("test_v042_").removesuffix(".py")
+        if version != f"0.4.2-{beta_name}":
+            return True
     return False
