@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
+from .resume import resume_command_diagnostics
 
 
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -225,11 +226,13 @@ async def async_get_config_entry_diagnostics(
                 "recent": deepcopy(data.get("notification_history") or []),
             }
         ),
+        "last_resume_command": sanitize(resume_command_diagnostics(coordinator)),
         "private_polling": sanitize(deepcopy(private_polling)),
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
             "Download diagnostics is generated from current coordinator state and existing caches only; it makes no extra vendor or public-H5 requests.",
+            "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
             "Notification read actions are explicit Home Assistant services and are never executed by Download diagnostics.",
             "Account, mower, network and physical GPS identifiers are sanitized/redacted.",
             "Local map X/Y coordinates may remain because they are relative map geometry rather than GPS coordinates.",
