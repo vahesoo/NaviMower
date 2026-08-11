@@ -1,12 +1,12 @@
-"""Vendor notification support introduced in beta26 and refined in beta29.
+"""Vendor notification support introduced in beta26 and refined through beta30.
 
 Beta26 initially used Navimow's separate vehicle message-history route. Beta28
 then recovered the actual main app Notification -> Device feed contract from the
-public H5 MessageCenter component. Beta29 switches the live sensor to that
-read-only encrypted feed while keeping the old history method available only as
-an inert compatibility/debug helper.
+public H5 MessageCenter component. Beta29 switched the live sensor to that
+read-only encrypted feed. Beta30 aligns the normalized sensor schema with real
+H215 and X390 responses and removes the last discovery-era assumptions.
 
-Main Device feed contract recovered from H5:
+Main Device feed contract:
 
 * POST ``/mowerbot/user/message/vehicleMessageListField`` through p:101,
 * payload ``message_id`` + ``vehicle_sn`` + ``filter_state``,
@@ -27,14 +27,12 @@ from typing import Any
 from . import coordinator as _coordinator
 from .api.client import NavimowCloudClient
 
-# Main Notification -> Device feed used from beta29 onward.
 _NOTIFICATION_PATH = "/mowerbot/user/message/vehicleMessageListField"
 _NOTIFICATION_FILTER = "all"
 _NOTIFICATION_TTL_SECONDS = 60
 _NOTIFICATION_ATTR_HISTORY_LIMIT = 5
 
 # Historical beta26 route kept as a callable compatibility/debug helper only.
-# It is no longer used by normal polling or Download diagnostics from beta29.
 _LEGACY_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
 _NOTIFICATION_PAGE_SIZE = 20
 
@@ -46,6 +44,26 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def _as_bool(value: Any) -> bool | None:
+    """Preserve vendor read state as a boolean when it is representable."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value == 0:
+            return False
+        if value == 1:
+            return True
+        return None
+    text = str(value).strip().lower()
+    if text in {"0", "false", "no", "off"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    return None
+
+
 def _bounded_text(value: Any, limit: int) -> str | None:
     if value is None:
         return None
@@ -53,6 +71,11 @@ def _bounded_text(value: Any, limit: int) -> str | None:
     if not text:
         return None
     return text[:limit]
+
+
+def _code_text(value: Any) -> str | None:
+    """Keep vendor notification codes verbatim, including alphanumeric codes."""
+    return _bounded_text(value, 64)
 
 
 def _first_present(item: dict[str, Any], *keys: str) -> Any:
@@ -76,7 +99,7 @@ def _created_at(value: Any) -> str | None:
 
 
 def _normalize_item(item: Any) -> dict[str, Any] | None:
-    """Normalize known/likely vendor field aliases without inventing values."""
+    """Normalize confirmed vendor notification fields without inventing values."""
     if not isinstance(item, dict):
         return None
 
@@ -88,6 +111,17 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
         "createTime",
         "timestamp",
         "time",
+    )
+    vendor_code = _code_text(
+        _first_present(
+            item,
+            "error_code",
+            "errorCode",
+            "event_code",
+            "eventCode",
+            "message_code",
+            "messageCode",
+        )
     )
     return {
         "id": _first_present(item, "id", "message_record_id"),
@@ -102,16 +136,19 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
         ),
         "addtime": addtime,
         "created_at": _created_at(addtime),
-        "read": _as_int(_first_present(item, "read", "is_read", "isRead")),
+        "read": _as_bool(_first_present(item, "read", "is_read", "isRead")),
         "level": _as_int(_first_present(item, "level", "message_level")),
         "type": _first_present(item, "type", "message_type", "messageType"),
-        "event_code": _first_present(
-            item,
-            "event_code",
-            "eventCode",
-            "message_code",
-            "messageCode",
-        ),
+        "style": _first_present(item, "style", "message_style", "messageStyle"),
+        "url": _bounded_text(_first_present(item, "url", "jump_url", "jumpUrl"), 1200),
+        "variable": deepcopy(item.get("variable")),
+        # Canonical beta30 naming. These are notification/event codes, not
+        # necessarily faults: real feeds include values such as 150A.
+        "notification_code": vendor_code,
+        "vendor_code": vendor_code,
+        "error_code": vendor_code,
+        # Backward-compatible alias retained for automations built on beta29.
+        "event_code": vendor_code,
     }
 
 
@@ -137,9 +174,7 @@ def _normalize_response(value: Any) -> dict[str, Any]:
         "count": len(messages),
         "has_history_message": response.get("has_history_message"),
         "source_key": source_key,
-        "next_message_id": (
-            messages[-1].get("message_id") if messages else None
-        ),
+        "next_message_id": messages[-1].get("message_id") if messages else None,
     }
 
 
@@ -165,6 +200,13 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
             "notification_read": latest.get("read"),
             "notification_level": latest.get("level"),
             "notification_type": latest.get("type"),
+            "notification_style": latest.get("style"),
+            "notification_url": latest.get("url"),
+            "notification_variable": deepcopy(latest.get("variable")),
+            "notification_code": latest.get("notification_code"),
+            "notification_vendor_code": latest.get("vendor_code"),
+            "notification_error_code": latest.get("error_code"),
+            # Backward-compatible snapshot key from beta29.
             "notification_event_code": latest.get("event_code"),
             "notification_history": deepcopy(
                 messages[:_NOTIFICATION_ATTR_HISTORY_LIMIT]
@@ -241,6 +283,13 @@ def _install_notification_sensor() -> None:
             "read": data.get("notification_read"),
             "level": data.get("notification_level"),
             "type": data.get("notification_type"),
+            "style": data.get("notification_style"),
+            "url": data.get("notification_url"),
+            "variable": deepcopy(data.get("notification_variable")),
+            "notification_code": data.get("notification_code"),
+            "vendor_code": data.get("notification_vendor_code"),
+            "error_code": data.get("notification_error_code"),
+            # Backward-compatible alias from beta29.
             "event_code": data.get("notification_event_code"),
             "count": data.get("notification_count"),
             "has_history_message": data.get("notification_has_history_message"),
