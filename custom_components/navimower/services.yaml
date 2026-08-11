@@ -77,6 +77,24 @@ mow:
       selector:
         boolean:
 
+resume:
+  name: Resume interrupted mowing
+  description: >-
+    Ask the mower to resume its vendor-retained interrupted task. This sends the
+    dedicated Resume command and does not select zones, send a new Mow command,
+    reset mowing progress or start a new Navimower mowing cycle. Paused resume is
+    already known to work. Resume from docked/charging state is included in
+    0.4.2-beta3 for field validation and may depend on mower model, firmware and
+    whether the mower still retains an interrupted task.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
 mark_notification_read:
   name: Mark notification as read
   description: >-
