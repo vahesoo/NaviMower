@@ -76,3 +76,41 @@ mow:
       default: true
       selector:
         boolean:
+
+mark_notification_read:
+  name: Mark notification as read
+  description: >-
+    Open one Navimow Device notification through the same encrypted detail route
+    used by the official app. Navimower then immediately refreshes the Device
+    feed and trusts the vendor's returned read state; it does not mark the local
+    cache read optimistically. In 0.4.2-beta2 this single-message behavior is
+    intended for field validation.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    message_id:
+      name: Message ID
+      description: Vendor message_id from the Latest notification recent list.
+      required: true
+      selector:
+        text:
+
+mark_all_notifications_read:
+  name: Mark all notifications as read
+  description: >-
+    Mark all Device notifications read for the private-cloud Navimow account used
+    by this mower config entry. This uses the official app's confirmed Mark all
+    as read request and immediately refreshes Latest notification afterwards.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower

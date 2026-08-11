@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.2-beta2
+
+Second beta in the cumulative 0.4.2 development line.
+
+### Added
+
+- Added `navimower.mark_notification_read` for one Device notification. It uses the official app's encrypted message-detail request and then refreshes the Device feed; Home Assistant does not optimistically rewrite the cached `read` flag.
+- Added `navimower.mark_all_notifications_read` using the recovered `clearBatchMessageRead` request with `searchMessageStatus: false` for the selected mower/account.
+- Both notification actions force the next Device-feed poll immediately after a successful vendor call instead of waiting for the normal 60-second notification TTL.
+
+### Changed
+
+- Notification read state remains account-specific. The actions operate in the private-cloud Navimow account context used by the selected config entry.
+- Service registration now checks each Navimower service independently, so newly added actions can be registered by an upgraded integration without relying on the older `mow` service as the only registration sentinel.
+
+### Removed
+
+- Removed the beta1 `notification_read_h5_discovery` source scanner and its Download-diagnostics H5 network requests after recovering the notification read request contracts.
+- Download diagnostics is snapshot-only again and never marks notifications read.
+
+### Field validation
+
+- **Mark all as read** follows a directly recovered official-app mutation contract.
+- Single-message **Mark as read** follows the official flow where Message Center marks the selected row locally and then opens `/mowerbot/user/message/getmessageDetailResp` with Device type `2`. Beta2 intentionally waits for the refreshed `vehicleMessageListField` response to prove the server-side `read: true` effect on a real unread message.
+
 ## 0.4.2-beta1
 
 First beta in the cumulative 0.4.2 development line, built directly on stable 0.4.1.
