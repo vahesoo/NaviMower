@@ -27,8 +27,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
-from .beta16_runtime import install_beta16_runtime
-from .beta26_runtime import install_beta26_runtime
+from .runtime import install_runtime_extensions
 from .const import (
     ACTIVITY_MOWING,
     DOMAIN,
@@ -42,8 +41,7 @@ from .notification_actions import (
 )
 from .resume import async_resume_task
 
-install_beta16_runtime()
-install_beta26_runtime()
+install_runtime_extensions()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"

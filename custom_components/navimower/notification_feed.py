@@ -8,7 +8,7 @@ through the 0.4.1 beta line:
 * first page uses an empty ``message_id`` and ``filter_state=all``,
 * response exposes ``vehicle_message_list`` and ``has_history_message``.
 
-Vendor polling remains read-only and rate-limited. 0.4.2-beta4 retains at most
+Vendor polling remains read-only and rate-limited. The integration retains at most
 10 normalized vendor rows and merges them newest-first with up to 20 persistent
 Navimower-generated rows. Local rows have their own read state and never get
 sent to a Navimow message-detail endpoint.
@@ -33,7 +33,7 @@ _NOTIFICATION_FILTER = "all"
 _NOTIFICATION_TTL_SECONDS = 60
 _NOTIFICATION_ATTR_HISTORY_LIMIT = MERGED_NOTIFICATION_LIMIT
 
-# Historical beta26 route kept as a callable compatibility/debug helper only.
+# Legacy notification-history route kept as a callable compatibility/debug helper only.
 _LEGACY_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
 _NOTIFICATION_PAGE_SIZE = 20
 
@@ -162,12 +162,12 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
         "type": _first_present(item, "type", "message_type", "messageType"),
         "style": _first_present(item, "style", "message_style", "messageStyle"),
         "variable": deepcopy(item.get("variable")),
-        # Canonical beta30 naming. These are notification/event codes, not
+        # Canonical notification-code naming. These are notification/event codes, not
         # necessarily faults: real feeds include values such as 150A.
         "notification_code": vendor_code,
         "vendor_code": vendor_code,
         "error_code": vendor_code,
-        # Backward-compatible alias retained for automations built on beta29.
+        # Backward-compatible alias retained for existing automations.
         "event_code": vendor_code,
         "origin": "vendor",
         "kind": None,
@@ -203,7 +203,7 @@ def _normalize_response(value: Any) -> dict[str, Any]:
 
 def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     result = dict(snapshot)
-    cache = getattr(coordinator, "_beta26_notification_cache", None)
+    cache = getattr(coordinator, "_notification_cache", None)
     normalized = _normalize_response(cache)
     vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
     center = getattr(coordinator, "notification_center", None)
@@ -211,7 +211,7 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
     messages = merge_notification_lists(vendor_messages, local_messages)
     latest = messages[0] if messages else {}
 
-    last_success = getattr(coordinator, "_beta26_notification_last_success_mono", None)
+    last_success = getattr(coordinator, "_notification_last_success_mono", None)
     vendor_source_age = (
         max(0.0, time.monotonic() - float(last_success))
         if last_success is not None
@@ -263,7 +263,7 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
             "notification_source": source,
             "notification_source_age": latest_source_age,
             "notification_vendor_source_age": vendor_source_age,
-            "notification_error": getattr(coordinator, "_beta26_notification_error", None),
+            "notification_error": getattr(coordinator, "_notification_error", None),
         }
     )
     return result
@@ -279,14 +279,14 @@ def refresh_notification_snapshot(coordinator: Any) -> None:
 
 def _refresh_notification_cache(coordinator: Any) -> None:
     now = time.monotonic()
-    last_attempt = getattr(coordinator, "_beta26_notification_last_attempt_mono", None)
+    last_attempt = getattr(coordinator, "_notification_last_attempt_mono", None)
     if (
         last_attempt is not None
         and now - float(last_attempt) < _NOTIFICATION_TTL_SECONDS
     ):
         return
 
-    coordinator._beta26_notification_last_attempt_mono = now  # noqa: SLF001
+    coordinator._notification_last_attempt_mono = now  # noqa: SLF001
     try:
         response = coordinator.client.notification_feed(  # type: ignore[attr-defined]
             coordinator.sn,
@@ -294,7 +294,7 @@ def _refresh_notification_cache(coordinator: Any) -> None:
             filter_state=_NOTIFICATION_FILTER,
         )
     except Exception as err:  # noqa: BLE001 - optional feed must not break core poll.
-        coordinator._beta26_notification_error = f"{type(err).__name__}: {err}"  # noqa: SLF001
+        coordinator._notification_error = f"{type(err).__name__}: {err}"  # noqa: SLF001
         return
 
     # Keep only the newest ten normalized read-only vendor rows. Navimower-local
@@ -302,12 +302,12 @@ def _refresh_notification_cache(coordinator: Any) -> None:
     # decoration instead of being inserted into the vendor cache.
     normalized = _normalize_response(response)
     vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
-    coordinator._beta26_notification_cache = {  # noqa: SLF001
+    coordinator._notification_cache = {  # noqa: SLF001
         "list": deepcopy(vendor_messages),
         "has_history_message": normalized.get("has_history_message"),
     }
-    coordinator._beta26_notification_last_success_mono = now  # noqa: SLF001
-    coordinator._beta26_notification_error = None  # noqa: SLF001
+    coordinator._notification_last_success_mono = now  # noqa: SLF001
+    coordinator._notification_error = None  # noqa: SLF001
 
 
 def _install_notification_sensor() -> None:
@@ -369,10 +369,10 @@ def _install_notification_sensor() -> None:
     )
 
 
-def install_beta26_runtime() -> None:
+def install_notification_feed() -> None:
     """Install notification transport, polling and sensor once."""
     cls = _coordinator.NavimowCoordinator
-    if getattr(cls, "_beta26_runtime_installed", False):
+    if getattr(cls, "_notification_feed_installed", False):
         _install_notification_sensor()
         return
 
@@ -428,5 +428,5 @@ def install_beta26_runtime() -> None:
 
     cls._fetch_blocking = fetch_blocking
     cls._bootstrap_snapshot = bootstrap_snapshot
-    cls._beta26_runtime_installed = True
+    cls._notification_feed_installed = True
     _install_notification_sensor()

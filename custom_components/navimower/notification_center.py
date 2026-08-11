@@ -918,7 +918,7 @@ class NavimowerNotificationCenter:
     def _publish(self) -> None:
         """Re-decorate the current snapshot without making any vendor request."""
         try:
-            from .beta26_runtime import refresh_notification_snapshot
+            from .notification_feed import refresh_notification_snapshot
 
             refresh_notification_snapshot(self.coordinator)
         except Exception:  # noqa: BLE001 - local notifications are supplementary.

@@ -18,7 +18,7 @@ _DEVICE_MESSAGE_DETAIL_TYPE = 2
 
 def _invalidate_notification_poll(coordinator: Any) -> None:
     """Make the next Device-feed refresh bypass the normal 60-second TTL."""
-    coordinator._beta26_notification_last_attempt_mono = None  # noqa: SLF001
+    coordinator._notification_last_attempt_mono = None  # noqa: SLF001
 
 
 async def _async_vendor_call_and_refresh(

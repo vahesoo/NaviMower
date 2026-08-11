@@ -1,6 +1,6 @@
-"""Beta16 runtime corrections derived from live H215 state/error captures.
+"""State and problem semantics derived from live mower captures.
 
-This module deliberately keeps the beta15 diagnostic capture intact while
+This module deliberately keeps the earlier diagnostic capture intact while
 promoting only field observations that are now repeated/proven enough for
 public entity semantics:
 
@@ -24,8 +24,6 @@ from typing import Any
 
 from . import const as _const
 from . import coordinator as _coordinator
-from .beta17_runtime import install_beta17_runtime
-from .beta18_runtime import install_beta18_runtime
 
 _STATE_IDLE = "0103"
 _STATE_FAULT = "0301"
@@ -69,7 +67,7 @@ def _raw_for_existing_parser(raw: dict[str, Any], error: dict[str, Any] | None) 
     if not isinstance(errors, list) or not errors or not isinstance(errors[0], dict):
         return raw
     first = dict(errors[0])
-    # beta15's parser understands message/desc/code. Prefer the vendor title,
+    # the existing parser understands message/desc/code. Prefer the vendor title,
     # falling back to content/code, while retaining every original field.
     if not (first.get("desc") or first.get("message") or first.get("code")):
         first["message"] = error.get("title") or error.get("content") or error.get("code")
@@ -93,7 +91,7 @@ def _copy_problem_details(snapshot: dict[str, Any], problem: dict[str, Any] | No
 def _mark_endpoints_due(coordinator: Any, *keys: str) -> None:
     """Bypass only the endpoint TTL; the normal coordinator performs the read."""
     for key in keys:
-        status = coordinator._endpoint_status.get(key)  # noqa: SLF001 - beta shim
+        status = coordinator._endpoint_status.get(key)  # noqa: SLF001 - internal coordinator state
         if isinstance(status, dict):
             status["last_attempt_mono"] = None
 
@@ -120,12 +118,10 @@ def _install_error_sensor_attributes() -> None:
     )
 
 
-def install_beta16_runtime() -> None:
-    """Install beta16 state/error semantics once per interpreter."""
+def install_state_semantics() -> None:
+    """Install proven state/error semantics once per interpreter."""
     cls = _coordinator.NavimowCoordinator
-    if getattr(cls, "_beta16_runtime_installed", False):
-        install_beta17_runtime()
-        install_beta18_runtime()
+    if getattr(cls, "_state_semantics_installed", False):
         return
 
     # The coordinator imported these mutable objects by reference, so mutating
@@ -248,7 +244,7 @@ def install_beta16_runtime() -> None:
         elif previous_named == "Error" and state_name and state_name != "Error":
             self.request_fast_refresh("MQTT state changed away from Error")
         elif previous_named == "isLifted" and state_name and state_name != "isLifted":
-            # beta15/original code already asks for a refresh; this call is
+            # the existing coordinator code already asks for a refresh; this call is
             # throttled, but the forced endpoint due flag remains in place.
             self.request_fast_refresh("MQTT state changed away from isLifted")
         return result
@@ -256,7 +252,5 @@ def install_beta16_runtime() -> None:
     cls._parse = parse
     cls._apply_problem_latch = apply_problem_latch
     cls.ingest_mqtt_state = ingest_mqtt_state
-    cls._beta16_runtime_installed = True
+    cls._state_semantics_installed = True
     _install_error_sensor_attributes()
-    install_beta17_runtime()
-    install_beta18_runtime()

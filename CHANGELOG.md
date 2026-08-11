@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2-beta6
+
+Sixth beta in the cumulative 0.4.2 development line.
+
+### Changed
+
+- Replaced production `beta16_runtime.py`, `beta17_runtime.py`, `beta18_runtime.py` and `beta26_runtime.py` layers with responsibility-based semantic modules.
+- Added one explicit `runtime.py` composition point while preserving the historically proven install order and runtime behavior.
+- Renamed version-stamped internal notification/navigation/history runtime state to responsibility-based names.
+
+### Guardrails
+
+- Added a permanent architecture test that rejects beta/version-numbered production runtime files and beta-numbered runtime installer/state symbols.
+- Added `docs/ARCHITECTURE.md` documenting the cumulative-beta rule and the explicit exception process for genuinely isolated experiments.
+
 ## 0.4.2-beta5
 
 Fifth beta in the cumulative 0.4.2 development line.

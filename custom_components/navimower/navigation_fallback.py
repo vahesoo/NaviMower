@@ -1,4 +1,4 @@
-"""Beta18 navigation fallback corrections.
+"""Freshness-aware navigation fallback and gate safety.
 
 MQTT remains the primary source for physical navigation. When a fresh MQTT pose
 is unavailable, the private-cloud pose can keep physical-zone/channel display
@@ -85,7 +85,7 @@ def _risky_cloud_gate_transition(coordinator: Any, snapshot: dict[str, Any], con
 
     physical_id = _coordinator._as_int((physical or {}).get("id"))  # noqa: SLF001
     report_key = str(_cloud_report_time(snapshot) or "")
-    confirmations = getattr(coordinator, "_beta18_cloud_gate_confirmations", {})
+    confirmations = getattr(coordinator, "_cloud_gate_confirmations", {})
 
     blocked = False
     for slug, latch in list(coordinator._gate_latches.items()):  # noqa: SLF001
@@ -119,7 +119,7 @@ def _risky_cloud_gate_transition(coordinator: Any, snapshot: dict[str, Any], con
         if count < 2:
             blocked = True
 
-    coordinator._beta18_cloud_gate_confirmations = confirmations  # noqa: SLF001
+    coordinator._cloud_gate_confirmations = confirmations  # noqa: SLF001
     return blocked
 
 
@@ -237,10 +237,10 @@ def _install_sensor_attributes() -> None:
     )
 
 
-def install_beta18_runtime() -> None:
+def install_navigation_fallback() -> None:
     """Install freshness-aware navigation fallback once per interpreter."""
     cls = _coordinator.NavimowCoordinator
-    if getattr(cls, "_beta18_runtime_installed", False):
+    if getattr(cls, "_navigation_fallback_installed", False):
         return
 
     original_navigation = cls._navigation_fields
@@ -260,13 +260,13 @@ def install_beta18_runtime() -> None:
     def channel_state(self: Any, channel: Any) -> bool | None:
         mqtt_position = self._fresh_mqtt_position()  # noqa: SLF001
         if mqtt_position is not None:
-            states = getattr(self, "_beta18_gate_area_states", {})
+            states = getattr(self, "_cloud_gate_area_states", {})
             states[channel.slug] = {
                 "value": channel.contains(mqtt_position.get("x"), mqtt_position.get("y")),
                 "report": None,
                 "outside_count": 0,
             }
-            self._beta18_gate_area_states = states
+            self._cloud_gate_area_states = states
             return original_channel_state(self, channel)
 
         data = self.data or {}
@@ -280,12 +280,12 @@ def install_beta18_runtime() -> None:
         if value is None:
             return None
 
-        states = getattr(self, "_beta18_gate_area_states", {})
+        states = getattr(self, "_cloud_gate_area_states", {})
         previous = states.get(channel.slug) or {}
         report = str(_cloud_report_time(data) or "")
         if value:
             states[channel.slug] = {"value": True, "report": report, "outside_count": 0}
-            self._beta18_gate_area_states = states
+            self._cloud_gate_area_states = states
             return True
 
         outside_count = int(previous.get("outside_count") or 0)
@@ -298,7 +298,7 @@ def install_beta18_runtime() -> None:
             "report": report,
             "outside_count": outside_count,
         }
-        self._beta18_gate_area_states = states
+        self._cloud_gate_area_states = states
         if outside_count >= 2:
             states[channel.slug]["value"] = False
             return False
@@ -306,5 +306,5 @@ def install_beta18_runtime() -> None:
 
     cls._navigation_fields = navigation_fields
     cls.channel_state = channel_state
-    cls._beta18_runtime_installed = True
+    cls._navigation_fallback_installed = True
     _install_sensor_attributes()

@@ -1,8 +1,8 @@
-"""Beta17 capability extensions from the first captured Navimow i2 AWD.
+"""Capability and route-history extensions for modern Navimow models.
 
 The i208 AWD diagnostic proves a second modern capability family whose settings
 are mostly field-identical to existing H215 experiments but were hidden by
-model-name gates. Beta17 deliberately exposes the observed user-facing fields
+model-name gates. This module deliberately exposes the observed user-facing fields
 for field testing, keeps both observed light controls available on i2 AWD, uses
 vendor battery limits when supplied, and adds a global cutting-height number
 when the mower reports a real height plus a supported-height list.
@@ -424,9 +424,9 @@ def _install_history_dedupe() -> None:
         after = compact_route_points(before)
         if len(after) != len(before):
             session["points"] = after
-            changed = getattr(self, "_beta17_compacted_session_ids", set())
+            changed = getattr(self, "_compacted_session_ids", set())
             changed.add(session_id)
-            self._beta17_compacted_session_ids = changed
+            self._compacted_session_ids = changed
             await self._session_store_for(session_id).async_save(deepcopy(session))
         return session
 
@@ -436,7 +436,7 @@ def _install_history_dedupe() -> None:
 
     async def async_load(self: Any) -> None:
         await original_load(self)
-        changed = set(getattr(self, "_beta17_compacted_session_ids", set()))
+        changed = set(getattr(self, "_compacted_session_ids", set()))
         if not changed:
             return
         with self._lock:
@@ -452,18 +452,18 @@ def _install_history_dedupe() -> None:
                 ),
             )
         await self._index_store.async_save(self._index_data())
-        self._beta17_compacted_session_ids = set()
+        self._compacted_session_ids = set()
 
     cls.async_load = async_load
 
 
-def install_beta17_runtime() -> None:
-    """Install beta17 i2 capability and route-history corrections once."""
+def install_capability_extensions() -> None:
+    """Install model capability and route-history extensions once."""
     cls = _coordinator.NavimowCoordinator
-    if getattr(cls, "_beta17_runtime_installed", False):
+    if getattr(cls, "_capability_extensions_installed", False):
         return
     _install_switch_capabilities()
     _install_select_capabilities()
     _install_number_capabilities()
     _install_history_dedupe()
-    cls._beta17_runtime_installed = True
+    cls._capability_extensions_installed = True
