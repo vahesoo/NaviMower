@@ -55,6 +55,10 @@ PLATFORMS: list[Platform] = [
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# Development-only options used during the 0.4.1 beta investigation. Stable
+# 0.4.1 uses only Home Assistant's native Download diagnostics path.
+_DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}
+
 # The standalone map card, Mow Now dialog and schedule editor are distributed
 # from the separate navimower-map-card HACS dashboard repository.
 
@@ -63,9 +67,9 @@ async def _async_private_poll_guard(coordinator: NavimowCoordinator) -> None:
     """Guarantee private-cloud polling even while dense MQTT pushes arrive.
 
     DataUpdateCoordinator.async_set_updated_data() intentionally restarts the
-    coordinator refresh timer.  Live mower position can arrive more frequently
+    coordinator refresh timer. Live mower position can arrive more frequently
     than the private-cloud interval, so the normal timer can otherwise be pushed
-    forward forever.  This guard only refreshes when the last successful private
+    forward forever. This guard only refreshes when the last successful private
     poll is actually due, which also avoids duplicate idle refreshes when the
     normal coordinator schedule is already working.
     """
@@ -144,6 +148,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ]
     options.setdefault(OPT_TRAIL_RETENTION_DAYS, DEFAULT_TRAIL_RETENTION_DAYS)
     options.setdefault(OPT_INCLUDE_RETURN_TRAIL, DEFAULT_INCLUDE_RETURN_TRAIL)
+    for key in _DEPRECATED_DIAGNOSTICS_OPTIONS:
+        options.pop(key, None)
 
     hass.config_entries.async_update_entry(
         entry,
@@ -158,6 +164,22 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Restore local data, then start private cloud and OAuth/MQTT in parallel."""
     async_register_oauth_implementation(hass)
+
+    # Remove beta-only diagnostics options even when the user upgrades without
+    # opening the options flow. This also guarantees passive discovery cannot
+    # remain enabled from an earlier beta configuration.
+    cleaned_options = dict(entry.options)
+    removed = [
+        key for key in _DEPRECATED_DIAGNOSTICS_OPTIONS if key in cleaned_options
+    ]
+    for key in removed:
+        cleaned_options.pop(key, None)
+    if removed:
+        hass.config_entries.async_update_entry(entry, options=cleaned_options)
+        _LOGGER.info(
+            "Removed obsolete Navimower beta diagnostics options: %s",
+            ", ".join(sorted(removed)),
+        )
 
     # Entries created before v0.3.4-beta2 may contain different app/device IDs
     # for the same private-cloud account. Converge them before constructing the
@@ -264,9 +286,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await asyncio.gather(private_poll_guard, return_exceptions=True)
         coordinator.private_poll_guard_task = None
 
-    # Stop watchdog/recovery work and invalidate old callback generations before
-    # entities disappear. This prevents a late Paho callback from writing into a
-    # coordinator while Home Assistant is reloading the config entry.
     if bridge is not None:
         await bridge.async_quiesce()
 
