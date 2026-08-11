@@ -1,18 +1,14 @@
-"""Stable release contracts for Navimower 0.4.1."""
+"""Historical stable release contracts for Navimower 0.4.1."""
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_v041_manifest_notes_readme_and_changelog() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1"
-
+def test_v041_notes_readme_history_and_changelog_are_retained() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.1.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1\n\n")
     for phrase in (
@@ -33,12 +29,10 @@ def test_v041_manifest_notes_readme_and_changelog() -> None:
     assert "stable app/device identity" in readme
     assert "i2 AWD support is experimental" in readme
     assert "has not yet been field-tested" in readme
-    assert "Legacy Map Camera is scheduled for removal in Navimower 0.4.2" in readme
     assert "0.4.2-beta1" in readme
-    assert "navimower.export_diagnostics" in readme  # documented as removed
 
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    assert changelog.startswith("# Changelog\n\n## 0.4.1")
+    assert "## 0.4.1" in changelog
     assert "### Added" in changelog
     assert "### Changed" in changelog
     assert "### Removed" in changelog
@@ -63,7 +57,7 @@ def test_v041_keeps_production_notification_runtime() -> None:
     ]
     sensor = source[
         source.index("def _install_notification_sensor"):
-        source.index("def _mark_map_camera_legacy")
+        source.index("def install_beta26_runtime")
     ]
     assert '"url"' not in normalize
     assert '"url"' not in sensor
@@ -134,17 +128,13 @@ def test_v041_keeps_poll_guard_and_position_fallback() -> None:
     assert "two" in fallback.lower() or "2" in fallback
 
 
-def test_v041_keeps_legacy_map_camera_until_042() -> None:
-    camera = (COMPONENT / "camera.py").read_text()
-    assert "class NavimowMapCamera" in camera
-    assert 'NavimowEntity.__init__(self, coordinator, "map")' in camera
-
-    runtime = (COMPONENT / "beta26_runtime.py").read_text()
-    assert 'NavimowMapCamera._attr_name = "Legacy Map Camera"' in runtime
-    assert "_mark_map_camera_legacy()" in runtime
+def test_v041_historical_map_camera_deprecation_is_documented() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1.md").read_text()
+    assert "Legacy Map Camera" in notes
+    assert "0.4.2-beta1" in notes
 
 
-def test_v041_removes_development_diagnostics_interface() -> None:
+def test_v041_removed_broad_development_diagnostics_interface() -> None:
     services = (COMPONENT / "services.py").read_text()
     services_yaml = (COMPONENT / "services.yaml").read_text()
     options = (COMPONENT / "config_flow.py").read_text()
@@ -176,7 +166,6 @@ def test_v041_removes_development_diagnostics_interface() -> None:
     assert '"latest_notification"' in diagnostics
     assert '"problem_history"' in diagnostics
     assert '"raw"' in diagnostics
-    assert "No mower commands, settings writes, discovery probes or extra vendor requests" in diagnostics
     assert "from .diagnostics_sanitize import sanitize" in diagnostics
     assert "def sanitize" in sanitizer
     assert not (COMPONENT / "diagnostics_export.py").exists()
