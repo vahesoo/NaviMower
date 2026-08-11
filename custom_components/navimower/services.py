@@ -4,23 +4,21 @@
   time periods, each optionally restricted to zones) via the proven
   save-set-data format.
 - ``navimower.mow`` starts mowing now: chosen zones and a ``reset`` flag
-  (True = riparti da zero / clear progress, False = continua). On models that
-  support custom sequencing, listing zones explicitly also fixes their mowing
-  order. First-generation H-series mowers still accept the selected zones but
-  choose their order themselves.
+  (True = restart from scratch, False = continue). On models that support
+  custom sequencing, listing zones explicitly also fixes their mowing order.
+  First-generation H-series mowers still accept the selected zones but choose
+  their order themselves.
 
-These back the graphical cards (and automations).
+Diagnostics are exposed through Home Assistant's native Download diagnostics
+flow rather than custom development services.
 """
 from __future__ import annotations
 
 import voluptuous as vol
-from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
-
-from .action_diagnostics import async_export_action_diagnostics
 
 from .const import (
     ACTIVITY_MOWING,
@@ -31,16 +29,12 @@ from .const import (
 from .beta16_runtime import install_beta16_runtime
 from .beta26_runtime import install_beta26_runtime
 from .model_support import supports_ordered_zone_mowing
-from .state_transition_capture import install_state_transition_capture
 
-install_state_transition_capture()
 install_beta16_runtime()
 install_beta26_runtime()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
-SERVICE_EXPORT_DIAGNOSTICS = "export_diagnostics"
-SERVICE_MARK_DISCOVERY_EVENT = "mark_discovery_event"
 
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
@@ -74,20 +68,6 @@ MOW_SCHEMA = vol.Schema(
         vol.Optional("device_id"): cv.string,
         vol.Optional("zones", default=list): vol.All(cv.ensure_list, [vol.Coerce(int)]),
         vol.Optional("reset", default=True): cv.boolean,
-    }
-)
-
-EXPORT_DIAGNOSTICS_SCHEMA = vol.Schema(
-    {
-        vol.Optional("device_id"): cv.string,
-        vol.Optional("include_compressed_map", default=True): cv.boolean,
-    }
-)
-
-MARK_DISCOVERY_EVENT_SCHEMA = vol.Schema(
-    {
-        vol.Optional("device_id"): cv.string,
-        vol.Required("name"): cv.string,
     }
 )
 
@@ -190,41 +170,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:
             raise HomeAssistantError(f"Navimow set_schedule failed: {err}") from err
 
-    async def _export_diagnostics(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(call)
-        try:
-            path = await async_export_action_diagnostics(
-                hass,
-                coordinator,
-                include_compressed_map=call.data["include_compressed_map"],
-            )
-        except Exception as err:
-            raise HomeAssistantError(f"Navimower diagnostics export failed: {err}") from err
-        persistent_notification.async_create(
-            hass,
-            (
-                "Extended read-only Navimower diagnostics export completed.\n\n"
-                f"File: `{path}`\n\n"
-                "The action export stays on the normal diagnostics path. "
-                "Use Home Assistant Download diagnostics for the fresh vendor "
-                "notification-history probe. The export is sanitized, but review "
-                "it before publishing."
-            ),
-            title="Navimower extended diagnostics export",
-            notification_id="navimower_diagnostics_export",
-        )
-
-    async def _mark_discovery_event(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(call)
-        bridge = getattr(coordinator, "mqtt_bridge", None)
-        if bridge is None or not hasattr(bridge, "mark_discovery_event"):
-            raise ServiceValidationError("MQTT discovery bridge is not available")
-        if not getattr(bridge, "discovery_enabled", False):
-            raise ServiceValidationError(
-                "Passive discovery is disabled; enable it in Navimower options first"
-            )
-        bridge.mark_discovery_event(str(call.data["name"]))
-
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
@@ -284,15 +229,3 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_SET_SCHEDULE, _set_schedule, schema=SET_SCHEDULE_SCHEMA
     )
     hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_EXPORT_DIAGNOSTICS,
-        _export_diagnostics,
-        schema=EXPORT_DIAGNOSTICS_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_MARK_DISCOVERY_EVENT,
-        _mark_discovery_event,
-        schema=MARK_DISCOVERY_EVENT_SCHEMA,
-    )
