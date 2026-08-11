@@ -8,6 +8,8 @@
   custom sequencing, listing zones explicitly also fixes their mowing order.
   First-generation H-series mowers still accept the selected zones but choose
   their order themselves.
+- ``navimower.resume`` resumes the vendor-retained interrupted task without
+  selecting zones, resetting progress or starting a new Navimower mowing cycle.
 - ``navimower.mark_notification_read`` opens one Device notification through the
   same encrypted detail route as the official app and then refreshes the Device
   feed to confirm the resulting vendor read state.
@@ -38,12 +40,14 @@ from .notification_actions import (
     async_mark_all_notifications_read,
     async_mark_notification_read,
 )
+from .resume import async_resume_task
 
 install_beta16_runtime()
 install_beta26_runtime()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
+SERVICE_RESUME = "resume"
 SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 
@@ -79,6 +83,12 @@ MOW_SCHEMA = vol.Schema(
         vol.Optional("device_id"): cv.string,
         vol.Optional("zones", default=list): vol.All(cv.ensure_list, [vol.Coerce(int)]),
         vol.Optional("reset", default=True): cv.boolean,
+    }
+)
+
+RESUME_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
     }
 )
 
@@ -247,6 +257,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
+    async def _resume(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            await async_resume_task(coordinator, source="navimower.resume")
+        except Exception as err:
+            raise HomeAssistantError(f"Navimow resume failed: {err}") from err
+
     async def _mark_notification_read(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         message_id = str(call.data["message_id"]).strip()
@@ -275,6 +292,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         )
     if not hass.services.has_service(DOMAIN, SERVICE_MOW):
         hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_RESUME):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_RESUME,
+            _resume,
+            schema=RESUME_SCHEMA,
+        )
     if not hass.services.has_service(DOMAIN, SERVICE_MARK_NOTIFICATION_READ):
         hass.services.async_register(
             DOMAIN,
