@@ -1,22 +1,17 @@
-"""Vendor notification support introduced in beta26 and refined through beta32.
+"""Navimow vendor notifications plus the Navimower local notification center.
 
-Beta26 initially used Navimow's separate vehicle message-history route. Beta28
-then recovered the actual main app Notification -> Device feed contract from the
-public H5 MessageCenter component. Beta29 switched the live sensor to that
-read-only encrypted feed. Beta30 aligned the normalized sensor schema with real
-H215 and X390 responses. Beta32 removes vendor-native jump URLs from retained
-notification data and renames the entity to Latest notification.
-
-Main Device feed contract:
+The vendor side uses the main app Notification -> Device feed contract recovered
+through the 0.4.1 beta line:
 
 * POST ``/mowerbot/user/message/vehicleMessageListField`` through p:101,
 * payload ``message_id`` + ``vehicle_sn`` + ``filter_state``,
 * first page uses an empty ``message_id`` and ``filter_state=all``,
 * response exposes ``vehicle_message_list`` and ``has_history_message``.
 
-The integration polls at most once per minute, retains the last successful
-sanitized response across transient failures, exposes a bounded recent list, and
-never marks messages read or calls any read-state mutation endpoint.
+Vendor polling remains read-only and rate-limited. 0.4.2-beta4 retains at most
+10 normalized vendor rows and merges them newest-first with up to 20 persistent
+Navimower-generated rows. Local rows have their own read state and never get
+sent to a Navimow message-detail endpoint.
 """
 from __future__ import annotations
 
@@ -27,11 +22,16 @@ from typing import Any
 
 from . import coordinator as _coordinator
 from .api.client import NavimowCloudClient
+from .notification_center import (
+    MERGED_NOTIFICATION_LIMIT,
+    VENDOR_NOTIFICATION_LIMIT,
+    merge_notification_lists,
+)
 
 _NOTIFICATION_PATH = "/mowerbot/user/message/vehicleMessageListField"
 _NOTIFICATION_FILTER = "all"
 _NOTIFICATION_TTL_SECONDS = 60
-_NOTIFICATION_ATTR_HISTORY_LIMIT = 5
+_NOTIFICATION_ATTR_HISTORY_LIMIT = MERGED_NOTIFICATION_LIMIT
 
 # Historical beta26 route kept as a callable compatibility/debug helper only.
 _LEGACY_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
@@ -99,6 +99,26 @@ def _created_at(value: Any) -> str | None:
         return None
 
 
+def _message_age(item: dict[str, Any]) -> float | None:
+    raw = item.get("addtime")
+    try:
+        stamp = float(raw)
+    except (TypeError, ValueError):
+        stamp = 0.0
+    if stamp > 10_000_000_000:
+        stamp /= 1000.0
+    if stamp <= 0:
+        created = item.get("created_at")
+        try:
+            parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        stamp = parsed.timestamp()
+    return max(0.0, datetime.now(UTC).timestamp() - stamp)
+
+
 def _normalize_item(item: Any) -> dict[str, Any] | None:
     """Normalize confirmed vendor notification fields without inventing values."""
     if not isinstance(item, dict):
@@ -149,6 +169,9 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
         "error_code": vendor_code,
         # Backward-compatible alias retained for automations built on beta29.
         "event_code": vendor_code,
+        "origin": "vendor",
+        "kind": None,
+        "confidence": "vendor_reported",
     }
 
 
@@ -182,14 +205,33 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
     result = dict(snapshot)
     cache = getattr(coordinator, "_beta26_notification_cache", None)
     normalized = _normalize_response(cache)
-    messages = normalized["list"]
+    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
+    center = getattr(coordinator, "notification_center", None)
+    local_messages = center.messages if center is not None else []
+    messages = merge_notification_lists(vendor_messages, local_messages)
     latest = messages[0] if messages else {}
+
     last_success = getattr(coordinator, "_beta26_notification_last_success_mono", None)
-    source_age = (
+    vendor_source_age = (
         max(0.0, time.monotonic() - float(last_success))
         if last_success is not None
         else None
     )
+    latest_origin = latest.get("origin")
+    latest_source_age = (
+        vendor_source_age
+        if latest_origin == "vendor"
+        else (_message_age(latest) if latest_origin == "navimower" else None)
+    )
+    if vendor_messages and local_messages:
+        source = "merged_vendor_and_navimower"
+    elif local_messages:
+        source = "navimower_local"
+    elif vendor_messages or cache is not None:
+        source = "private_cloud_vehicle_message_feed"
+    else:
+        source = None
+
     result.update(
         {
             "notification_title": latest.get("title"),
@@ -205,36 +247,39 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
             "notification_code": latest.get("notification_code"),
             "notification_vendor_code": latest.get("vendor_code"),
             "notification_error_code": latest.get("error_code"),
-            # Backward-compatible snapshot key from beta29.
             "notification_event_code": latest.get("event_code"),
-            "notification_history": deepcopy(
-                messages[:_NOTIFICATION_ATTR_HISTORY_LIMIT]
-            ),
-            "notification_total": normalized.get("count"),
-            "notification_count": normalized.get("count"),
+            "notification_origin": latest_origin,
+            "notification_kind": latest.get("kind"),
+            "notification_confidence": latest.get("confidence"),
+            "notification_history": deepcopy(messages[:_NOTIFICATION_ATTR_HISTORY_LIMIT]),
+            "notification_total": len(messages),
+            "notification_count": len(messages),
+            "notification_vendor_count": len(vendor_messages),
+            "notification_local_count": len(local_messages),
             "notification_page": None,
-            "notification_has_history_message": normalized.get(
-                "has_history_message"
-            ),
+            "notification_has_history_message": normalized.get("has_history_message"),
             "notification_next_message_id": normalized.get("next_message_id"),
             "notification_filter_state": _NOTIFICATION_FILTER,
-            "notification_source": (
-                "private_cloud_vehicle_message_feed" if cache is not None else None
-            ),
-            "notification_source_age": source_age,
-            "notification_error": getattr(
-                coordinator, "_beta26_notification_error", None
-            ),
+            "notification_source": source,
+            "notification_source_age": latest_source_age,
+            "notification_vendor_source_age": vendor_source_age,
+            "notification_error": getattr(coordinator, "_beta26_notification_error", None),
         }
     )
     return result
 
 
+def refresh_notification_snapshot(coordinator: Any) -> None:
+    """Publish current vendor/local notification state without a remote call."""
+    current = coordinator.data
+    if not isinstance(current, dict):
+        return
+    coordinator.async_set_updated_data(_decorate_snapshot(coordinator, current))
+
+
 def _refresh_notification_cache(coordinator: Any) -> None:
     now = time.monotonic()
-    last_attempt = getattr(
-        coordinator, "_beta26_notification_last_attempt_mono", None
-    )
+    last_attempt = getattr(coordinator, "_beta26_notification_last_attempt_mono", None)
     if (
         last_attempt is not None
         and now - float(last_attempt) < _NOTIFICATION_TTL_SECONDS
@@ -249,16 +294,16 @@ def _refresh_notification_cache(coordinator: Any) -> None:
             filter_state=_NOTIFICATION_FILTER,
         )
     except Exception as err:  # noqa: BLE001 - optional feed must not break core poll.
-        coordinator._beta26_notification_error = (  # noqa: SLF001
-            f"{type(err).__name__}: {err}"
-        )
+        coordinator._beta26_notification_error = f"{type(err).__name__}: {err}"  # noqa: SLF001
         return
 
-    # Keep only the normalized read-only notification fields. Vendor jump URLs
-    # are native app links, can embed the mower serial and are not useful in HA.
+    # Keep only the newest ten normalized read-only vendor rows. Navimower-local
+    # rows have a separate bounded persistent Store and are merged during snapshot
+    # decoration instead of being inserted into the vendor cache.
     normalized = _normalize_response(response)
+    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
     coordinator._beta26_notification_cache = {  # noqa: SLF001
-        "list": deepcopy(normalized["list"]),
+        "list": deepcopy(vendor_messages),
         "has_history_message": normalized.get("has_history_message"),
     }
     coordinator._beta26_notification_last_success_mono = now  # noqa: SLF001
@@ -293,19 +338,22 @@ def _install_notification_sensor() -> None:
             "notification_code": data.get("notification_code"),
             "vendor_code": data.get("notification_vendor_code"),
             "error_code": data.get("notification_error_code"),
-            # Backward-compatible alias from beta29.
             "event_code": data.get("notification_event_code"),
+            "origin": data.get("notification_origin"),
+            "kind": data.get("notification_kind"),
+            "confidence": data.get("notification_confidence"),
             "count": data.get("notification_count"),
+            "vendor_count": data.get("notification_vendor_count"),
+            "local_count": data.get("notification_local_count"),
             "has_history_message": data.get("notification_has_history_message"),
             "next_message_id": data.get("notification_next_message_id"),
             "filter_state": data.get("notification_filter_state"),
             "source": data.get("notification_source"),
             "source_age": data.get("notification_source_age"),
+            "vendor_source_age": data.get("notification_vendor_source_age"),
             "last_error": data.get("notification_error"),
             "recent": deepcopy(
-                (data.get("notification_history") or [])[
-                    :_NOTIFICATION_ATTR_HISTORY_LIMIT
-                ]
+                (data.get("notification_history") or [])[:_NOTIFICATION_ATTR_HISTORY_LIMIT]
             ),
         }
 
@@ -339,7 +387,7 @@ def install_beta26_runtime() -> None:
             data = self.call(
                 _LEGACY_NOTIFICATION_PATH,
                 {
-                    "vehicle_sn": str(sn),
+                    "vehicle_sn": sn,
                     "page": int(page),
                     "size": int(size),
                 },
