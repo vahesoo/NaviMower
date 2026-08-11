@@ -149,7 +149,7 @@ Navimower exposes the Navimow app's main **Notification -> Device** feed as the
 - state: newest vendor notification title;
 - attributes: content, timestamp, read state, level/type/style and vendor code;
 - `recent`: up to five newest normalized messages;
-- poll interval: at most once per minute;
+- poll interval: at most once per minute during normal background polling;
 - transient failures retain the last successful snapshot;
 - vendor notification codes are kept as strings, including alphanumeric values
   such as `150A`;
@@ -160,11 +160,21 @@ vendor `read` state is **account-specific**: reading notifications under the sam
 Navimow account used by the HA private-cloud integration changes the feed entries
 from `read: false` to `read: true` on a later refresh.
 
-**0.4.2-beta1 does not yet mark notifications read from Home Assistant.** The beta
-adds a bounded read-only public-H5 inspection to Download diagnostics so we can
-recover the official app request structure for `clearBatchMessageRead`, including
-whether the app supports both one-message and all-message read actions. No
-notification mutation endpoint is called by this beta.
+0.4.2-beta2 adds two explicit Home Assistant actions:
+
+- **`navimower.mark_notification_read`** accepts a Device notification
+  `message_id` and opens the same encrypted message-detail route used by the
+  official app. The integration does not optimistically change the cached read
+  flag; it immediately reloads the Device feed and accepts only the vendor's
+  returned state. This single-message path remains field-validation behavior in
+  beta2 until a live unread row is confirmed to become `read: true`.
+- **`navimower.mark_all_notifications_read`** uses the recovered official
+  `clearBatchMessageRead` Mark-all request and then immediately reloads the
+  Device feed.
+
+Both actions operate in the private-cloud Navimow account used by the selected
+config entry. They do not mark notifications read for other Navimow accounts to
+which the mower may also be shared.
 
 Notification history is user-facing event information and does not replace the
 live Problem/Error state model. Field testing also confirmed that mower
@@ -345,13 +355,10 @@ schedule, Problem/Error and latest-notification context. Tokens, password, email
 UID, full mower serial, GPS coordinates and other sensitive account/network
 identifiers are redacted.
 
-For **0.4.2-beta1 only**, Download diagnostics also performs a bounded inspection
-of public unauthenticated H5 HTML/JavaScript to locate the official app's
-notification read-state request structure. It sends no account credentials,
-Navimow token/cookie, device ID, mower serial or encrypted p:101 business
-payload, and it executes **no** `clearBatchMessageRead` or other notification
-mutation call. Only bounded sanitized source context is retained in the
-`notification_read_h5_discovery` diagnostics section.
+From **0.4.2-beta2 onward**, Download diagnostics is snapshot-only again: the
+beta1 public-H5 notification discovery has been removed after recovering the
+required request contracts. Downloading diagnostics makes no extra vendor or H5
+requests and never executes notification read actions.
 
 The older passive MQTT discovery, broad endpoint probing, state-transition
 capture and custom `navimower.export_diagnostics` / `mark_discovery_event`
@@ -359,17 +366,30 @@ actions remain removed.
 
 ## 0.4.2 beta development
 
+### 0.4.2-beta2
+
+- adds explicit **Mark notification as read** and **Mark all notifications as
+  read** Home Assistant actions for Device notifications;
+- uses the official app's Device message-detail route for one-message field
+  validation and the confirmed `clearBatchMessageRead` mutation for Mark all;
+- forces an immediate Device-feed refresh after a successful action and never
+  invents `read: true` locally;
+- removes the beta1 H5 Download-diagnostics discovery and returns diagnostics to
+  snapshot-only behavior;
+- remains cumulative from stable 0.4.1; beta1 does not need to be installed
+  first.
+
 ### 0.4.2-beta1
 
 - removes the deprecated Legacy Map Camera platform and renderer;
 - keeps Navimower Map Card as the supported map UI;
 - keeps Latest notification and the existing read-only Device feed unchanged;
-- confirms/documented notification `read` state as account-specific from field
+- confirms/documents notification `read` state as account-specific from field
   testing;
 - adds a targeted Download diagnostics H5 inspection to recover the official
   notification read mutation request for future **Mark as read** and **Mark all
   as read** support;
-- does not yet send notification write/mutation requests.
+- does not send notification write/mutation requests.
 
 ## Upgrade from 0.4.0 to 0.4.1
 
@@ -412,8 +432,8 @@ runtime, notification, error and model-support changes described above.
   not included.
 - The old built-in SVG Map Camera is removed from the 0.4.2 beta line; use
   Navimower Map Card.
-- Notification read actions are not yet exposed in HA; beta1 only gathers the
-  public H5 request structure needed to implement them safely in a later beta.
+- Single-message notification read behavior is still being field-validated in
+  beta2; Mark all as read uses the directly recovered official mutation contract.
 
 ## Credits and licence
 
