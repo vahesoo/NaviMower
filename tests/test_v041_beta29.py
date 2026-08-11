@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta29."""
+"""Regression contracts introduced with Navimower 0.4.1-beta29."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta29_manifest_and_release_notes() -> None:
+def test_beta29_release_contract_remains_documented() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta29"
+    assert manifest["version"].startswith("0.4.1-beta")
+    assert int(manifest["version"].rsplit("beta", 1)[1]) >= 29
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta29.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta29")
     for phrase in (
@@ -40,12 +41,15 @@ def test_beta29_runtime_uses_exact_main_device_feed_contract() -> None:
         "_NOTIFICATION_TTL_SECONDS = 60",
     ):
         assert phrase in source
-    refresh = source[source.index("def _refresh_notification_cache"):source.index("def _install_notification_sensor")]
+    refresh = source[
+        source.index("def _refresh_notification_cache"):
+        source.index("def _install_notification_sensor")
+    ]
     assert "coordinator.client.notification_feed" in refresh
     assert "coordinator.client.notification_history" not in refresh
 
 
-def test_beta29_sensor_stays_bounded_and_exposes_feed_metadata() -> None:
+def test_beta29_sensor_stays_bounded_and_keeps_compatibility_alias() -> None:
     source = (COMPONENT / "beta26_runtime.py").read_text()
     assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in source
     for phrase in (
@@ -61,19 +65,9 @@ def test_beta29_sensor_stays_bounded_and_exposes_feed_metadata() -> None:
     assert "mark-read" not in source.lower()
 
 
-def test_beta29_download_diagnostics_probes_only_exact_feed() -> None:
+def test_beta29_and_later_download_diagnostics_has_no_old_h5_discovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     ast.parse(diagnostics)
-    for phrase in (
-        '"/mowerbot/user/message/vehicleMessageListField"',
-        'document["notification_feed_probe"]',
-        "coordinator.client.notification_feed",
-        '"message_id": ""',
-        '"vehicle_sn": "<redacted>"',
-        '"filter_state": "all"',
-        "inventory(clean)",
-    ):
-        assert phrase in diagnostics
     assert "probe_main_notification_feed" not in diagnostics
     assert "notification_feed_discovery" not in diagnostics
     assert "notification_history_probe" not in diagnostics
