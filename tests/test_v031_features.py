@@ -46,26 +46,33 @@ def test_manifest_version() -> None:
     assert manifest["version"]
 
 
-def test_diagnostics_redacts_oauth_device_id_and_summarizes_rtk() -> None:
-    source = (COMPONENT / "diagnostics_export.py").read_text()
-    assert '"oauth_device_id"' in source
-    assert "def rtk_diagnostics" in source
-    assert '"rtk": rtk_diagnostics(raw_endpoint_data.get("location"))' in source
-    assert '"quality_fields_found"' in source
-
-
-def test_v032_diagnostic_summaries_exist() -> None:
-    source = (COMPONENT / "diagnostics_export.py").read_text()
-    assert '"diagnostic_summaries"' in source
-    for name in (
-        '"positioning"',
-        '"connectivity"',
-        '"battery"',
-        '"firmware"',
-        '"capabilities"',
-        '"maintenance"',
-        '"schedule"',
-        '"environment_and_safety"',
-        '"opaque_vendor_fields"',
+def test_diagnostics_sanitizer_redacts_sensitive_identifiers() -> None:
+    source = (COMPONENT / "diagnostics_sanitize.py").read_text()
+    ast.parse(source)
+    assert "def sanitize" in source
+    assert "def _is_sensitive_key" in source
+    for key in (
+        '"oauth_device_id"',
+        '"vehicle_sn"',
+        '"serial_number"',
+        '"latitude"',
+        '"longitude"',
+        '"access_token"',
+        '"refresh_token"',
+        '"email"',
+        '"ssid"',
+        '"mac"',
     ):
-        assert name in source
+        assert key in source
+    assert 'return "<redacted>"' in source
+
+
+def test_diagnostics_sanitizer_bounds_large_values_and_urls() -> None:
+    source = (COMPONENT / "diagnostics_sanitize.py").read_text()
+    ast.parse(source)
+    assert '"_omitted": "large_string"' in source
+    assert '"length": len(value)' in source
+    assert '"sha256": hashlib.sha256(raw).hexdigest()' in source
+    assert "def _safe_url" in source
+    assert 'urlunsplit((parsed.scheme, location, parsed.path, "", ""))' in source
+    assert "len(value) > 16_384" in source
