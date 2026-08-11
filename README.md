@@ -1,18 +1,17 @@
 # Navimower
 
-Alpha Home Assistant integration for Segway Navimow robot mowers.
+Home Assistant integration for Segway Navimow robot mowers.
 
 Navimower combines two cloud connections in one config entry:
 
 - **Private app cloud** — map geometry, real zone names and IDs, Off-limit and
-  VF-off areas, mapped Channels, settings, schedules, commands, maintenance and
-  stable cloud state.
-- **Official Smart Home OAuth + MQTT** — dense local `X`, `Y`, heading, battery
-  and live mower events used for exact route history, physical-zone detection,
-  stable progress and gate automations.
+  VF-off areas, mapped Channels, settings, schedules, commands, maintenance,
+  notifications and stable cloud state.
+- **Official Smart Home OAuth + MQTT** — dense live `X`, `Y`, heading, battery
+  and mower events used for route history, physical-zone detection, progress
+  context and gate automations.
 
-Navimower does **not** require the older NavimowHA integration from v0.2.0
-onward.
+Navimower does **not** require the older NavimowHA integration.
 
 > [!WARNING]
 > Navimower uses an undocumented private cloud protocol. It is not affiliated
@@ -24,19 +23,14 @@ onward.
 
 The private-cloud foundation used by Navimower was created by **Roberto
 Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
-Roberto reverse-engineered the Navimow mobile application's private-cloud
+That project reverse-engineered the Navimow mobile application's private-cloud
 communication and implemented the authentication, encrypted protocol, map
-decoding and control foundation on which this integration builds.
+handling and control foundation on which this integration builds.
 
-Navimower extends that work with the official Smart Home OAuth/MQTT connection
-to obtain dense live mower events and position data without repeatedly polling
-the private cloud. It also adds persistent route history, physical-zone and gate
-logic, and a separately maintained
-[Navimower Map Card](https://github.com/vahesoo/navimower-map-card) for the map,
-Mow Now controls and schedule editing.
-
-A sincere thank you to Roberto for the excellent reverse-engineering work and
-for making the original project available to the community.
+Navimower extends that foundation with official Smart Home OAuth/MQTT live data,
+persistent mowing history, physical-zone and gate logic, richer Home Assistant
+entities, and a separately maintained
+[Navimower Map Card](https://github.com/vahesoo/navimower-map-card).
 
 ## Recommended account arrangement
 
@@ -54,19 +48,13 @@ session. The private-cloud password is used only during setup or
 reauthentication and is not stored.
 
 The Smart Home OAuth account may be different from the private-cloud account as
-long as both can access the same mower. Navimower matches the mower by its stored
-identity before starting MQTT.
+long as both can access the same mower.
 
 > [!IMPORTANT]
 > Multiple mower config entries may use the **same dedicated private-cloud
-> account**. Add each mower as its own Navimower config entry. Entries that use
-> the same private-cloud account automatically converge on one stable app/device
-> identity, preventing parallel entries from invalidating each other merely
-> because the account is shared.
-
-This shared-account arrangement has been field-tested with three mowers. Each
-mower still receives its own entities, map and history, while the private-cloud
-login identity is shared at account scope.
+> account**. Add each mower as its own Navimower config entry. Entries using the
+> same account share one stable private-cloud app/device identity while keeping
+> separate entities, maps and histories.
 
 ## Main features
 
@@ -74,203 +62,158 @@ login identity is shared at account scope.
 
 - decoded private-cloud map geometry;
 - real zone names, IDs and areas;
-- boundaries and per-zone map settings;
-- Off-limit and VF-off areas;
-- mapped Channels and charging station;
-- temporary app doodle metadata with original vendor SVG, center, direction,
-  scale, creation time and expiry time;
-- global and per-zone cutting height on models that report a trustworthy remote height;
-- app-like active-zone progress, finished area, last mowing time and last completed time;
+- Off-limit areas, VF-off areas, mapped Channels and charging station;
+- temporary app obstacle/doodle metadata;
+- global and per-zone cutting-height context where the mower reports trustworthy
+  remote height data;
 - cached map data retained through temporary private-cloud outages;
-- automatic migration and refresh of older cached map schemas.
+- authenticated map/session APIs for the standalone Map Card.
+
+### Task, Map and zone telemetry
+
+Navimower keeps the different vendor counters separate instead of treating every
+percentage as the same value:
+
+- **Task progress** follows the selected vendor task progress;
+- **Task mowed area** follows the selected task area counter;
+- **Map coverage** and **Map mowed area** come from the current per-zone vendor
+  coverage snapshot;
+- active-zone/work progress remains separate from whole-task progress;
+- physical mower position is separate from the work-target/progress-owner zone.
+
+A mower crossing through another mapped zone can therefore no longer move task
+progress onto the physical polygon under the mower.
 
 ### Persistent mowing history
 
-Navimower records live MQTT samples in Home Assistant, not in the browser or
-Recorder. Each retained sample includes:
+Navimower records dense route samples in Home Assistant storage rather than in
+the browser or Recorder. Sessions survive normal pause/resume, short integration
+reloads and Home Assistant restarts. Route gaps remain separate segments so the
+Map Card does not draw an invented straight line across missing data.
 
-```text
-timestamp, X, Y, heading, activity, MQTT vehicle state, MQTT action
-```
+Multi-zone mowing remains one logical task session across normal zone changes.
+A confirmed per-zone cycle reset is retained as a boundary inside the task and
+clears only that zone's same-day trail when the new cycle actually enters it.
+Unrelated zones keep their completed daily trails.
 
-A session starts when cutting begins, survives normal pause/transit and
-optionally the return-to-dock route, and normally ends when the mower is docked.
-If Navimow finishes one practical mowing cycle and immediately starts another
-pass while the scheduled window is still open, a same-zone progress reset creates
-a new session even though the mower never docked. This lets the active-cycle
-route start cleanly while the previous route remains in history. A successful
-`navimower.mow` call with `reset: true` creates that boundary immediately, even
-when the previous pass stopped at 50%; `reset: false` keeps the existing vendor
-progress and current cycle. Exact timestamped samples remain stored internally,
-while card-facing route payloads omit intermediate points closer than
-0.30 m to the last published point. Every segment start and final point remains.
+Repeated deliveries of the same vendor pose are deduplicated. Completed-session
+SVG footprints use the mower's reported `mowingPathWidth` when available instead
+of assuming one universal swath width.
 
-If a Stop/Start, integration reload or Home Assistant restart creates separate
-history fragments, fragments with a gap of up to **five minutes** are joined
-into the same logical session. Intentional cycle-reset boundaries are never
-merged. A normal paused session already remains active without needing this
-merge rule; separated fragments beyond five minutes stay separate.
+Trail retention is configurable to 3, 7, 14 or 30 days, or unlimited.
 
-Merged sessions retain separate route segments. Route samples that were not
-received during an interruption cannot be reconstructed, and the map API does
-not draw a false connecting line across that gap. The session count, start time
-and end time still represent one mowing job. Navimow can legitimately finish at
-97-99% when only inaccessible or obstructed remnants remain; a vendor-ended cycle
-at 95% or above is therefore retained as completed instead of requiring exactly
-100%.
+### Position fallback, Channels and Gate areas
 
-Trail retention is configurable:
+Fresh official MQTT `X/Y` is always the preferred live position. When the MQTT
+pose stream is temporarily unavailable, a recent private-cloud position may keep
+Current physical zone and Current channel useful.
 
-- 3 days;
-- 7 days (default);
-- 14 days;
-- 30 days;
-- unlimited.
+Private-cloud pose freshness is based on the mower/vendor `report_time`, not on
+when Home Assistant happened to poll the endpoint. Stale cloud coordinates are
+display-only and never override a fresh MQTT pose.
 
-`Unlimited` preserves every completed route and can grow both Home Assistant
-`.storage` usage and the current map payload substantially over time. Active
-history is checkpointed periodically and completed sessions are stored
-individually in Home Assistant `.storage`.
+Gate and Gate-area safety is deliberately conservative. Under private-cloud
+fallback, an already-open gate is not closed from one position sample. Two
+distinct fresh vendor position reports must confirm a cloud-based close/clear or
+Gate-area OFF transition.
 
-### Physical zones, mapped Channels, Gate areas and gates
+Gate areas are generic local-coordinate presence areas. They may be used for a
+physical gate passage, camera automation or another local mower-presence use
+case.
 
-- current physical zone resolved from fresh MQTT `X/Y`, then private-cloud
-  `X/Y`, then a last-known display value;
-- target zone kept separate from the physical zone;
-- current mapped Channel detection;
-- zone-transition sensor;
-- optional rectangular local-coordinate **Gate areas**;
-- user-friendly zone-pair gate configuration;
-- bidirectional gates enabled by default;
-- optional one-way `Zone A -> Zone B` operation;
-- gate close delay of 0, 10, 20 or 30 seconds;
-- gate-required sensor remains latched through the configured arrival delay.
+### State, Problem and Error
 
-The intention-based gate sensor can open a gate before the mower reaches it.
-Fresh MQTT pose is always authoritative. If MQTT X/Y is unavailable, a recent
-private-cloud pose may be used as a Gate / Gate-area fallback. Cloud freshness
-is measured from the mower/vendor `report_time`, not from the Home Assistant HTTP
-poll time. Stale private-cloud coordinates are display-only and never override a
-fresh MQTT pose or issue a physical close decision.
+Navimower 0.4.1 separates mower control states from safety/fault states more
+clearly:
 
-For an already-open gate, a cloud fallback does not close or clear the latch on
-the first arrival/outside sample. Two distinct fresh private-cloud position
-reports must confirm the transition. Gate-area OFF transitions use the same
-two-report rule. This intentionally prefers a gate remaining open slightly
-longer over closing from a single delayed cloud coordinate.
+- `0103` is handled as **Idle**;
+- `0210` as **Mowing**;
+- `0211` as **Paused**;
+- `0220` as **Returning**;
+- `0302` as the separate **Lifted** safety state;
+- `0301` as the active numeric-fault state.
 
-When mowing is started from Home Assistant with an explicit zone list, the
-clicked zone order is sent unchanged and the first requested zone is latched
-immediately. That command intent has priority over short-lived stale vendor
-target fields, so `gate_required` can open the gate at departure instead of
-waiting for the mower to enter the physical Gate area. An in-flight latch keeps
-its original direction until the mower reaches the destination zone and the
-configured close delay expires.
+The **Problem** binary sensor answers whether an active problem/safety condition
+is present. The **Error** sensor provides vendor fault detail when the mower
+reports a numeric error object. Real field captures such as `6108` (Mower got
+stuck) and `6106` (Motion planning error) have supplied their vendor title and
+content directly through live private-cloud state.
 
-Normal empty navigation states are exposed as readable values (`No active
-target`, `Not in channel`, or a last-known/stale physical zone) rather than
-generic `unknown`. Current physical zone and Current channel expose the selected
-position source, source age and stale state. The `Live position valid` diagnostic
-remains specifically about a fresh official MQTT pose. During a brief start,
-pause or dock acknowledgement, the lawn-mower entity preserves the explicit
-command activity instead of falling back to a false Docked state. Target and gate
-attributes include the chosen source, command age, direction and pose validity
-for troubleshooting.
+Lifted remains a safety state without inventing a numeric error/event code. A
+code is exposed only when the vendor actually reports one.
 
-### Mower entities and controls
+### Latest notification
 
-Depending on mower model and firmware, Navimower provides:
+Navimower exposes the Navimow app's main **Notification -> Device** feed as the
+**Latest notification** sensor.
 
-- `lawn_mower` controls;
-- battery, state and maintenance sensors;
-- explicit Task progress, Map coverage, Task/Map mowed area and Map area
-  sensors;
-- one enabled Coverage sensor per mapped mowing zone;
-- optional per-zone Area, Mowed area, Last mowed and Last completed sensors,
-  disabled by default;
-- a disabled diagnostic Route progress sensor for the vendor route counter;
-- global cutting height on supported models;
-- current physical zone, target zone and current Channel sensors;
-- local X/Y, heading, position-source and MQTT pose-age sensors;
-- private-cloud, OAuth, MQTT, pose-valid and MQTT-stream diagnostics;
-- one binary sensor per configured Gate area and gate;
-- zone selector, calendar/schedule and supported setting entities;
-- SVG map camera and a lightweight map-data sensor;
-- `navimower.mow`, `navimower.set_schedule` and diagnostics services.
+- state: newest vendor notification title;
+- attributes: content, timestamp, read state, level/type/style and vendor code;
+- `recent`: up to five newest normalized messages;
+- poll interval: at most once per minute;
+- transient failures retain the last successful snapshot;
+- vendor notification codes are kept as strings, including alphanumeric values
+  such as `150A`;
+- vendor-native app jump URLs are deliberately not retained or exposed;
+- Navimower never marks messages read and performs no notification write action.
 
-The zone Coverage entity is the normal per-zone entity. Its attributes include
-the zone area, mowed area, task membership, current cycle, source and retained
-timestamps. Supporting area/timestamp entities can be enabled from the entity
-registry when they are useful for dashboards, statistics or automations.
+Notification history is user-facing event information and does not replace the
+live Problem/Error state model.
 
-Firmware-dependent setting entities are created and enabled only when the
-current mower model and a successful private-cloud `set_list` response support
-them. An older unsupported setting entity is removed only after a valid
-`set_list` read, never because of a temporary cloud failure. Manual-height
-models do not expose encoded map values as cutting-height millimetres.
+### Settings and controls
 
-### Entity reference and model support
+Depending on mower model and firmware, Navimower can expose:
 
-> [!NOTE]
-> Primary field testing has been performed on an **H215** in the European/FRA
-> region. An **X390** has been used for secondary multi-mower, map, telemetry
-> and model-specific settings validation. Other models and firmware versions
-> can report different fields, so setting entities are created from both the
-> known model mapping and the mower's returned `set_list`.
+- Lawn mower start, pause and return-to-dock controls;
+- Mowing schedule enabled;
+- charging limit and return battery level;
+- cyclic mowing;
+- Night mowing;
+- Rain and physical rain-sensor controls;
+- weather sensitivity and post-rain delay;
+- frost, snow, strong-wind and high-temperature controls;
+- Do not disturb / quiet period;
+- Energy saver, Sound and lights;
+- Child lock, Lift alarm and Geo-fence controls;
+- obstacle/navigation/traction/animal-protection settings when reported;
+- global cutting height on models that report supported remote heights.
 
-The names below are the entity names shown under the mower device. Home
-Assistant generates the final entity IDs from the mower and entity names.
+**Night mowing, Rain and Rain sensor** use a robot-first plus cloud-persist write
+path. This prevents the mower's onboard copy from later restoring an older value
+to the cloud. All three were field-tested bidirectionally on H215 during the
+0.4.1 beta cycle.
 
-#### Core controls, sensors and diagnostics
+Unknown encoded cutting-height markers are not converted into invented
+millimetre values.
 
-| Entity or group | What it provides | Availability |
-| --- | --- | --- |
-| Lawn mower | Start, pause and return-to-dock controls plus current activity | All configured mowers |
-| Battery and State | Selected live battery source and normalized mower state | All configured mowers |
-| Docked, Problem and Live position valid | Automation-friendly binary states | All configured mowers; live position requires fresh MQTT pose data |
-| Task progress | Overall progress of the currently selected vendor task | When task progress is reported or recoverable |
-| Map coverage, Map mowed area and Map area | Area-weighted state of the whole decoded map | Mowers with decoded mowing zones |
-| Task mowed area and Weekly mowed area | Current-task and vendor weekly area counters | When reported by the private cloud |
-| Zone Coverage | Current retained coverage for each mapped zone | One enabled entity per zone |
-| Zone Area, Mowed area, Last mowed and Last completed | Optional supporting entities for each zone | Created per zone and disabled by default |
-| Cutting height | Current global/effective cutting height | Models reporting a trustworthy remote height; field-tested on H215 |
-| Current physical zone, Target zone and Current channel | Physical location, intended destination and mapped-channel state | Decoded map plus live/private position data |
-| Zone transition | Previous and current physical zone transition | Mowers with decoded zones and usable position context |
-| Position X/Y, Heading and source/age | Local map pose and source diagnostics | Mowers reporting position data |
-| Schedule and Next mow | Parsed weekly schedule, zones and next planned start | When schedule data is reported |
-| Blades life and Chassis life | Maintenance reminder percentage and runtime details | When maintenance data is reported |
-| Connectivity and diagnostics | Private-cloud, OAuth, MQTT, stream, signal and source status | All configured mowers; detailed fields depend on available sources |
-| Gate area and Gate required | MQTT-primary presence/intent with fresh private-cloud fallback | Only for configured Gate areas or zone-pair gates |
-| Map data and SVG camera | Lightweight API metadata and renderable map image | Mowers with decoded map data |
+### i2 AWD experimental support
 
-#### Setting controls
+0.4.1 includes an initial capability profile derived from an i208 AWD diagnostic
+and the i2 documentation. It may expose settings such as Eco mode, Narrow zone
+adapt, Advanced slope mode, Grass pattern enhancement, Progress retention,
+Mowing cycle interval, Headlight, Night animal protection, Terrain adapt, Edge
+sense, TCS, positioning controls and Global cutting height when corresponding
+vendor fields are present.
 
-| Setting entity or group | What it changes | Tested/model availability |
-| --- | --- | --- |
-| Mowing schedule enabled | Enables or pauses the saved weekly plan without deleting it | Models reporting `startPlan`; H215 and X390 observed |
-| Charging limit and Return battery level | Battery charge and return thresholds | Only when the mower reports the corresponding setting |
-| Cyclic mowing | Enables repeated mowing cycles inside the schedule window | Models reporting `mowingCycle` |
-| Night mowing | Allows mowing at night | H215 bidirectionally tested; other models only when reported |
-| Work mode | Standard, Efficient or Precision mowing | H215 tested; X390 observed where reported |
-| Rain and weather controls | Rain feature, physical rain sensor, forecast source and post-rain delay | H215 bidirectionally tested |
-| Weather sensitivity | Drizzle, Light or Moderate response | When `weatherSensitivity` is reported |
-| Frost controls | Frost enable and quarter-hour cutoff time | H215 bidirectionally tested |
-| Snow controls | Snow enable and 1–7 day delay | H215 bidirectionally tested |
-| Strong wind and Hot weather | Weather-adaptive mowing stops | H215 setting fields observed |
-| Maximum mowing temperature | 30–45 °C limit | H215 bidirectionally tested |
-| Do not disturb and Quiet period | Mutes the mower and stores separate 15-minute start/end times | H215 bidirectionally tested |
-| Energy saver | Enables the app's energy-saving setting | H215 bidirectionally tested |
-| Sound | Enables or disables mower sounds | When `soundSwitch` is reported |
-| Night light | Enables the mower's night light | When `lightSwitch` is reported |
-| Night light brightness | Default, Dim or Extra dim through `lightIntensity` | **H215 only**, bidirectionally mapped |
-| Brightness | Dim or Extra dim through `nightLightLevel` | **X390 only**, secondary validation |
-| Child lock and Lift alarm | Safety lock and lift-alert controls | When reported by the mower |
-| Geo-fence alarm and radius | Anti-theft alarm and 10–50 m radius | H215 bidirectionally tested; only when reported |
-| Camera positioning (EFLS), obstacle avoidance and traction control | Navigation and traction features | Only when the corresponding setting is reported |
-| Animal-friendly | Enables animal-protection behaviour | H215 bidirectionally tested; other models when reported |
-| Terrain adapt | H215 Lab terrain adaptation | **H215 only**, bidirectionally tested |
-| Edge sense | Enables the H215 Lab edge-sensing feature | **H215 only**, bidirectionally tested |
-| Edge sense mode | Standard, Cautious or Extreme | **H215 only**, bidirectionally tested |
+> [!CAUTION]
+> **i2 AWD support is experimental and has not yet been field-tested on a live
+> i2 AWD mower through Navimower.** The controls remain included so owners can
+> test and report behavior, but availability, labels and write semantics may vary
+> by firmware. H215 is the primary field-tested model and X390 provides secondary
+> model validation.
+
+Default battery-setting ranges are 5–20% for return-to-dock and 70–100% for the
+charging limit unless the mower reports its own supported min/max limits.
+
+## Model support
+
+Primary live testing has been performed on **H215** in the European/FRA region.
+An **X390** has been used for secondary map, telemetry, notification and
+multi-mower validation. First-generation H-series compatibility is retained for
+zone selection and map fallback behavior. Other models are capability-driven and
+best effort.
+
+The private and OAuth endpoints currently target the European/FRA service.
 
 ## Installation
 
@@ -281,444 +224,160 @@ Assistant generates the final entity IDs from the mower and entity names.
 3. Install Navimower and restart Home Assistant.
 4. Open **Settings -> Devices & services -> Add integration -> Navimower**.
 
-Manual installation is also possible by copying
-`custom_components/navimower` into `/config/custom_components/` and restarting
-Home Assistant.
+Manual installation is also possible by copying `custom_components/navimower`
+into `/config/custom_components/` and restarting Home Assistant.
 
 ## Setup flow
 
-The initial setup creates both cloud branches before the config entry is
-completed:
-
 1. Enter the email and password of the dedicated private-cloud account.
-2. Select the mower, or enter its serial number when a shared mower is not
-   returned by the normal list endpoint.
-3. Continue to the official Smart Home OAuth browser authorization.
+2. Select the mower, or enter its serial when a shared mower is not returned by
+   the normal mower list.
+3. Continue to official Smart Home OAuth.
 4. Sign in with an account that can access the same mower.
-5. Home Assistant stores both token sets in one Navimower config entry.
+5. Home Assistant stores both connection branches in one Navimower config entry.
 
-On every normal Home Assistant start, Navimower restores local map/session data
-first, then starts private-cloud refresh and OAuth validation in parallel. MQTT
-starts only after the OAuth token is valid and fresh broker credentials have
-been obtained.
+The two branches degrade independently: cached/private-cloud functionality may
+remain usable during an OAuth/MQTT outage, and live MQTT/history may remain
+useful during a temporary private-cloud outage.
 
-The two branches degrade independently:
+## Connectivity and polling
 
-- private cloud unavailable: cached map/entities and live MQTT history can remain
-  usable;
-- OAuth/MQTT unavailable: private-cloud map, settings and controls can remain
-  usable;
-- rejected credentials: the appropriate Navimower reauthentication flow is
-  started.
+`MQTT connected` and `Live position valid` are separate health signals. A broker
+connection can remain healthy while a continuous position stream is not expected
+or is temporarily unavailable.
 
-OAuth token refreshes do not intentionally reload the full integration. After a
-token refresh or MQTT authentication disconnect, Navimower obtains fresh MQTT
-credentials before reconnecting.
+Dense MQTT pushes no longer starve the normal private-cloud refresh schedule. A
+guarded private polling task ensures settings, schedule, coverage and cloud state
+continue to refresh while the mower is actively sending frequent pose packets.
 
-## Connectivity, polling and fallback
-
-Navimower treats MQTT transport and the live position stream as separate health
-signals. `MQTT connected` means the broker connection is open; `Live position
-valid` means a real X/Y packet has arrived within the freshness window. A broker
-can remain connected while the location subscription is silent, including while
-the mower is stopped in some error or idle states.
-
-While the mower is active, a five-second watchdog checks the pose stream. When
-the latest pose is more than 25 seconds old, Navimower first re-subscribes to the
-location topic. If no pose arrives within 10 seconds, it keeps the useful MQTT
-state/progress transport and lets position fall back independently instead of
-letting a missing pose overwrite the rest of MQTT state.
+When the pose stream degrades, Navimower keeps useful MQTT state/progress traffic
+instead of rebuilding the complete MQTT client solely because pose is missing.
+Location re-subscribe attempts are rate-limited while private-cloud position
+fallback remains available.
 
 | Data | Preferred source | Fallback |
 | --- | --- | --- |
-| X/Y, heading and exact route | official MQTT | private-cloud location for current position; exact dense route is not invented |
-| live activity changes | official MQTT | private-cloud `index2` |
-| battery while mowing/returning | fresh official MQTT state | private-cloud SOC, then last-known |
-| battery while docked/charging | private-cloud SOC | fresh MQTT state, then last-known |
-| per-zone coverage and mowed area | private-cloud `partitionPercentage` / `finishedArea`, densified for the active zone by packed `mapWorkPosition.progress` and then route progress | persisted per-zone last-known |
-| Task progress | overall vendor `mowingPercentage` for the selected task | integration-side area-weighted selected-zone model, then persisted last-known |
-| Task mowed area | vendor `subtotalArea` for the selected task | Task area × Task progress, then area-weighted zone state |
-| Map coverage / Map mowed area | integration-side area-weighted latest value for every zone | persisted zone history |
-| Map area | decoded map-zone geometry | persisted map cache |
-| Route progress | official MQTT/vendor route counter | unavailable; diagnostic only |
-| map, zones, settings and schedule | private cloud | persisted/local cache |
-| Current physical zone display | fresh MQTT pose | private-cloud X/Y, then last-known display value |
-| Current channel display | fresh MQTT pose | private-cloud X/Y, confirmed dock or last-known display value |
-| physical Gate-area/gate safety | fresh MQTT pose | fresh private-cloud pose by vendor `report_time`; stale cloud is display-only and cloud close/clear needs two distinct confirming reports |
+| X/Y and heading | fresh official MQTT | recent private-cloud position, then last-known display context |
+| live activity | official MQTT | private-cloud state |
+| battery while active | fresh official MQTT battery | private-cloud SOC, then last-known |
+| battery while docked/charging | private-cloud SOC | fresh MQTT battery, then last-known |
+| Task progress | fresh vendor task progress | zone-model fallback / last-known |
+| Task mowed area | fresh vendor task area | calculated/zone fallback where needed |
+| Map coverage / mowed area | current per-zone vendor coverage snapshot | retained last-known zone data |
+| map, settings and schedule | private cloud | persisted/local cache where supported |
+| Gate close/clear safety | fresh MQTT pose | fresh private-cloud pose with two-report confirmation |
 
-Private-cloud polling is currently intentionally aggressive while field testing:
-
-- mowing: coordinator cycle every 5 seconds;
-- returning/mapping: every 8 seconds;
-- docked/idle: every 15 seconds;
-- individual endpoints have separate TTLs, so slow map/maintenance data is not
-  downloaded on every cycle.
-
-A failure from one private endpoint keeps its previous value and does not erase
-other entity states. Battery, zone state, task totals and map totals retain
-last-known-good values through short gaps and are checkpointed for restart
-recovery. A confirmed new mowing cycle resets task accounting only when that
-cycle enters a zone; other zones keep their latest Map coverage until a newer
-cycle reaches them. Pause/resume, charging continuation, Home Assistant restart
-and transient telemetry resets do not create a new zone cycle. The integration
-does not interpolate synthetic battery percentages.
-
-Reauthentication is started only for a real authentication rejection. The
-diagnostic `Position source` sensor shows whether current X/Y came from `mqtt`
-or `private_cloud`; `MQTT position stream` shows states such as `live`,
-`resubscribing`, `pose_degraded` or `idle`. Battery, progress, area and navigation
-entities expose their selected source and freshness context as attributes.
+No synthetic/interpolated battery percentages are generated.
 
 ## Navimower Map Card
 
-The interactive dashboard is distributed separately:
+The supported interactive map UI is distributed separately:
 
 - [vahesoo/navimower-map-card](https://github.com/vahesoo/navimower-map-card)
 
-Install it through HACS as a **Dashboard** custom repository. HACS manages the
-Lovelace resource automatically; no manual `/local/...` resource is required. A
-minimal card normally needs only the mower entity:
+Install it through HACS as a **Dashboard** custom repository. A minimal card
+normally needs only the mower entity:
 
 ```yaml
 type: custom:navimower-map-card
 entity: lawn_mower.tont
 ```
 
-Use **navimower-map-card v0.1.18 or later** with Navimower v0.3.0. The current
-card remains compatible through the legacy payload fields; a later card release
-can consume the prepared schema-v5 zone states and daily trails directly. The
-standalone card includes:
+The integration itself provides authenticated local APIs for map data, session
+indexes, exact route details and completed-session render archives.
 
-- map, zones, Off-limit, VF-off, Channel and Gate-area layers;
-- a Today view plus the two preceding dates for three-day mowing history;
-- Mow, Pause and Dock controls;
-- ordered Mow Now zone selection with restart/continue choice;
-- integrated weekly schedule editor.
+### Legacy Map Camera
 
-The integration no longer bundles or auto-registers any Lovelace JavaScript
-card. The SVG camera entity remains available for picture cards, notifications
-and simple dashboards.
+The built-in SVG camera remains available in **0.4.1** as **Legacy Map Camera**
+for compatibility with existing dashboards. It is no longer the actively
+developed map UI and its old rendering terminology does not represent every
+modern Navimow map-area type correctly.
 
-## Authenticated map and session APIs
-
-Large geometry and retained route data are served through authenticated local
-Home Assistant endpoints rather than repeated state attributes:
-
-```text
-GET /api/navimower/map/<entry_id>
-GET /api/navimower/sessions/<entry_id>
-GET /api/navimower/session/<entry_id>/<session_id>
-```
-
-The map payload uses `schema_version: 5` and contains:
-
-- map geometry, zones, Off-limit areas, VF-off areas, Channels and dock;
-- doodle metadata and original vendor SVG;
-- prepared `zone_states`, weighted `totals` and independent revisions;
-- latest same-day `daily_trails` per zone, prepared by the integration;
-- legacy coverage and zone-detail fields for current card compatibility;
-- global/effective cutting heights when supported;
-- active cycle trail and every session retained by the selected history policy;
-- gap-aware `trail_segments` and per-session `segments`, while retaining flat
-  `trail`/`points` arrays for older cards;
-- local Gate areas and zone-pair gates;
-- links to the complete session index/detail APIs.
-
-`zone_states` is the same authoritative model used by Home Assistant entities.
-Whole-task `mowingPercentage`, active-zone `mapWorkPosition.progress`, per-zone
-`partitionPercentage` and route progress remain separate fields instead of being
-used interchangeably. The card therefore does not need to calculate progress, detect
-zone-cycle boundaries or classify daily route points during dashboard loading.
-A new cycle replaces only the entered zone's same-day trail; other zone trails
-remain available until their own next cycle or the local calendar day changes.
-Prepared daily trails are cached by local date, map revision and retained-route
-revision so an unchanged dashboard reopen does not reprocess route history.
-
-The dedicated session detail endpoint returns exact timestamped points for any
-retained session. The main map response includes both a flat XY path and separate
-XY route segments for every retained session. New cards should prefer `segments`
-so short reload, restart and operator-stop gaps are not bridged by a false line.
+> [!IMPORTANT]
+> **Legacy Map Camera is scheduled for removal in Navimower 0.4.2.** Development
+> will remove it from the 0.4.2 beta line starting with 0.4.2-beta1. Migrate
+> dashboards to Navimower Map Card before upgrading to 0.4.2.
 
 ## Options
 
 Open **Settings -> Devices & services -> Navimower -> Configure**.
 
-### General
+### General and trail history
 
-- trail retention;
-- include return-to-dock route;
-- standard or extended diagnostics detail.
+- completed trail retention;
+- include/exclude the return-to-dock route.
 
 ### Gates
 
-Use **Add gate**, **Edit gate** and **Delete gate**. Zone choices are populated
-from the decoded map; users do not need to know internal IDs.
-
-A gate has a user-defined name, Zone A, Zone B, optional one-way operation and a
-close delay. Example automation:
-
-```yaml
-alias: Navimower gate
-triggers:
-  - trigger: state
-    entity_id: binary_sensor.tont_back_yard_gate_required
-actions:
-  - choose:
-      - conditions:
-          - condition: state
-            entity_id: binary_sensor.tont_back_yard_gate_required
-            state: "on"
-        sequence:
-          - action: cover.open_cover
-            target:
-              entity_id: cover.back_yard_gate
-    default:
-      - action: cover.close_cover
-        target:
-          entity_id: cover.back_yard_gate
-```
-
-Physical gate controllers differ; users remain responsible for any additional
-safety logic or automatic-close behaviour.
+Add, edit or delete zone-pair gates. Each gate can be bidirectional or one-way
+and can retain the required signal for 0, 10, 20 or 30 seconds after arrival.
 
 ### Gate areas
 
-Gate areas are optional local-coordinate rectangles managed with Add/Edit/Delete
-steps. They can describe a gate passage or any other area that needs physical
-presence. Fresh MQTT coordinates remain primary; a recent private-cloud pose may
-be used when MQTT pose is unavailable. A cloud-based OFF transition requires two
-distinct fresh vendor position reports, and stale cloud coordinates remain
-display-only.
+Add, edit or delete local X/Y rectangles used as mower-presence sensors.
 
-## Upgrade notes
+Development-only passive protocol discovery and custom diagnostics-export
+options from the 0.4.1 beta cycle are removed when upgrading to stable 0.4.1.
 
-### v0.4.1-beta18
+## Home Assistant diagnostics
 
-- Current physical zone and Current channel now use fresh MQTT first, then
-  private-cloud X/Y, then last-known display context.
-- Fresh private-cloud X/Y may back up Gate and Gate-area logic while MQTT pose is
-  unavailable; stale cloud coordinates never override MQTT or close a gate.
-- Cloud-based gate close/clear and Gate-area OFF require two distinct confirming
-  vendor position reports.
-- Multiple mowers may share one dedicated private-cloud account; account-sharing
-  entries automatically use one stable app/device identity.
-- No configuration migration is required. Restart Home Assistant after updating.
+Use Home Assistant's normal **Download diagnostics** action from the Navimower
+integration/config-entry menu.
 
-### v0.3.4
+The generated document is read-only and sanitized. It contains general mower,
+connectivity, positioning, map, telemetry, history, capability, maintenance,
+schedule, Problem/Error and latest-notification context. Tokens, password, email,
+UID, full mower serial, GPS coordinates and other sensitive account/network
+identifiers are redacted.
 
-- Promotes the tested 0.3.4 beta line to a normal release with multi-mower
-  config entries, stable telemetry fallbacks and history/session hardening.
-- Adds the mapped weather, Geo-fence, work-mode, Do not disturb, Energy
-  saver, Night mowing and H215 Lab controls described above.
-- Setting writes are sent robot-first and cloud-second without an
-  intermediate refresh, then confirmed by delayed authoritative readback.
-- Corrects mower-side hexadecimal encoding for Geo-fence radius, Snow
-  delay, Frost cutoff and Maximum mowing temperature.
-- Snow delay is displayed as a 1–7 day slider.
-- Brightness is model-specific: H215 uses the three-level Night light
-  brightness control, while X390 uses the two-level Brightness control.
-- Supported setting switches, selects and numbers are enabled by default;
-  unsupported stale beta entities are removed after a valid `set_list`
-  response.
-- No config-entry or options migration is required. Restart Home Assistant
-  after updating. Primary live testing was performed on H215; X390 coverage
-  remains secondary and other models are best-effort.
-- Full release notes are available in
-  [`.github/release-notes/0.3.4.md`](.github/release-notes/0.3.4.md).
+The beta-only passive discovery, H5/notification endpoint probing, state-transition
+capture and custom `navimower.export_diagnostics` / `mark_discovery_event`
+actions are not part of the stable 0.4.1 diagnostics interface.
 
-### From v0.2.9 to v0.3.0
+## Upgrade from 0.4.0 to 0.4.1
 
-- This is an intentional clean entity break. Old `mowing_progress`,
-  `mow_route_progress`, `coverage`, `session_area`, `weekly_area` and
-  `total_area` entity IDs are not migrated. Delete their unavailable registry
-  entries after the restart.
-- New public entities use explicit Task, Map and Route terminology. Map area is
-  the static sum of mowing zones; Route progress is diagnostic and disabled by
-  default.
-- Every mapped zone receives one enabled Coverage entity. Per-zone Area, Mowed
-  area, Last mowed and Last completed entities are created but disabled by
-  default.
-- The same central zone model powers entities and the schema-v5 Map API. The API
-  also provides per-zone same-day trails and revisions for a lightweight card.
-- Provisional zero/one-point sessions are no longer published, and existing
-  completed empty stubs are removed while history loads.
-- No config-entry/options migration is required. Restart Home Assistant, remove
-  the old orphaned entities, then enable only the optional zone entities you
-  need.
+0.4.1 is a cumulative stability and data-correctness release built directly on
+0.4.0. No beta releases need to be installed individually.
 
-### From v0.2.8 to v0.2.9
+Highlights include:
 
-- Active battery discharge now prefers fresh official MQTT state packets; docked
-  charging remains private-cloud-first. No synthetic/interpolated percentages
-  are created.
-- Mowing progress, coverage and session area use freshness-aware, cycle-aware
-  last-known-good filtering. A confirmed new cycle clears the old values
-  immediately and waits for low new-cycle telemetry.
-- Current channel no longer alternates with `Position unavailable` only because
-  the idle pose exceeded its freshness window. Gate safety remains fresh-pose
-  only in that historical release; beta18 adds a guarded private-cloud fallback.
-- Total area and the main public telemetry values survive short source outages
-  and Home Assistant restarts.
-- No configuration migration or Map API change is required. Restart Home
-  Assistant after updating.
+- guarded private-cloud polling under dense MQTT traffic;
+- clearer raw vendor Task/Map/zone telemetry ownership;
+- multi-zone session and same-day trail stability;
+- route/history pose deduplication and mower-specific mowing footprint width;
+- freshness-aware private-cloud position fallback with conservative Gate safety;
+- corrected Idle, Lifted and numeric-fault handling;
+- vendor detail on the Error sensor for reported numeric faults;
+- the new Latest notification Device-feed sensor;
+- initial experimental/unverified i2 AWD capability support;
+- persistent bidirectional Night mowing, Rain and Rain sensor writes;
+- removal of beta-only diagnostics/discovery controls;
+- Legacy Map Camera deprecation notice ahead of removal in 0.4.2.
 
-### From v0.2.6 to v0.2.7
-
-- A successful `reset: true` mow command immediately starts a new history cycle;
-  a partial previous cycle remains in retained history but is not marked as
-  completed.
-- App-side progress resets are also detected from lower partial progress, such
-  as 50% to 0-5%, without requiring the old cycle to be near 100%.
-- MQTT vehicle state and action remain authoritative independently of pose age,
-  preventing the Docked binary sensor from switching on while the mower is
-  actually mowing or returning.
-- Manual/unsupported cutting-height values such as encoded `316` are removed
-  from the public map instead of being displayed as millimetres.
-- A short arrival guard blocks stale reverse gate targets after a confirmed
-  crossing, while a fresh Mow or Dock command still takes effect immediately.
-- MQTT callbacks are detached before SDK shutdown to avoid late un-awaited
-  coroutine warnings during Home Assistant restart.
-- No options migration is required. Restart Home Assistant after updating.
-
-### From v0.2.5 to v0.2.6
-
-- The public map payload is now schema v4.
-- Intentional progress resets create a fresh current-cycle session instead of
-  reusing the previous route. Existing retained sessions are preserved.
-- Cycles with a vendor end timestamp and at least 95% progress can populate
-  `last_completed_at`; the next cycle no longer erases that timestamp.
-- Install `navimower-map-card` v0.1.13 or later for the three-day History
-  selector (Today plus the two preceding dates) and the corrected three-pulse
-  animation.
-- Restart Home Assistant after updating.
-
-### From v0.2.4 to v0.2.5
-
-- No configuration migration is required; existing gate pairs and Gate areas
-  are reused.
-- Explicit Mow Now/ordered-zone commands now pre-latch the first target zone.
-- Restart Home Assistant after updating and supervise one crossing while
-  checking the target source/age and gate `from_zone` / `to_zone` attributes.
-
-### From v0.2.3 to v0.2.4
-
-- The public map payload is now schema v3 and exposes gap-aware
-  `trail_segments` and per-session `segments`.
-- Flat `trail` and `points` arrays remain available for older cards, but
-  `navimower-map-card` v0.1.12 or later is recommended so route gaps are not
-  bridged by false connecting lines.
-- Restart Home Assistant after updating.
-
-### From v0.2.2 to v0.2.3
-
-- Older cached map geometry is normalized automatically and refreshed once from
-  the private cloud. Manual `.storage` editing is no longer required.
-- Adjacent retained session fragments separated by five minutes or less are
-  merged automatically at startup.
-- The bundled Mow Now and Scheduler cards were removed. Install
-  `navimower-map-card` v0.1.9 or later and remove any manually configured
-  `/local/navimower/navimower-mow-card.js` or
-  `/local/navimower/navimower-scheduler-card.js` resources.
-- Restart Home Assistant after updating.
-
-### From v0.1.x
-
-Navimower v0.2.0 upgrades existing entries automatically:
-
-- legacy Gate-area/gate options are normalized;
-- history retention defaults are added;
-- when the old `navimow` config entry still exists, its OAuth token is copied
-  once into Navimower;
-- runtime dependency on the old integration is removed.
-
-Keep a Home Assistant backup before installing a major alpha upgrade.
-
-## Read-only diagnostics export
-
-Run **Developer Tools -> Actions -> `navimower.export_diagnostics`**:
-
-```yaml
-action: navimower.export_diagnostics
-data:
-  include_compressed_map: true
-```
-
-Files are written to:
-
-```text
-/config/navimower_diagnostics/navimower_diagnostics_latest.json
-/config/navimower_diagnostics/navimower_diagnostics_YYYYMMDD_HHMMSS.json
-```
-
-The export includes sanitized raw responses, nested key inventory, private
-endpoint age/error statistics, OAuth/MQTT recovery health, map summary, zones,
-doodles, session metadata, persistent zone history and passive MQTT topic/key
-inventory. After a `navimower.mow` or native lawn-mower start action it also
-contains `last_mow_command`: the exact selected zone order, sent little-endian
-hex payload, an unsent big-endian reference, `partitionSetup`, send response,
-command number, before/after state and a read-only `/vehicle/set/response` lookup
-performed when diagnostics are downloaded.
-
-Tokens, password, email, UID, serial number, GPS coordinates, PIN, RTK anchor,
-ICCID, anti-theft point and network identifiers are removed. Local map X/Y and
-vendor doodle SVG remain because they are useful for geometry research. Review
-the file before publishing it.
-
-The action sends no mower commands and performs no settings or map writes. A
-command-status lookup is read-only; the recorded mow command must have been sent
-earlier by the user.
+See [CHANGELOG.md](CHANGELOG.md) and
+[`.github/release-notes/0.4.1.md`](.github/release-notes/0.4.1.md) for the release
+summary.
 
 ## Current limitations
 
-- This is an **alpha release** and has not been tested across all mower models,
-  accounts, firmware versions or regions.
-- Current OAuth/private endpoints target the European/FRA service.
-- A dedicated private-cloud shared account is strongly recommended; multiple
-  mower config entries may use that same account and share one stable app/device
-  identity.
-- Exact state codes and some settings remain firmware-specific.
-- The standalone map card does not currently render temporary doodles, although
-  their raw metadata remains available in the API and diagnostics.
-- The swept-stripe endpoint is not used; exact history is reconstructed from
-  dense live MQTT pose samples.
-- The immediate target of multi-zone tasks is decoded from vendor data. When
-  Home Assistant starts an explicit ordered-zone task, the first requested zone
-  is latched locally so delayed vendor target fields do not delay gate opening.
-- Private-cloud navigation fallback depends on the vendor location `report_time`;
-  stale cloud points are never trusted for gate close/clear decisions.
-- Map writes, boundary edits, edge-mowing changes and `clock_direction` writes
-  are deliberately not included.
+- Private-cloud behavior is undocumented and may change without notice.
+- Model and firmware fields differ; unsupported settings are not invented.
+- i2 AWD support is experimental and not yet field-tested through Navimower.
+- Exact dense route history depends on live MQTT pose samples; missing samples
+  are not reconstructed.
+- Map writes, boundary edits and other destructive map editing are deliberately
+  not included.
+- Legacy Map Camera remains for 0.4.1 compatibility but is scheduled for removal
+  in 0.4.2; use Navimower Map Card for ongoing map development.
 
 ## Credits and licence
 
 The private-cloud foundation used by Navimower was created by **Roberto
 Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
-His project reverse-engineered the Navimow mobile application's private-cloud
-communication and provided the authentication, encrypted protocol, map decoder,
-coordinator, entities, scheduler and camera implementation from which this
-project developed. Thank you, Roberto, for the excellent work and for sharing it
-with the community.
-
-Navimower adds the official Smart Home OAuth/MQTT connection so that dense live
-position and mower events can be consumed without placing unnecessary polling
-load on the private cloud. Persistent live route history and local
-Gate-area/gate work were adapted from
-[vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA) and continued in this
-repository. The user interface is developed separately in
+Persistent route and Gate-area/gate work also developed from
+[vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA). The current dashboard
+UI is developed separately in
 [vahesoo/navimower-map-card](https://github.com/vahesoo/navimower-map-card).
 
 See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). The project is distributed
 under the MIT License.
-
-
-## Native diagnostics
-
-Navimower supports Home Assistant's native **Download diagnostics** action from the integration's device/config-entry menu. The generated file is read-only and uses the same redaction rules as `navimower.export_diagnostics`. The manual action remains available when a timestamped file under `/config/navimower_diagnostics/` is preferred.
-
-## Global schedule master
-
-Mowers that report the `startPlan` setting receive a **Mowing schedule enabled** switch. Turning it off preserves the configured weekday periods but prevents the weekly plan from starting. Navimower Map Card v0.2.0 and newer can use this entity as the Schedule master state.
-
-## First-generation H-series maps
-
-Some H1 mowers report zero map identifiers from the live location endpoint while docked. Navimower treats those values as unavailable and resolves the actual map through `map_list`, allowing map geometry and named zones to remain available before mowing starts.
