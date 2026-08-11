@@ -53,6 +53,14 @@ def test_beta1_removes_only_legacy_map_camera_platform() -> None:
     assert "camera" not in strings.get("entity", {})
     assert "camera" not in english.get("entity", {})
 
+    # Upgrades must remove the <=0.4.1 registry row as well, otherwise HA would
+    # leave an unavailable ghost camera after the platform disappears.
+    assert "from homeassistant.helpers import entity_registry as er" in setup
+    assert "def _remove_legacy_map_camera_registry_entry" in setup
+    assert 'registry.async_get_entity_id(\n        "camera",\n        DOMAIN,\n        f"{mower_sn}_map",' in setup
+    assert "registry.async_remove(entity_id)" in setup
+    assert "_remove_legacy_map_camera_registry_entry(hass, coordinator.sn)" in setup
+
     # Camera/VisionFence mower settings are unrelated to the removed SVG map camera.
     assert '"Camera positioning (EFLS)"' in (COMPONENT / "strings.json").read_text()
 
@@ -83,6 +91,8 @@ def test_beta1_download_diagnostics_adds_targeted_read_only_h5_discovery() -> No
     assert "from .notification_read_discovery import probe_notification_read_h5" in diagnostics
     assert 'document["notification_read_h5_discovery"]' in diagnostics
     assert "hass.async_add_executor_job" in diagnostics
+    assert 'document["notification_read_h5_discovery"] = discovery' in diagnostics
+    assert 'sanitize(discovery)' not in diagnostics
 
     for target in (
         "clearBatchMessageRead",
@@ -96,7 +106,8 @@ def test_beta1_download_diagnostics_adds_targeted_read_only_h5_discovery() -> No
     assert '"mutation_calls_executed": False' in discovery
     assert '"public_unauthenticated_h5_only": True' in discovery
     assert "client.call(" not in discovery
-    assert "send no Navimow" in discovery or "No token" in discovery
+    assert "No token, cookie, uid, device id, mower serial" in discovery
+    assert "payload syntax" in discovery
 
 
 def test_beta1_does_not_restore_old_broad_discovery_stack() -> None:
