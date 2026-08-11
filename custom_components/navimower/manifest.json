@@ -16,5 +16,5 @@
   "requirements": [
     "navimow-sdk>=0.1.2"
   ],
-  "version": "0.4.2-beta5"
+  "version": "0.4.2-beta6"
 }
