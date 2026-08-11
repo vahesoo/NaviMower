@@ -28,7 +28,9 @@ def test_beta3_manifest_release_notes_and_changelog() -> None:
         assert phrase in notes
 
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    assert changelog.startswith("# Changelog\n\n## 0.4.2-beta3")
+    # Beta3 remains historical after later cumulative betas prepend their own
+    # changelog sections; it must not require beta3 to stay the newest entry.
+    assert "## 0.4.2-beta3" in changelog
     assert "navimower.resume" in changelog
 
 
