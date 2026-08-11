@@ -9,6 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
+def _beta_number() -> int:
+    manifest = json.loads((COMPONENT / "manifest.json").read_text())
+    return int(manifest["version"].split("beta", 1)[1])
+
+
 def test_beta26_release_contract_remains_present() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
     assert manifest["version"].startswith("0.4.1-beta")
@@ -51,22 +56,32 @@ def test_beta26_notification_sensor_is_bounded_and_last_good() -> None:
         'icon="mdi:bell-outline"',
         '"notification_history"',
         '"notification_error"',
-        '"private_cloud_message_history"',
         "_beta26_notification_cache",
     ):
         assert phrase in source
+    if _beta_number() >= 29:
+        assert '"private_cloud_vehicle_message_feed"' in source
+    else:
+        assert '"private_cloud_message_history"' in source
     failure = source[source.index("except Exception as err"):source.index("def _install_notification_sensor")]
     assert "_beta26_notification_error" in failure
     assert "_beta26_notification_cache = None" not in failure
 
 
-def test_beta26_download_diagnostics_keeps_exact_history_probe() -> None:
+def test_beta26_download_diagnostics_contract_is_superseded_safely() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     action = (COMPONENT / "action_diagnostics.py").read_text()
-    assert "notification_history_probe" in diagnostics
-    assert "coordinator.client.notification_history" in diagnostics
+    if _beta_number() >= 29:
+        assert "notification_feed_probe" in diagnostics
+        assert "coordinator.client.notification_feed" in diagnostics
+        assert "notification_history_probe" not in diagnostics
+        assert "probe_main_notification_feed" not in diagnostics
+    else:
+        assert "notification_history_probe" in diagnostics
+        assert "coordinator.client.notification_history" in diagnostics
     assert '"vehicle_sn": "<redacted>"' in diagnostics
     assert "inventory(clean)" in diagnostics
+    assert "notification_feed_probe" not in action
     assert "notification_history_probe" not in action
 
 
