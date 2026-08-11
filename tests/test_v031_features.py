@@ -14,7 +14,8 @@ def test_native_diagnostics_entrypoint_exists() -> None:
     tree = ast.parse(source)
     names = {node.name for node in tree.body if isinstance(node, ast.AsyncFunctionDef)}
     assert "async_get_config_entry_diagnostics" in names
-    assert "async_build_diagnostics" in source
+    assert '"diagnostics_source": "home_assistant_download"' in source
+    assert "async_build_diagnostics" not in source
 
 
 def test_schedule_master_uses_proven_start_plan_encoding() -> None:
