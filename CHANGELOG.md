@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.2-beta4
+
+Fourth beta in the cumulative 0.4.2 development line.
+
+### Added
+
+- Added a persistent Navimower notification center that retains up to 20 locally generated mower-activity notifications per config entry and merges them with the newest 10 vendor Device notifications.
+- Added mowing timeline attribution for confirmed Home Assistant Mow/Resume/Dock commands, conservative schedule starts/ends, external starts, night/sunrise interruption and continuation, charge interruption/continuation, and unambiguous 100% completion.
+- Added local notification `origin`, `kind` and `confidence` metadata plus separate combined/vendor/local counts on Latest notification.
+- Added notification-center diagnostics including the retained task context, interruption reason, last mowing progress/battery and observed MQTT `mowStartType` / `taskDelay` values without guessing those numeric semantics.
+
+### Changed
+
+- Latest notification now keeps two independent budgets: up to 10 vendor rows plus up to 20 Navimower-local rows, merged newest-first into a maximum 30-row `recent` list.
+- `navimower.mark_notification_read` dispatches `navimower:` IDs to persistent local read state while vendor IDs keep the encrypted Navimow detail-open flow.
+- `navimower.mark_all_notifications_read` now marks both retained local rows and the vendor Device feed read.
+- Local start/stop notifications wait for a confirmed private-cloud or official-MQTT mower state and are not emitted from Home Assistant's short optimistic command activity.
+- Scheduled mowing notifications include the configured window end and, when Night mowing is off, can include Home Assistant location-based sunset context without claiming sunset control is performed by the integration.
+- External mowing starts use observed target zones where available but are deliberately not labelled as mobile-app starts unless a future protocol signal proves the source.
+
+### Attribution safeguards
+
+- Night pause, sunrise resume and charging pause/resume messages are explicitly inference-based and require matching known context instead of treating every dock/return transition as the same reason.
+- Local completion requires 100% task progress in beta4; the historical practical history threshold is not reused to generate a user-facing completion claim.
+- Ordered zone names are shown only for Home Assistant commands whose command trace confirms ordered mowing support; first-generation H-series selected-zone tasks remain mower-ordered.
+
 ## 0.4.2-beta3
 
 Third beta in the cumulative 0.4.2 development line.
@@ -123,4 +149,4 @@ Changes below describe the stable upgrade from **0.4.0 to 0.4.1**. The 0.4.1 bet
 
 ## Earlier releases
 
-Detailed historical changes remain available in the repository's GitHub releases and the versioned files under `.github/release-notes/`.
+Detailed historical changes remain available in the repository's GitHub releases and the versioned files under `.github/release-notes/` as development history.
