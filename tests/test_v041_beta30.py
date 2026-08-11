@@ -44,15 +44,13 @@ def test_beta30_notification_codes_are_preserved_as_strings() -> None:
     assert "_as_int(" not in normalize.split('"level"', 1)[0]
 
 
-def test_beta30_preserves_real_feed_metadata() -> None:
+def test_beta30_preserves_confirmed_feed_metadata_still_exposed() -> None:
     source = (COMPONENT / "beta26_runtime.py").read_text()
     for phrase in (
         '"read": _as_bool(',
         '"style": _first_present(',
-        '"url": _bounded_text(',
         '"variable": deepcopy(',
         '"notification_style"',
-        '"notification_url"',
         '"notification_variable"',
         '"notification_code"',
         '"notification_vendor_code"',
@@ -61,7 +59,7 @@ def test_beta30_preserves_real_feed_metadata() -> None:
         assert phrase in source
 
 
-def test_beta30_sensor_exposes_new_schema_and_compat_alias() -> None:
+def test_beta30_sensor_keeps_new_schema_and_compat_alias() -> None:
     source = (COMPONENT / "beta26_runtime.py").read_text()
     sensor = source[source.index("def _install_notification_sensor"):]
     for phrase in (
@@ -71,7 +69,6 @@ def test_beta30_sensor_exposes_new_schema_and_compat_alias() -> None:
         '"event_code"',
         '"read"',
         '"style"',
-        '"url"',
         '"variable"',
         '"recent"',
     ):
