@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.2-beta3
+
+Third beta in the cumulative 0.4.2 development line.
+
+### Added
+
+- Added `navimower.resume`, a dedicated retained-task Resume action using the private-cloud `c:behavior` type `3` command.
+- Added an in-memory `last_resume_command` diagnostics trace with the pre-command mower/task context, request acceptance and vendor command number when available.
+
+### Changed
+
+- The existing paused `lawn_mower.start_mowing` path now uses the same Resume helper as `navimower.resume`, keeping one implementation and one diagnostics format.
+- Resume remains separate from `navimower.mow(reset: false)`: Resume sends no zones and does not create a new Navimower mowing cycle, while `mow(reset: false)` still sends a selected-zone `s:mower` command in continue mode.
+
+### Field validation
+
+- Beta3 intentionally allows the explicit Resume action to be called while the mower is docked/charging so real mowers can confirm whether a manually interrupted vendor task is retained after Dock.
+- Standard Home Assistant Start behavior from docked/charging remains unchanged for now. It will not be auto-routed to Resume until field testing confirms the model/firmware behavior.
+- Download diagnostics remains snapshot-only and never sends Resume while collecting the cached trace.
+
 ## 0.4.2-beta2
 
 Second beta in the cumulative 0.4.2 development line.
