@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .diagnostics_export import sanitize
+from .diagnostics_sanitize import sanitize
 
 
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
