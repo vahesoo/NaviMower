@@ -40,7 +40,7 @@ async def async_get_config_entry_diagnostics(
             coordinator.state_transition_diagnostics()
         )
 
-    # Keep the exact beta26 vehicle-history contract visible while beta27
+    # Keep the exact beta26 vehicle-history contract visible while beta28
     # investigates whether the main Notification -> Device feed is a different
     # request path. The vendor call is read-only and uses the existing p:101
     # client; no message is marked read.
@@ -79,9 +79,10 @@ async def async_get_config_entry_diagnostics(
             "inventory": inventory(clean),
         }
 
-    # Beta27 re-enters public H5 discovery, but only around exact strings from
-    # the main Notification UI. This scanner never receives credentials or the
-    # mower serial and persists only bounded structural context.
+    # Beta28 maps exact Notification UI translations to translation keys first,
+    # then uses only high-signal phrases/keys to select lazy H5 chunks. The
+    # scanner never receives credentials or mower identity and persists only
+    # bounded request structure and source context.
     try:
         discovery = await hass.async_add_executor_job(
             probe_main_notification_feed,
