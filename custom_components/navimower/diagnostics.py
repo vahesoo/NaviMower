@@ -7,9 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .diagnostics_export import async_build_diagnostics, inventory, sanitize
-
-_NOTIFICATION_PATH = "/mowerbot/user/message/vehicleMessageListField"
+from .diagnostics_export import async_build_diagnostics, sanitize
 
 
 async def async_get_config_entry_diagnostics(
@@ -39,44 +37,9 @@ async def async_get_config_entry_diagnostics(
             coordinator.state_transition_diagnostics()
         )
 
-    # Beta29 stops public H5 bundle discovery and directly probes the exact
-    # read-only Notification -> Device feed recovered by beta28. The existing
-    # private-cloud client supplies the authenticated/encrypted p:101 transport.
-    # No read-state endpoint is called and no notification is marked read.
-    try:
-        response = await hass.async_add_executor_job(
-            coordinator.client.notification_feed,
-            coordinator.sn,
-            "",
-            "all",
-        )
-    except Exception as err:  # noqa: BLE001 - diagnostics records probe failure.
-        document["notification_feed_probe"] = {
-            "ok": False,
-            "read_only": True,
-            "endpoint": _NOTIFICATION_PATH,
-            "request": {
-                "message_id": "",
-                "vehicle_sn": "<redacted>",
-                "filter_state": "all",
-            },
-            "error_type": type(err).__name__,
-            "error": sanitize(str(err)),
-        }
-    else:
-        clean = sanitize(response)
-        document["notification_feed_probe"] = {
-            "ok": True,
-            "read_only": True,
-            "endpoint": _NOTIFICATION_PATH,
-            "request": {
-                "message_id": "",
-                "vehicle_sn": "<redacted>",
-                "filter_state": "all",
-            },
-            "response": clean,
-            "inventory": inventory(clean),
-        }
-
+    # Beta30 removes the discovery-era notification feed probe. The Device feed
+    # contract is now confirmed on both H215 and X390 and is already polled by
+    # normal integration runtime, so Download diagnostics must stay fast and
+    # must not issue an extra vendor notification request.
     document["diagnostics_source"] = "home_assistant_download"
     return document
