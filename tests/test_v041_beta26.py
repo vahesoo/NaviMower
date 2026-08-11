@@ -71,16 +71,24 @@ def test_beta26_notification_sensor_is_bounded_and_last_good() -> None:
 def test_beta26_download_diagnostics_contract_is_superseded_safely() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     action = (COMPONENT / "action_diagnostics.py").read_text()
-    if _beta_number() >= 29:
+    if _beta_number() >= 30:
+        assert "notification_feed_probe" not in diagnostics
+        assert "coordinator.client.notification_feed" not in diagnostics
+        assert "notification_history_probe" not in diagnostics
+        assert "probe_main_notification_feed" not in diagnostics
+        assert "inventory(clean)" not in diagnostics
+    elif _beta_number() >= 29:
         assert "notification_feed_probe" in diagnostics
         assert "coordinator.client.notification_feed" in diagnostics
         assert "notification_history_probe" not in diagnostics
         assert "probe_main_notification_feed" not in diagnostics
+        assert '"vehicle_sn": "<redacted>"' in diagnostics
+        assert "inventory(clean)" in diagnostics
     else:
         assert "notification_history_probe" in diagnostics
         assert "coordinator.client.notification_history" in diagnostics
-    assert '"vehicle_sn": "<redacted>"' in diagnostics
-    assert "inventory(clean)" in diagnostics
+        assert '"vehicle_sn": "<redacted>"' in diagnostics
+        assert "inventory(clean)" in diagnostics
     assert "notification_feed_probe" not in action
     assert "notification_history_probe" not in action
 
