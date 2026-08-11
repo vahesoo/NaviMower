@@ -8,9 +8,8 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_export import async_build_diagnostics, inventory, sanitize
-from .notification_feed_discovery import probe_main_notification_feed
 
-_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
+_NOTIFICATION_PATH = "/mowerbot/user/message/vehicleMessageListField"
 
 
 async def async_get_config_entry_diagnostics(
@@ -40,63 +39,44 @@ async def async_get_config_entry_diagnostics(
             coordinator.state_transition_diagnostics()
         )
 
-    # Keep the exact beta26 vehicle-history contract visible while beta28
-    # investigates whether the main Notification -> Device feed is a different
-    # request path. The vendor call is read-only and uses the existing p:101
-    # client; no message is marked read.
+    # Beta29 stops public H5 bundle discovery and directly probes the exact
+    # read-only Notification -> Device feed recovered by beta28. The existing
+    # private-cloud client supplies the authenticated/encrypted p:101 transport.
+    # No read-state endpoint is called and no notification is marked read.
     try:
         response = await hass.async_add_executor_job(
-            coordinator.client.notification_history,
+            coordinator.client.notification_feed,
             coordinator.sn,
-            1,
-            20,
+            "",
+            "all",
         )
     except Exception as err:  # noqa: BLE001 - diagnostics records probe failure.
-        document["notification_history_probe"] = {
+        document["notification_feed_probe"] = {
             "ok": False,
             "read_only": True,
             "endpoint": _NOTIFICATION_PATH,
             "request": {
+                "message_id": "",
                 "vehicle_sn": "<redacted>",
-                "page": 1,
-                "size": 20,
+                "filter_state": "all",
             },
-            "error_type": type(err).__name__,
-            "error": str(err),
-        }
-    else:
-        clean = sanitize(response)
-        document["notification_history_probe"] = {
-            "ok": True,
-            "read_only": True,
-            "endpoint": _NOTIFICATION_PATH,
-            "request": {
-                "vehicle_sn": "<redacted>",
-                "page": 1,
-                "size": 20,
-            },
-            "response": clean,
-            "inventory": inventory(clean),
-        }
-
-    # Beta28 maps exact Notification UI translations to translation keys first,
-    # then uses only high-signal phrases/keys to select lazy H5 chunks. The
-    # scanner never receives credentials or mower identity and persists only
-    # bounded request structure and source context.
-    try:
-        discovery = await hass.async_add_executor_job(
-            probe_main_notification_feed,
-            coordinator.client,
-        )
-    except Exception as err:  # noqa: BLE001 - optional diagnostics discovery.
-        document["notification_feed_discovery"] = {
-            "ok": False,
-            "read_only": True,
             "error_type": type(err).__name__,
             "error": sanitize(str(err)),
         }
     else:
-        document["notification_feed_discovery"] = sanitize(discovery)
+        clean = sanitize(response)
+        document["notification_feed_probe"] = {
+            "ok": True,
+            "read_only": True,
+            "endpoint": _NOTIFICATION_PATH,
+            "request": {
+                "message_id": "",
+                "vehicle_sn": "<redacted>",
+                "filter_state": "all",
+            },
+            "response": clean,
+            "inventory": inventory(clean),
+        }
 
     document["diagnostics_source"] = "home_assistant_download"
     return document
