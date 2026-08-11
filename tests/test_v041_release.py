@@ -28,6 +28,9 @@ def test_v041_manifest_notes_readme_and_changelog() -> None:
         assert phrase in notes
 
     readme = (ROOT / "README.md").read_text()
+    assert "### Entity reference and model support" in readme
+    assert "Primary field testing has been performed on an **H215**" in readme
+    assert "stable app/device identity" in readme
     assert "i2 AWD support is experimental" in readme
     assert "has not yet been field-tested" in readme
     assert "Legacy Map Camera is scheduled for removal in Navimower 0.4.2" in readme
@@ -95,6 +98,42 @@ def test_v041_keeps_i2_awd_support_but_documents_it_unverified() -> None:
     assert "not yet been field-tested" in readme
 
 
+def test_v041_keeps_legacy_switch_robot_first_cloud_second() -> None:
+    source = (COMPONENT / "switch.py").read_text()
+    ast.parse(source)
+    assert "legacy_device_write: bool = False" in source
+    for key in ("night_mow", "rain_detection", "rain_sensor"):
+        marker = f'key="{key}"'
+        start = source.index("NavimowSwitchDescription(", source.index(marker) - 100)
+        end = source.index("    ),", source.index(marker)) + 6
+        block = source[start:end]
+        assert "legacy_device_write=True" in block
+        assert "iot=True" not in block
+
+    write = source[source.index("    async def _write"):source.index("    async def async_turn_on")]
+    legacy = write[write.index("        else:"):]
+    assert 'cloud_value = "01" if on else "00"' in legacy
+    assert "self.coordinator.client.send_setting_device" in legacy
+    assert "self.coordinator.client.set_bool_setting" in legacy
+    assert legacy.index("self.coordinator.client.send_setting_device") < legacy.index(
+        "self.coordinator.client.set_bool_setting"
+    )
+
+
+def test_v041_keeps_poll_guard_and_position_fallback() -> None:
+    setup = (COMPONENT / "__init__.py").read_text()
+    fallback = (COMPONENT / "beta18_runtime.py").read_text()
+    ast.parse(setup)
+    ast.parse(fallback)
+    assert "async def _async_private_poll_guard" in setup
+    assert "coordinator.private_poll_age()" in setup
+    assert "private_poll_guard_task" in setup
+    assert "report_time" in fallback
+    assert "private_cloud" in fallback
+    assert "mqtt" in fallback
+    assert "two" in fallback.lower() or "2" in fallback
+
+
 def test_v041_keeps_legacy_map_camera_until_042() -> None:
     camera = (COMPONENT / "camera.py").read_text()
     assert "class NavimowMapCamera" in camera
@@ -138,3 +177,13 @@ def test_v041_removes_development_diagnostics_interface() -> None:
         assert key in diagnostics
     assert 'document["latest_notification"]' in diagnostics
     assert 'document["diagnostics_source"] = "home_assistant_download"' in diagnostics
+
+    for removed in (
+        "action_diagnostics.py",
+        "state_transition_capture.py",
+        "event_probe.py",
+        "event_transport_probe.py",
+        "h5_discovery.py",
+        "notification_feed_discovery.py",
+    ):
+        assert not (COMPONENT / removed).exists()
