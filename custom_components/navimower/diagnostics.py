@@ -231,7 +231,7 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "The normal diagnostics sections are generated from the current coordinator state and existing caches.",
+            "Normal coordinator diagnostics make no extra vendor requests; 0.4.2-beta1's targeted public H5 GET is the documented temporary exception.",
             "0.4.2-beta1 additionally performs bounded public unauthenticated H5 GETs to inspect notification read-state JavaScript structure.",
             "The H5 inspection sends no Navimow token, cookie, uid, device id, mower serial or encrypted business payload and executes no mutation call.",
             "Account, mower, network and physical GPS identifiers are sanitized/redacted.",
