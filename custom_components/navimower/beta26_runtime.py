@@ -1,10 +1,12 @@
-"""Vendor notification support introduced in beta26 and refined through beta30.
+"""Vendor notification support introduced in beta26 and refined through beta32.
 
 Beta26 initially used Navimow's separate vehicle message-history route. Beta28
 then recovered the actual main app Notification -> Device feed contract from the
 public H5 MessageCenter component. Beta29 switched the live sensor to that
-read-only encrypted feed. Beta30 aligns the normalized sensor schema with real
-H215 and X390 responses and removes the last discovery-era assumptions.
+read-only encrypted feed. Beta30 aligned the normalized sensor schema with real
+H215 and X390 responses. Beta32 removes vendor-native jump URLs from retained
+notification data, renames the entity to Latest notification, and marks the old
+SVG Map Camera as legacy while keeping its unique ID for compatibility.
 
 Main Device feed contract:
 
@@ -14,8 +16,8 @@ Main Device feed contract:
 * response exposes ``vehicle_message_list`` and ``has_history_message``.
 
 The integration polls at most once per minute, retains the last successful
-response across transient failures, exposes a bounded recent list, and never
-marks messages read or calls any read-state mutation endpoint.
+sanitized response across transient failures, exposes a bounded recent list, and
+never marks messages read or calls any read-state mutation endpoint.
 """
 from __future__ import annotations
 
@@ -140,7 +142,6 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
         "level": _as_int(_first_present(item, "level", "message_level")),
         "type": _first_present(item, "type", "message_type", "messageType"),
         "style": _first_present(item, "style", "message_style", "messageStyle"),
-        "url": _bounded_text(_first_present(item, "url", "jump_url", "jumpUrl"), 1200),
         "variable": deepcopy(item.get("variable")),
         # Canonical beta30 naming. These are notification/event codes, not
         # necessarily faults: real feeds include values such as 150A.
@@ -201,7 +202,6 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
             "notification_level": latest.get("level"),
             "notification_type": latest.get("type"),
             "notification_style": latest.get("style"),
-            "notification_url": latest.get("url"),
             "notification_variable": deepcopy(latest.get("variable")),
             "notification_code": latest.get("notification_code"),
             "notification_vendor_code": latest.get("vendor_code"),
@@ -255,7 +255,13 @@ def _refresh_notification_cache(coordinator: Any) -> None:
         )
         return
 
-    coordinator._beta26_notification_cache = response  # noqa: SLF001
+    # Keep only the normalized read-only notification fields. Vendor jump URLs
+    # are native app links, can embed the mower serial and are not useful in HA.
+    normalized = _normalize_response(response)
+    coordinator._beta26_notification_cache = {  # noqa: SLF001
+        "list": deepcopy(normalized["list"]),
+        "has_history_message": normalized.get("has_history_message"),
+    }
     coordinator._beta26_notification_last_success_mono = now  # noqa: SLF001
     coordinator._beta26_notification_error = None  # noqa: SLF001
 
@@ -284,7 +290,6 @@ def _install_notification_sensor() -> None:
             "level": data.get("notification_level"),
             "type": data.get("notification_type"),
             "style": data.get("notification_style"),
-            "url": data.get("notification_url"),
             "variable": deepcopy(data.get("notification_variable")),
             "notification_code": data.get("notification_code"),
             "vendor_code": data.get("notification_vendor_code"),
@@ -309,7 +314,7 @@ def _install_notification_sensor() -> None:
         *platform.SENSORS,
         platform.NavimowSensorDescription(
             key="notification",
-            name="Notification",
+            name="Latest notification",
             icon="mdi:bell-outline",
             value_fn=value,
             attrs_fn=attrs,
@@ -317,11 +322,20 @@ def _install_notification_sensor() -> None:
     )
 
 
+def _mark_map_camera_legacy() -> None:
+    """Keep the existing camera entity but make its deprecated status explicit."""
+    from .camera import NavimowMapCamera
+
+    NavimowMapCamera._attr_translation_key = None
+    NavimowMapCamera._attr_name = "Legacy Map Camera"
+
+
 def install_beta26_runtime() -> None:
     """Install notification transport, polling and sensor once."""
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_beta26_runtime_installed", False):
         _install_notification_sensor()
+        _mark_map_camera_legacy()
         return
 
     # Historical beta26 endpoint remains callable for explicit debugging only.
@@ -378,3 +392,4 @@ def install_beta26_runtime() -> None:
     cls._bootstrap_snapshot = bootstrap_snapshot
     cls._beta26_runtime_installed = True
     _install_notification_sensor()
+    _mark_map_camera_legacy()
