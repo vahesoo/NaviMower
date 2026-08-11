@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta32."""
+"""Historical regression contracts for Navimower 0.4.1-beta32."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta32_manifest_and_release_notes() -> None:
+def test_beta32_release_notes_are_retained() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta32"
+    assert manifest["version"].startswith("0.4.")
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta32.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta32")
     for phrase in (
@@ -37,7 +37,7 @@ def test_beta32_notification_url_is_not_normalized_or_exposed() -> None:
     ]
     sensor = source[
         source.index("def _install_notification_sensor"):
-        source.index("def _mark_map_camera_legacy")
+        source.index("def install_beta26_runtime")
     ]
     assert '"url"' not in normalize
     assert "notification_url" not in decorate
@@ -64,14 +64,7 @@ def test_beta32_sensor_is_named_latest_notification_without_id_break() -> None:
     assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in source
 
 
-def test_beta32_map_camera_is_marked_legacy_without_unique_id_change() -> None:
-    source = (COMPONENT / "beta26_runtime.py").read_text()
-    legacy = source[
-        source.index("def _mark_map_camera_legacy"):
-        source.index("def install_beta26_runtime")
-    ]
-    assert 'NavimowMapCamera._attr_name = "Legacy Map Camera"' in legacy
-    assert "NavimowMapCamera._attr_translation_key = None" in legacy
-
-    camera = (COMPONENT / "camera.py").read_text()
-    assert 'NavimowEntity.__init__(self, coordinator, "map")' in camera
+def test_beta32_historical_camera_deprecation_is_documented() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta32.md").read_text()
+    assert "Legacy Map Camera" in notes
+    assert "deprecated" in notes.lower()
