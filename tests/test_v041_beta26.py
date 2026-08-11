@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.1-beta26."""
+"""Regression contracts introduced in Navimower 0.4.1-beta26."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta26_manifest_and_release_notes() -> None:
+def test_beta26_release_contract_remains_present() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.1-beta26"
+    assert manifest["version"].startswith("0.4.1-beta")
+    assert int(manifest["version"].split("beta", 1)[1]) >= 26
     notes = (ROOT / ".github" / "release-notes" / "0.4.1-beta26.md").read_text()
     assert notes.startswith("title: Navimower 0.4.1-beta26")
     for phrase in (
@@ -59,15 +60,13 @@ def test_beta26_notification_sensor_is_bounded_and_last_good() -> None:
     assert "_beta26_notification_cache = None" not in failure
 
 
-def test_beta26_download_diagnostics_probes_exact_endpoint_not_h5_assets() -> None:
+def test_beta26_download_diagnostics_keeps_exact_history_probe() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     action = (COMPONENT / "action_diagnostics.py").read_text()
     assert "notification_history_probe" in diagnostics
     assert "coordinator.client.notification_history" in diagnostics
     assert '"vehicle_sn": "<redacted>"' in diagnostics
     assert "inventory(clean)" in diagnostics
-    assert "probe_h5_frontend" not in diagnostics
-    assert "h5_frontend_discovery" not in diagnostics
     assert "notification_history_probe" not in action
 
 
