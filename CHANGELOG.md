@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.2-beta5
+
+Fifth beta in the cumulative 0.4.2 development line.
+
+### Fixed
+
+- Fixed zone-restricted schedule writes to encode every selected zone id as little-endian uint16 instead of one byte in the robot `partitionPlan` payload.
+- Prevented selected zones from shifting later schedule bytes, which could make the mower drop zones, misread later periods or create a phantom `00:15-00:15` period that synchronized back to the Navimow app.
+- Kept multi-period framing unchanged; app captures confirmed that multi-period all-zones schedules were already encoded correctly.
+
+### Validation
+
+- Added byte-level regression tests for disabled days, one/multiple all-zones periods, one/multiple selected zones and multiple zone-restricted periods.
+- Schedule encoding now reuses the same `encode_partition_ids()` little-endian uint16 helper as immediate zone mowing.
+
+### Upstream confirmation
+
+- Synced the schedule zone-id wire format with the official-app-captured fix published by `ilguala/navimow_pro` v0.2.9 for issue #5. The separate schedule-master-switch state report remains outside this fix.
+
 ## 0.4.2-beta4
 
 Fourth beta in the cumulative 0.4.2 development line.

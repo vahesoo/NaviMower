@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from ..const import encode_partition_ids
 from ..discovery import structure_summary
 from . import crypto, passport
 from .passport import PassportError, Tokens
@@ -525,21 +526,32 @@ class NavimowCloudClient:
 
     @staticmethod
     def _partition_plan_hex(day: int, enabled: bool, periods: list[dict]) -> str:
-        """Per-day plan encoded for the ``s:mower`` device command.
+        """Encode one Navimow weekday plan for the ``s:mower`` device command.
 
-        Byte layout (verified live over 3 captures incl. an OFF day)::
+        The app-captured layout is::
 
-            01 <day> <open> <n_periods> [ <start> <end> <n_zones> <zone_id>* ]*
+            01 <day> <open> <n_periods> [<start> <end> <n_zones> <zone_id>...]...
 
-        every byte in hex; start/end are 15-minute slots from 00:00. The leading
-        ``01`` = one day per command; an empty zone list (n_zones=0) => all zones.
-        An OFF day is simply ``01 <day> 00 00``.
+        Header, time-slot and zone-count fields are one byte. Zone ids are
+        little-endian uint16 values, matching the partition-id encoding used by
+        mowing commands. An empty zone list means all zones.
         """
-        b = [1, int(day), 1 if enabled else 0, len(periods)]
-        for p in periods:
-            ids = [int(z) for z in (p.get("partition_ids") or [])]
-            b += [int(p["start_time"]), int(p["end_time"]), len(ids), *ids]
-        return "".join("%02X" % (x & 0xFF) for x in b)
+        out = [
+            "%02X" % (value & 0xFF)
+            for value in (1, int(day), 1 if enabled else 0, len(periods))
+        ]
+        for period in periods:
+            ids = [int(zone_id) for zone_id in (period.get("partition_ids") or [])]
+            out.append(
+                "%02X%02X%02X"
+                % (
+                    int(period["start_time"]) & 0xFF,
+                    int(period["end_time"]) & 0xFF,
+                    len(ids),
+                )
+            )
+            out.append(encode_partition_ids(ids).upper())
+        return "".join(out)
 
     def set_day_schedule(
         self, sn: str, vehicle_type: Any, day: int, enabled: bool, periods: list[dict]
