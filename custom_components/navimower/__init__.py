@@ -36,6 +36,7 @@ from .gate import parse_gates
 from .history import NavimowerHistory
 from .map_api import async_register_map_api
 from .mqtt import NavimowerMqttBridge
+from .notification_center import NavimowerNotificationCenter
 from .oauth import async_register_oauth_implementation
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
@@ -219,6 +220,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data = hass.data.setdefault(DOMAIN, {})
     coordinator = NavimowCoordinator(hass, entry)
     await coordinator.async_load_persistent_state()
+
+    notification_center = NavimowerNotificationCenter(
+        hass,
+        entry.entry_id,
+        coordinator,
+    )
+    coordinator.notification_center = notification_center
+    await notification_center.async_load()
+    notification_center.start()
+
     domain_data[entry.entry_id] = coordinator
 
     # 0.4.2 removes the old SVG Camera platform. Explicitly remove its registry
@@ -296,6 +307,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.get(DOMAIN) or {}
     ).get(entry.entry_id)
     bridge = getattr(coordinator, "mqtt_bridge", None) if coordinator else None
+    notification_center = (
+        getattr(coordinator, "notification_center", None) if coordinator else None
+    )
     session_archive = (
         getattr(coordinator, "session_archive", None) if coordinator else None
     )
@@ -328,6 +342,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
         return False
 
+    if notification_center is not None:
+        await notification_center.async_stop()
     if session_archive is not None:
         await session_archive.async_stop()
     if coordinator is not None:
@@ -340,7 +356,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Remove cached map data and all retained mowing sessions."""
+    """Remove cached map data, local notifications and retained mowing sessions."""
+    await NavimowerNotificationCenter.async_remove_all(hass, entry.entry_id)
     await SessionArchiveManager.async_remove_all(hass, entry.entry_id)
     await NavimowerHistory.async_remove_all(hass, entry.entry_id)
     try:
