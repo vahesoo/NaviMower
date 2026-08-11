@@ -150,11 +150,13 @@ def test_v041_removes_development_diagnostics_interface() -> None:
     options = (COMPONENT / "config_flow.py").read_text()
     init = (COMPONENT / "__init__.py").read_text()
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
+    sanitizer = (COMPONENT / "diagnostics_sanitize.py").read_text()
 
     ast.parse(services)
     ast.parse(options)
     ast.parse(init)
     ast.parse(diagnostics)
+    ast.parse(sanitizer)
 
     assert "SERVICE_EXPORT_DIAGNOSTICS" not in services
     assert "SERVICE_MARK_DISCOVERY_EVENT" not in services
@@ -175,6 +177,9 @@ def test_v041_removes_development_diagnostics_interface() -> None:
     assert '"problem_history"' in diagnostics
     assert '"raw"' in diagnostics
     assert "No mower commands, settings writes, discovery probes or extra vendor requests" in diagnostics
+    assert "from .diagnostics_sanitize import sanitize" in diagnostics
+    assert "def sanitize" in sanitizer
+    assert not (COMPONENT / "diagnostics_export.py").exists()
 
     for removed in (
         "action_diagnostics.py",
