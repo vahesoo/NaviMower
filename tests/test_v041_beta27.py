@@ -61,7 +61,12 @@ def test_beta27_targeted_notification_feed_scanner_contract() -> None:
 
 def test_beta27_download_discovery_is_historical_after_exact_feed_recovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
-    if _beta_number() >= 29:
+    if _beta_number() >= 30:
+        assert "notification_feed_probe" not in diagnostics
+        assert "probe_main_notification_feed" not in diagnostics
+        assert "notification_feed_discovery" not in diagnostics
+        assert "coordinator.client.notification_feed" not in diagnostics
+    elif _beta_number() >= 29:
         assert "notification_feed_probe" in diagnostics
         assert "probe_main_notification_feed" not in diagnostics
         assert "notification_feed_discovery" not in diagnostics
