@@ -28,6 +28,7 @@ from .const import (
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
 from .model_support import supports_ordered_zone_mowing
+from .resume import async_resume_task
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,12 +84,10 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         client = self.coordinator.client
         sn = self._sn
         if self.data.get("state_code") == STATE_PAUSED:
-            self.coordinator.set_pending_activity(ACTIVITY_MOWING)
-            try:
-                await self.coordinator.async_send(client.resume, sn)
-            except Exception:
-                self.coordinator.clear_pending_activity()
-                raise
+            await async_resume_task(
+                self.coordinator,
+                source="lawn_mower.start_mowing_paused",
+            )
             return
 
         zones = self.data.get("zones") or []
