@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
+from .notification_read_discovery import probe_notification_read_h5
 
 
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -21,12 +22,12 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> dict[str, Any]:
-    """Return sanitized read-only snapshot diagnostics for Home Assistant.
+    """Return sanitized diagnostics for Home Assistant Download diagnostics.
 
-    Stable 0.4.1 deliberately keeps one diagnostics path: Home Assistant's native
-    Download diagnostics action. It reports the coordinator's already available
-    state and caches and does not run discovery probes, transition captures,
-    command-status lookups or additional vendor requests while the file is built.
+    0.4.2-beta1 keeps the normal sanitized coordinator snapshot and temporarily
+    adds one bounded read-only public-H5 inspection used to recover the official
+    notification read-state request structure. The H5 probe sends no Navimow
+    credentials or mower identity and never calls a notification mutation route.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -230,10 +231,34 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "Generated from the current coordinator state and existing caches only.",
-            "No mower commands, settings writes, discovery probes or extra vendor requests are made while Download diagnostics is built.",
+            "Normal coordinator diagnostics make no extra vendor requests; 0.4.2-beta1's targeted public H5 GET is the documented temporary exception.",
+            "0.4.2-beta1 additionally performs bounded public unauthenticated H5 GETs to inspect notification read-state JavaScript structure.",
+            "The H5 inspection sends no Navimow token, cookie, uid, device id, mower serial or encrypted business payload and executes no mutation call.",
             "Account, mower, network and physical GPS identifiers are sanitized/redacted.",
             "Local map X/Y coordinates may remain because they are relative map geometry rather than GPS coordinates.",
         ],
     }
+
+    try:
+        discovery = await hass.async_add_executor_job(
+            probe_notification_read_h5,
+            coordinator.client,
+        )
+    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery.
+        document["notification_read_h5_discovery"] = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
+            "mutation_calls_executed": False,
+            "error_type": type(err).__name__,
+            "error": sanitize(str(err)),
+        }
+    else:
+        # The discovery module reads only public unauthenticated H5 source and
+        # already strips query/fragment data from source URLs. Do not run its JS
+        # context through the generic diagnostics sanitizer: that helper treats
+        # any string containing :// as one URL and would destroy the bounded
+        # payload syntax we are explicitly trying to inspect.
+        document["notification_read_h5_discovery"] = discovery
+
     return document

@@ -9,6 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .account import shared_private_device_id
@@ -49,18 +50,34 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.NUMBER,
     Platform.TIME,
-    Platform.CAMERA,
     Platform.CALENDAR,
 ]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Development-only options used during the 0.4.1 beta investigation. Stable
-# 0.4.1 uses only Home Assistant's native Download diagnostics path.
+# releases use only Home Assistant's native Download diagnostics path.
 _DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}
 
 # The standalone map card, Mow Now dialog and schedule editor are distributed
 # from the separate navimower-map-card HACS dashboard repository.
+
+
+def _remove_legacy_map_camera_registry_entry(
+    hass: HomeAssistant,
+    mower_sn: str,
+) -> None:
+    """Remove the retired SVG camera registry row left by Navimower <= 0.4.1."""
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(
+        "camera",
+        DOMAIN,
+        f"{mower_sn}_map",
+    )
+    if entity_id is None:
+        return
+    registry.async_remove(entity_id)
+    _LOGGER.info("Removed retired Navimower Legacy Map Camera entity %s", entity_id)
 
 
 async def _async_private_poll_guard(coordinator: NavimowCoordinator) -> None:
@@ -203,6 +220,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = NavimowCoordinator(hass, entry)
     await coordinator.async_load_persistent_state()
     domain_data[entry.entry_id] = coordinator
+
+    # 0.4.2 removes the old SVG Camera platform. Explicitly remove its registry
+    # row as well so upgrades from <=0.4.1 do not leave an unavailable ghost
+    # camera entity behind.
+    _remove_legacy_map_camera_registry_entry(hass, coordinator.sn)
 
     # Prepare immutable completed-session render caches independently from the
     # exact timestamped history. Active sessions remain normal live polylines.

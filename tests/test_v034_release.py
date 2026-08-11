@@ -1,4 +1,4 @@
-"""Stable v0.3.4, v0.4.0 and v0.4.1 beta regressions for Navimower."""
+"""Stable v0.3.4, v0.4.0 and later v0.4.x regressions for Navimower."""
 from __future__ import annotations
 
 import ast
@@ -12,7 +12,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 def test_current_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
     version = manifest["version"]
-    assert version.startswith("0.4.1-") or version == "0.4.1"
+    assert version.startswith("0.4.")
     assert "zstandard==0.25.0" not in manifest["requirements"]
     notes_path = ROOT / ".github" / "release-notes" / f"{version}.md"
     assert notes_path.exists()

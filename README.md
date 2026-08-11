@@ -42,9 +42,9 @@ Owner account(s) -> official phone app and Smart Home OAuth
 Shared account   -> Navimower private-cloud login only
 ```
 
-Do not sign the dedicated shared account into the phone app after setup. Field
-testing showed that a phone login can invalidate the Home Assistant private
-session. The private-cloud password is used only during setup or
+Do not normally sign the dedicated shared account into the phone app after
+setup. Field testing showed that a phone login can invalidate the Home Assistant
+private session. The private-cloud password is used only during setup or
 reauthentication and is not stored.
 
 The Smart Home OAuth account may be different from the private-cloud account as
@@ -123,8 +123,7 @@ case.
 
 ### State, Problem and Error
 
-Navimower 0.4.1 separates mower control states from safety/fault states more
-clearly:
+Navimower separates mower control states from safety/fault states more clearly:
 
 - `0103` is handled as **Idle**;
 - `0210` as **Mowing**;
@@ -154,11 +153,23 @@ Navimower exposes the Navimow app's main **Notification -> Device** feed as the
 - transient failures retain the last successful snapshot;
 - vendor notification codes are kept as strings, including alphanumeric values
   such as `150A`;
-- vendor-native app jump URLs are deliberately not retained or exposed;
-- Navimower never marks messages read and performs no notification write action.
+- vendor-native app jump URLs are deliberately not retained or exposed.
+
+Field testing with a mower shared to multiple Navimow accounts confirmed that the
+vendor `read` state is **account-specific**: reading notifications under the same
+Navimow account used by the HA private-cloud integration changes the feed entries
+from `read: false` to `read: true` on a later refresh.
+
+**0.4.2-beta1 does not yet mark notifications read from Home Assistant.** The beta
+adds a bounded read-only public-H5 inspection to Download diagnostics so we can
+recover the official app request structure for `clearBatchMessageRead`, including
+whether the app supports both one-message and all-message read actions. No
+notification mutation endpoint is called by this beta.
 
 Notification history is user-facing event information and does not replace the
-live Problem/Error state model.
+live Problem/Error state model. Field testing also confirmed that mower
+fault/safety events can appear in the Device feed, but the notification code and
+live mower Error/Problem state remain separate vendor concepts.
 
 ### Settings and controls
 
@@ -188,12 +199,12 @@ millimetre values.
 
 ### i2 AWD experimental support
 
-0.4.1 includes an initial capability profile derived from an i208 AWD diagnostic
-and the i2 documentation. It may expose settings such as Eco mode, Narrow zone
-adapt, Advanced slope mode, Grass pattern enhancement, Progress retention,
-Mowing cycle interval, Headlight, Night animal protection, Terrain adapt, Edge
-sense, TCS, positioning controls and Global cutting height when corresponding
-vendor fields are present.
+0.4.1 introduced an initial capability profile derived from an i208 AWD
+diagnostic and the i2 documentation. It may expose settings such as Eco mode,
+Narrow zone adapt, Advanced slope mode, Grass pattern enhancement, Progress
+retention, Mowing cycle interval, Headlight, Night animal protection, Terrain
+adapt, Edge sense, TCS, positioning controls and Global cutting height when
+corresponding vendor fields are present.
 
 > [!CAUTION]
 > **i2 AWD support is experimental and has not yet been field-tested on a live
@@ -291,17 +302,16 @@ entity: lawn_mower.tont
 The integration itself provides authenticated local APIs for map data, session
 indexes, exact route details and completed-session render archives.
 
-### Legacy Map Camera
+### Built-in Map Camera removal
 
-The built-in SVG camera remains available in **0.4.1** as **Legacy Map Camera**
-for compatibility with existing dashboards. It is no longer the actively
-developed map UI and its old rendering terminology does not represent every
-modern Navimow map-area type correctly.
+The old SVG **Legacy Map Camera** was deprecated in 0.4.1 and is **removed from
+0.4.2-beta1 onward**. The camera platform, renderer and camera entity translation
+are no longer part of the integration. Existing dashboards should use Navimower
+Map Card instead.
 
-> [!IMPORTANT]
-> **Legacy Map Camera is scheduled for removal in Navimower 0.4.2.** Development
-> will remove it from the 0.4.2 beta line starting with 0.4.2-beta1. Migrate
-> dashboards to Navimower Map Card before upgrading to 0.4.2.
+This removal does not affect camera/VisionFence-related mower settings such as
+Camera positioning (EFLS); it removes only the old Home Assistant SVG map-camera
+entity.
 
 ## Options
 
@@ -322,22 +332,44 @@ and can retain the required signal for 0, 10, 20 or 30 seconds after arrival.
 Add, edit or delete local X/Y rectangles used as mower-presence sensors.
 
 Development-only passive protocol discovery and custom diagnostics-export
-options from the 0.4.1 beta cycle are removed when upgrading to stable 0.4.1.
+options from the 0.4.1 beta cycle remain removed.
 
 ## Home Assistant diagnostics
 
 Use Home Assistant's normal **Download diagnostics** action from the Navimower
 integration/config-entry menu.
 
-The generated document is read-only and sanitized. It contains general mower,
+The generated document remains sanitized. It contains general mower,
 connectivity, positioning, map, telemetry, history, capability, maintenance,
 schedule, Problem/Error and latest-notification context. Tokens, password, email,
 UID, full mower serial, GPS coordinates and other sensitive account/network
 identifiers are redacted.
 
-The beta-only passive discovery, H5/notification endpoint probing, state-transition
+For **0.4.2-beta1 only**, Download diagnostics also performs a bounded inspection
+of public unauthenticated H5 HTML/JavaScript to locate the official app's
+notification read-state request structure. It sends no account credentials,
+Navimow token/cookie, device ID, mower serial or encrypted p:101 business
+payload, and it executes **no** `clearBatchMessageRead` or other notification
+mutation call. Only bounded sanitized source context is retained in the
+`notification_read_h5_discovery` diagnostics section.
+
+The older passive MQTT discovery, broad endpoint probing, state-transition
 capture and custom `navimower.export_diagnostics` / `mark_discovery_event`
-actions are not part of the stable 0.4.1 diagnostics interface.
+actions remain removed.
+
+## 0.4.2 beta development
+
+### 0.4.2-beta1
+
+- removes the deprecated Legacy Map Camera platform and renderer;
+- keeps Navimower Map Card as the supported map UI;
+- keeps Latest notification and the existing read-only Device feed unchanged;
+- confirms/documented notification `read` state as account-specific from field
+  testing;
+- adds a targeted Download diagnostics H5 inspection to recover the official
+  notification read mutation request for future **Mark as read** and **Mark all
+  as read** support;
+- does not yet send notification write/mutation requests.
 
 ## Upgrade from 0.4.0 to 0.4.1
 
@@ -357,7 +389,7 @@ Highlights include:
 - initial experimental/unverified i2 AWD capability support;
 - persistent bidirectional Night mowing, Rain and Rain sensor writes;
 - removal of beta-only diagnostics/discovery controls;
-- Legacy Map Camera deprecation notice ahead of removal in 0.4.2.
+- Legacy Map Camera deprecation notice ahead of its 0.4.2-beta1 removal.
 
 See [CHANGELOG.md](CHANGELOG.md) and
 [`.github/release-notes/0.4.1.md`](.github/release-notes/0.4.1.md) for the release
@@ -378,8 +410,10 @@ runtime, notification, error and model-support changes described above.
   are not reconstructed.
 - Map writes, boundary edits and other destructive map editing are deliberately
   not included.
-- Legacy Map Camera remains for 0.4.1 compatibility but is scheduled for removal
-  in 0.4.2; use Navimower Map Card for ongoing map development.
+- The old built-in SVG Map Camera is removed from the 0.4.2 beta line; use
+  Navimower Map Card.
+- Notification read actions are not yet exposed in HA; beta1 only gathers the
+  public H5 request structure needed to implement them safely in a later beta.
 
 ## Credits and licence
 
