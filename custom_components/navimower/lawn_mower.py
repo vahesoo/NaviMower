@@ -152,9 +152,14 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
     async def async_dock(self) -> None:
         self.coordinator.clear_command_target()
         self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
+        center = getattr(self.coordinator, "notification_center", None)
+        if center is not None:
+            center.note_dock_command("lawn_mower.dock")
         try:
             await self.coordinator.async_send(self.coordinator.client.dock, self._sn)
         except Exception:
+            if center is not None:
+                center.clear_dock_command()
             self.coordinator.clear_pending_activity()
             raise
 
