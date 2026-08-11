@@ -9,6 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
+def _beta_number() -> int:
+    manifest = json.loads((COMPONENT / "manifest.json").read_text())
+    return int(manifest["version"].rsplit("beta", 1)[1])
+
+
 def test_beta27_manifest_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
     version = manifest["version"]
@@ -54,12 +59,18 @@ def test_beta27_targeted_notification_feed_scanner_contract() -> None:
     assert "device_id" not in source
 
 
-def test_beta27_download_diagnostics_runs_both_history_and_targeted_discovery() -> None:
+def test_beta27_download_discovery_is_historical_after_exact_feed_recovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
-    assert "notification_history_probe" in diagnostics
-    assert "notification_feed_discovery" in diagnostics
-    assert "probe_main_notification_feed" in diagnostics
-    assert "coordinator.client.notification_history" in diagnostics
+    if _beta_number() >= 29:
+        assert "notification_feed_probe" in diagnostics
+        assert "probe_main_notification_feed" not in diagnostics
+        assert "notification_feed_discovery" not in diagnostics
+        assert "coordinator.client.notification_feed" in diagnostics
+    else:
+        assert "notification_history_probe" in diagnostics
+        assert "notification_feed_discovery" in diagnostics
+        assert "probe_main_notification_feed" in diagnostics
+        assert "coordinator.client.notification_history" in diagnostics
 
 
 def test_beta27_action_export_remains_without_h5_discovery() -> None:
