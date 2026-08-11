@@ -5,8 +5,7 @@ then recovered the actual main app Notification -> Device feed contract from the
 public H5 MessageCenter component. Beta29 switched the live sensor to that
 read-only encrypted feed. Beta30 aligned the normalized sensor schema with real
 H215 and X390 responses. Beta32 removes vendor-native jump URLs from retained
-notification data, renames the entity to Latest notification, and marks the old
-SVG Map Camera as legacy while keeping its unique ID for compatibility.
+notification data and renames the entity to Latest notification.
 
 Main Device feed contract:
 
@@ -322,20 +321,11 @@ def _install_notification_sensor() -> None:
     )
 
 
-def _mark_map_camera_legacy() -> None:
-    """Keep the existing camera entity but make its deprecated status explicit."""
-    from .camera import NavimowMapCamera
-
-    NavimowMapCamera._attr_translation_key = None
-    NavimowMapCamera._attr_name = "Legacy Map Camera"
-
-
 def install_beta26_runtime() -> None:
     """Install notification transport, polling and sensor once."""
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_beta26_runtime_installed", False):
         _install_notification_sensor()
-        _mark_map_camera_legacy()
         return
 
     # Historical beta26 endpoint remains callable for explicit debugging only.
@@ -392,4 +382,3 @@ def install_beta26_runtime() -> None:
     cls._bootstrap_snapshot = bootstrap_snapshot
     cls._beta26_runtime_installed = True
     _install_notification_sensor()
-    _mark_map_camera_legacy()
