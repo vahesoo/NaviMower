@@ -98,11 +98,10 @@ resume:
 mark_notification_read:
   name: Mark notification as read
   description: >-
-    Open one Navimow Device notification through the same encrypted detail route
-    used by the official app. Navimower then immediately refreshes the Device
-    feed and trusts the vendor's returned read state; it does not mark the local
-    cache read optimistically. In 0.4.2-beta2 this single-message behavior is
-    intended for field validation.
+    Mark one row from Latest notification as read. Vendor rows keep the official
+    encrypted Navimow detail-open flow and are confirmed by a refreshed Device
+    feed. Navimower-generated rows use a local navimower: message ID and are
+    marked read only in Home Assistant's persistent Navimower notification Store.
   fields:
     device_id:
       name: Mower
@@ -113,7 +112,7 @@ mark_notification_read:
           integration: navimower
     message_id:
       name: Message ID
-      description: Vendor message_id from the Latest notification recent list.
+      description: message_id from the Latest notification recent list.
       required: true
       selector:
         text:
@@ -121,9 +120,10 @@ mark_notification_read:
 mark_all_notifications_read:
   name: Mark all notifications as read
   description: >-
-    Mark all Device notifications read for the private-cloud Navimow account used
-    by this mower config entry. This uses the official app's confirmed Mark all
-    as read request and immediately refreshes Latest notification afterwards.
+    Mark both retained Navimower-generated notifications and the vendor Device
+    notification feed read. Local rows are updated in Home Assistant storage;
+    vendor rows use the official Navimow Mark all as read request and are then
+    refreshed from the cloud.
   fields:
     device_id:
       name: Mower
