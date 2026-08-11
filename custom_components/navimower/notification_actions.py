@@ -1,13 +1,15 @@
-"""Explicit notification read-state actions recovered from the Navimow H5 app.
+"""Read-state actions for vendor and Navimower-local notifications.
 
-These helpers are intentionally separate from the normal read-only notification
-poller.  They run only after an explicit Home Assistant service call and never
-optimistically rewrite the cached `read` flags: after the vendor request the
-Device feed is fetched again and remains authoritative.
+Vendor rows keep the official Navimow H5 mutation contracts and are refreshed
+from the cloud after each explicit action. Navimower-generated rows use the
+``navimower:`` message-id namespace and are marked read only in the local
+persistent notification Store; they are never sent to a vendor message route.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from .notification_center import LOCAL_NOTIFICATION_PREFIX
 
 _NOTIFICATION_MARK_ALL_PATH = "/mowerbot/user/message/clearBatchMessageRead"
 _NOTIFICATION_DETAIL_PATH = "/mowerbot/user/message/getmessageDetailResp"
@@ -44,16 +46,22 @@ async def async_mark_notification_read(
     coordinator: Any,
     message_id: str,
 ) -> Any:
-    """Open one Device message through the app's detail route.
-
-    The official Message Center marks a row read locally and then opens this
-    encrypted detail route.  Beta2 deliberately does not set the Home Assistant
-    cache to read=True itself; the following vehicleMessageListField refresh must
-    confirm the server-side read state.
-    """
+    """Mark one vendor or Navimower-local notification read."""
     message_id = str(message_id or "").strip()
     if not message_id:
         raise ValueError("message_id is required")
+
+    if message_id.startswith(LOCAL_NOTIFICATION_PREFIX):
+        center = getattr(coordinator, "notification_center", None)
+        if center is None:
+            raise ValueError("Navimower local notification center is unavailable")
+        changed = await center.async_mark_read(message_id)
+        if not changed:
+            raise ValueError("Navimower local notification is no longer retained")
+        return {"origin": "navimower", "message_id": message_id, "read": True}
+
+    # Vendor message IDs continue through the app's encrypted detail route. The
+    # following Device-feed refresh remains authoritative for vendor read state.
     return await _async_vendor_call_and_refresh(
         coordinator,
         _NOTIFICATION_DETAIL_PATH,
@@ -66,12 +74,13 @@ async def async_mark_notification_read(
 
 
 async def async_mark_all_notifications_read(coordinator: Any) -> Any:
-    """Mark all Device notifications read for this account/mower.
+    """Mark all retained local rows plus all vendor Device notifications read."""
+    center = getattr(coordinator, "notification_center", None)
+    local_changed = await center.async_mark_all_read() if center is not None else 0
 
-    H5 uses the same endpoint with searchMessageStatus=true as a preflight check.
-    The actual Mark all as read action sends searchMessageStatus=false.
-    """
-    return await _async_vendor_call_and_refresh(
+    # H5 uses the same endpoint with searchMessageStatus=true as a preflight
+    # check. The actual vendor Mark all as read action sends false.
+    vendor_result = await _async_vendor_call_and_refresh(
         coordinator,
         _NOTIFICATION_MARK_ALL_PATH,
         {
@@ -79,3 +88,7 @@ async def async_mark_all_notifications_read(coordinator: Any) -> Any:
             "vehicle_sn": str(coordinator.sn),
         },
     )
+    return {
+        "local_marked_read": local_changed,
+        "vendor_result": vendor_result,
+    }
