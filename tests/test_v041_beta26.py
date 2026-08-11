@@ -50,9 +50,14 @@ def test_beta26_runtime_uses_exact_encrypted_history_contract() -> None:
 def test_beta26_notification_sensor_is_bounded_and_last_good() -> None:
     source = (COMPONENT / "beta26_runtime.py").read_text()
     assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in source
+    expected_name = (
+        'name="Latest notification"'
+        if _beta_number() >= 32
+        else 'name="Notification"'
+    )
     for phrase in (
         'key="notification"',
-        'name="Notification"',
+        expected_name,
         'icon="mdi:bell-outline"',
         '"notification_history"',
         '"notification_error"',
