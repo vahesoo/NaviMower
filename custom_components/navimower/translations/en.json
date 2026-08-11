@@ -198,173 +198,67 @@
       }
     },
     "sensor": {
-      "battery": {
-        "name": "Battery"
-      },
-      "state": {
-        "name": "Status"
-      },
-      "state_code": {
-        "name": "State code"
-      },
-      "mowing_progress": {
-        "name": "Mowing progress"
-      },
-      "current_zone": {
-        "name": "Current zone"
-      },
-      "session_area": {
-        "name": "Session area"
-      },
-      "weekly_area": {
-        "name": "Area this week"
-      },
-      "total_area": {
-        "name": "Total area"
-      },
-      "next_mow": {
-        "name": "Next mow"
-      },
-      "error_text": {
-        "name": "Error"
-      },
-      "signal_wifi": {
-        "name": "Wi-Fi signal"
-      },
-      "blades_life": {
-        "name": "Blades life"
-      },
-      "chassis_life": {
-        "name": "Chassis life"
-      },
-      "schedule": {
-        "name": "Schedule"
-      },
-      "coverage": {
-        "name": "Coverage"
-      },
-      "current_physical_zone": {
-        "name": "Current physical zone"
-      },
-      "target_zone": {
-        "name": "Target zone"
-      },
-      "current_channel": {
-        "name": "Current channel"
-      },
-      "cutting_height": {
-        "name": "Global cutting height"
-      },
-      "position_source": {
-        "name": "Position source"
-      },
-      "mqtt_stream_state": {
-        "name": "MQTT position stream"
-      },
-      "private_poll_age": {
-        "name": "Private-cloud poll age"
-      }
+      "battery": {"name": "Battery"},
+      "state": {"name": "Status"},
+      "state_code": {"name": "State code"},
+      "mowing_progress": {"name": "Mowing progress"},
+      "current_zone": {"name": "Current zone"},
+      "session_area": {"name": "Session area"},
+      "weekly_area": {"name": "Area this week"},
+      "total_area": {"name": "Total area"},
+      "next_mow": {"name": "Next mow"},
+      "error_text": {"name": "Error"},
+      "signal_wifi": {"name": "Wi-Fi signal"},
+      "blades_life": {"name": "Blades life"},
+      "chassis_life": {"name": "Chassis life"},
+      "schedule": {"name": "Schedule"},
+      "coverage": {"name": "Coverage"},
+      "current_physical_zone": {"name": "Current physical zone"},
+      "target_zone": {"name": "Target zone"},
+      "current_channel": {"name": "Current channel"},
+      "cutting_height": {"name": "Global cutting height"},
+      "position_source": {"name": "Position source"},
+      "mqtt_stream_state": {"name": "MQTT position stream"},
+      "private_poll_age": {"name": "Private-cloud poll age"}
     },
     "calendar": {
-      "schedule": {
-        "name": "Mowing schedule"
-      }
+      "schedule": {"name": "Mowing schedule"}
     },
     "binary_sensor": {
-      "problem": {
-        "name": "Problem"
-      },
-      "online": {
-        "name": "Online"
-      },
-      "docked": {
-        "name": "Docked"
-      },
-      "zone_transition": {
-        "name": "Zone transition"
-      },
-      "private_cloud_connected": {
-        "name": "Private cloud connected"
-      },
-      "oauth_connected": {
-        "name": "Smart Home OAuth connected"
-      },
-      "mqtt_connected": {
-        "name": "MQTT connected"
-      },
-      "pose_valid": {
-        "name": "Live position valid"
-      }
+      "problem": {"name": "Problem"},
+      "online": {"name": "Online"},
+      "docked": {"name": "Docked"},
+      "zone_transition": {"name": "Zone transition"},
+      "private_cloud_connected": {"name": "Private cloud connected"},
+      "oauth_connected": {"name": "Smart Home OAuth connected"},
+      "mqtt_connected": {"name": "MQTT connected"},
+      "pose_valid": {"name": "Live position valid"}
     },
     "switch": {
-      "mowing_schedule_enabled": {
-        "name": "Mowing schedule enabled"
-      },
-      "night_mow": {
-        "name": "Night mowing"
-      },
-      "mowing_cycle": {
-        "name": "Cyclic mowing"
-      },
-      "rain_detection": {
-        "name": "Rain"
-      },
-      "rain_sensor": {
-        "name": "Rain sensor"
-      },
-      "weather_rain": {
-        "name": "Weather forecast"
-      },
-      "rain_delay_mode": {
-        "name": "Delay after rain"
-      },
-      "frost_delay": {
-        "name": "Frost"
-      },
-      "snow_delay": {
-        "name": "Snow"
-      },
-      "storm_delay": {
-        "name": "Strong wind"
-      },
-      "high_temp_delay": {
-        "name": "Hot weather"
-      },
-      "sound": {
-        "name": "Sound"
-      },
-      "power_saving": {
-        "name": "Power saving"
-      },
-      "night_light": {
-        "name": "Night light"
-      },
-      "child_lock": {
-        "name": "Child lock"
-      },
-      "lift_alarm": {
-        "name": "Lift alarm"
-      },
-      "geo_fence_alarm": {
-        "name": "Geo-fence alarm"
-      },
-      "efls": {
-        "name": "Camera positioning (EFLS)"
-      },
-      "obstacle_avoidance": {
-        "name": "Obstacle avoidance"
-      },
-      "traction_control": {
-        "name": "Traction control"
-      },
-      "animal_protection": {
-        "name": "Animal-friendly"
-      }
+      "mowing_schedule_enabled": {"name": "Mowing schedule enabled"},
+      "night_mow": {"name": "Night mowing"},
+      "mowing_cycle": {"name": "Cyclic mowing"},
+      "rain_detection": {"name": "Rain"},
+      "rain_sensor": {"name": "Rain sensor"},
+      "weather_rain": {"name": "Weather forecast"},
+      "rain_delay_mode": {"name": "Delay after rain"},
+      "frost_delay": {"name": "Frost"},
+      "snow_delay": {"name": "Snow"},
+      "storm_delay": {"name": "Strong wind"},
+      "high_temp_delay": {"name": "Hot weather"},
+      "sound": {"name": "Sound"},
+      "power_saving": {"name": "Power saving"},
+      "night_light": {"name": "Night light"},
+      "child_lock": {"name": "Child lock"},
+      "lift_alarm": {"name": "Lift alarm"},
+      "geo_fence_alarm": {"name": "Geo-fence alarm"},
+      "efls": {"name": "Camera positioning (EFLS)"},
+      "obstacle_avoidance": {"name": "Obstacle avoidance"},
+      "traction_control": {"name": "Traction control"},
+      "animal_protection": {"name": "Animal-friendly"}
     },
     "select": {
-      "zone": {
-        "name": "Mow zone"
-      },
+      "zone": {"name": "Mow zone"},
       "work_mode": {
         "name": "Work mode",
         "state": {
@@ -390,34 +284,15 @@
       }
     },
     "number": {
-      "return_battery_level": {
-        "name": "Return-to-dock battery"
-      },
-      "charging_limit": {
-        "name": "Charging limit"
-      },
-      "rain_delay_time": {
-        "name": "Wait time after rain"
-      },
-      "snow_delay_time": {
-        "name": "Snow delay duration"
-      },
-      "maximum_mowing_temperature": {
-        "name": "Maximum mowing temperature"
-      },
-      "geo_fence_radius": {
-        "name": "Geo-fence radius"
-      }
+      "return_battery_level": {"name": "Return-to-dock battery"},
+      "charging_limit": {"name": "Charging limit"},
+      "rain_delay_time": {"name": "Wait time after rain"},
+      "snow_delay_time": {"name": "Snow delay duration"},
+      "maximum_mowing_temperature": {"name": "Maximum mowing temperature"},
+      "geo_fence_radius": {"name": "Geo-fence radius"}
     },
     "time": {
-      "frost_delay_until": {
-        "name": "Won't mow until after frost"
-      }
-    },
-    "camera": {
-      "map": {
-        "name": "Map"
-      }
+      "frost_delay_until": {"name": "Won't mow until after frost"}
     }
   }
 }
