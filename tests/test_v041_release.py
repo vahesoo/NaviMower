@@ -166,17 +166,15 @@ def test_v041_removes_development_diagnostics_interface() -> None:
     assert "OPT_DIAGNOSTICS_DETAIL" not in options
     assert '_DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}' in init
 
-    assert 'document.pop(key, None)' in diagnostics
-    for key in (
-        '"mqtt_inventory"',
-        '"mqtt_discovery"',
-        '"cloud_request_inventory"',
-        '"last_mow_command"',
-        '"state_transition_capture"',
-    ):
-        assert key in diagnostics
-    assert 'document["latest_notification"]' in diagnostics
-    assert 'document["diagnostics_source"] = "home_assistant_download"' in diagnostics
+    assert "async_build_diagnostics" not in diagnostics
+    assert "diagnostic_discovery" not in diagnostics
+    assert "discovery_inventory" not in diagnostics
+    assert "command_status" not in diagnostics
+    assert '"diagnostics_source": "home_assistant_download"' in diagnostics
+    assert '"latest_notification"' in diagnostics
+    assert '"problem_history"' in diagnostics
+    assert '"raw"' in diagnostics
+    assert "No mower commands, settings writes, discovery probes or extra vendor requests" in diagnostics
 
     for removed in (
         "action_diagnostics.py",
