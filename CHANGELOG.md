@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.2-beta1
+
+First beta in the cumulative 0.4.2 development line, built directly on stable 0.4.1.
+
+### Added
+
+- Added a targeted **Download diagnostics** H5 inspection for notification read-state reverse engineering. It searches public unauthenticated Navimow H5 JavaScript for `clearBatchMessageRead`, unread-count routes and surrounding request/payload structure.
+- Diagnostics records bounded sanitized source context to help determine whether the official app supports both per-message **Mark as read** and **Mark all as read** behavior.
+- Documented field confirmation that notification `read` state is scoped to the Navimow account used by the integration: messages become `read: true` after they are read in the app under that same account and the feed refreshes.
+
+### Changed
+
+- Navimower Map Card is now the only supported Navimower map UI. Existing authenticated map/history/session APIs remain unchanged.
+- The normal Latest notification Device feed remains read-only in beta1. The new H5 diagnostics probe does not alter notification state and does not change normal notification polling.
+
+### Removed
+
+- Removed the deprecated **Legacy Map Camera** introduced by the old Home Assistant `camera` platform, including its SVG renderer, platform registration and camera entity translation.
+- Removal affects only the legacy SVG map-camera entity; mower camera/VisionFence settings such as Camera positioning (EFLS) remain available where supported.
+
+### Diagnostics safety
+
+- H5 discovery runs only when Home Assistant **Download diagnostics** is requested.
+- It performs bounded public GET requests only and sends no Navimow token, cookie, UID, device ID, mower serial or encrypted p:101 business payload.
+- `clearBatchMessageRead` and all other notification mutation endpoints are **not called** in beta1.
+
 ## 0.4.1
 
 Changes below describe the stable upgrade from **0.4.0 to 0.4.1**. The 0.4.1 beta release notes remain in `.github/release-notes/` as development history; they do not need to be installed individually.
