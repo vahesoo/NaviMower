@@ -47,17 +47,13 @@ from .const import (
     CONF_VEHICLE_NAME,
     CONF_VEHICLE_SN,
     CONF_VEHICLE_TYPE,
-    DEFAULT_DIAGNOSTICS_DETAIL,
     DEFAULT_INCLUDE_RETURN_TRAIL,
-    DEFAULT_PASSIVE_DISCOVERY,
     DEFAULT_LANGUAGE,
     DEFAULT_TRAIL_RETENTION_DAYS,
     DOMAIN,
     OPT_CHANNELS,
-    OPT_DIAGNOSTICS_DETAIL,
     OPT_GATES,
     OPT_INCLUDE_RETURN_TRAIL,
-    OPT_PASSIVE_DISCOVERY,
     OPT_TRAIL_RETENTION_DAYS,
     OPT_ZONES,
     TRAIL_RETENTION_OPTIONS,
@@ -118,11 +114,7 @@ class NavimowConfigFlow(
             return self._get_reconfigure_entry()
         return None
 
-    # ------------------------------------------------------------- private auth
     async def _authenticate(self, email: str, password: str) -> list[dict[str, Any]]:
-        # The private cloud binds one app/device identity to an account. Reuse
-        # the identity already stored by another mower entry of this account so
-        # logging in one mower cannot invalidate the other mower's session.
         device_id = (
             shared_private_device_id(
                 self._async_current_entries(),
@@ -195,9 +187,6 @@ class NavimowConfigFlow(
                 if not remaining:
                     return await self.async_step_manual()
                 self._vehicles = remaining
-                # Always show the mower selector, even when only one unconfigured
-                # mower remains. The confirmation makes the selected private
-                # mower explicit before the separate official OAuth step starts.
                 return await self.async_step_select_vehicle()
 
         return self.async_show_form(
@@ -318,7 +307,6 @@ class NavimowConfigFlow(
         self._pending_data = private_data
         return await self.async_step_link_oauth()
 
-    # --------------------------------------------------------------- OAuth link
     async def async_step_link_oauth(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -392,7 +380,6 @@ class NavimowConfigFlow(
             data=combined,
         )
 
-    # ------------------------------------------------------------------ reauth
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
@@ -503,7 +490,6 @@ class NavimowConfigFlow(
             errors=errors,
         )
 
-    # ---------------------------------------------------------------- options
     @staticmethod
     @callback
     def async_get_options_flow(entry: ConfigEntry) -> "NavimowOptionsFlow":
@@ -540,8 +526,6 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                     zone_id, name = item.split(":", 1)
                     if zone_id.strip().isdigit():
                         choices[zone_id.strip()] = name.strip() or f"Zone {zone_id.strip()}"
-        # Existing gate definitions remain editable during a temporary map/cloud
-        # outage, even when the decoded zone list is not currently available.
         for gate in self._gates():
             for zone_id in gate.zones:
                 choices.setdefault(str(zone_id), f"Zone {zone_id} (ID {zone_id})")
@@ -554,8 +538,10 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
         return parse_channels(self.config_entry.options.get(OPT_CHANNELS))
 
     def _save(self, **updates: Any) -> ConfigFlowResult:
-        """Finish the flow with the complete updated options mapping."""
+        """Finish the flow with the complete updated production options mapping."""
         options = self._options()
+        options.pop("diagnostics_detail", None)
+        options.pop("passive_discovery", None)
         options.update(updates)
         return self.async_create_entry(data=options)
 
@@ -577,8 +563,6 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                 **{
                     OPT_TRAIL_RETENTION_DAYS: int(user_input[OPT_TRAIL_RETENTION_DAYS]),
                     OPT_INCLUDE_RETURN_TRAIL: bool(user_input[OPT_INCLUDE_RETURN_TRAIL]),
-                    OPT_DIAGNOSTICS_DETAIL: str(user_input[OPT_DIAGNOSTICS_DETAIL]),
-                    OPT_PASSIVE_DISCOVERY: bool(user_input[OPT_PASSIVE_DISCOVERY]),
                 }
             )
         retention_labels = {
@@ -612,29 +596,6 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                             )
                         ),
                     ): bool,
-                    vol.Required(
-              OPT_DIAGNOSTICS_DETAIL,
-              default=str(
-                  options.get(
-                      OPT_DIAGNOSTICS_DETAIL,
-                      DEFAULT_DIAGNOSTICS_DETAIL,
-                  )
-              ),
-          ): vol.In(
-              {
-                  "standard": "Standard",
-                  "extended": "Extended",
-              }
-          ),
-                    vol.Required(
-              OPT_PASSIVE_DISCOVERY,
-              default=bool(
-                  options.get(
-                      OPT_PASSIVE_DISCOVERY,
-                      DEFAULT_PASSIVE_DISCOVERY,
-                  )
-              ),
-          ): bool,
                 }
             ),
         )
