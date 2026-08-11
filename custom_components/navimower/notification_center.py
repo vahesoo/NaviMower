@@ -19,6 +19,10 @@ from .const import (
     ACTIVITY_MOWING,
     ACTIVITY_RETURNING,
     DOMAIN,
+    MQTT_DOCKED_STATES,
+    MQTT_STATE_MOWING,
+    MQTT_STATE_RETURNING,
+    VEHICLE_STATE_TO_ACTIVITY,
 )
 
 LOCAL_NOTIFICATION_PREFIX = "navimower:"
@@ -209,9 +213,8 @@ class NavimowerNotificationCenter:
         """Start observing coordinator state transitions before entities load."""
         if self._unsub is not None:
             return
-        current = (self.coordinator.data or {}).get("activity")
-        self._observed_activity = self._persisted_activity or (
-            str(current) if current else None
+        self._observed_activity = self._persisted_activity or self._confirmed_activity(
+            self.coordinator.data or {}
         )
         self._unsub = self.coordinator.async_add_listener(self._handle_update)
 
@@ -241,9 +244,11 @@ class NavimowerNotificationCenter:
     async def async_mark_read(self, message_id: str) -> bool:
         """Mark one Navimower-local message read and publish immediately."""
         target = str(message_id or "").strip()
+        found = False
         changed = False
         for item in self._messages:
             if str(item.get("message_id") or "") == target:
+                found = True
                 if item.get("read") is not True:
                     item["read"] = True
                     changed = True
@@ -251,7 +256,7 @@ class NavimowerNotificationCenter:
         if changed:
             await self._async_save()
             self._publish()
-        return changed
+        return found
 
     async def async_mark_all_read(self) -> int:
         """Mark every retained local notification read."""
@@ -274,13 +279,33 @@ class NavimowerNotificationCenter:
             "observed_activity": self._observed_activity,
             "last_mowing_progress": self._last_mowing_progress,
             "last_mowing_battery": self._last_mowing_battery,
+            "mqtt_mow_start_type": self._mqtt_value("mow_start_type"),
+            "mqtt_task_delay": self._mqtt_value("task_delay"),
         }
+
+    def _confirmed_activity(self, snapshot: dict[str, Any]) -> str | None:
+        """Return only vendor-confirmed work state, never optimistic HA activity."""
+        mqtt_state = _as_int(snapshot.get("mqtt_vehicle_state"))
+        if mqtt_state == MQTT_STATE_MOWING:
+            return ACTIVITY_MOWING
+        if mqtt_state == MQTT_STATE_RETURNING:
+            return ACTIVITY_RETURNING
+        if mqtt_state in MQTT_DOCKED_STATES:
+            return ACTIVITY_DOCKED
+
+        state_code = str(snapshot.get("state_code") or "")
+        mapped = VEHICLE_STATE_TO_ACTIVITY.get(state_code)
+        if mapped in {ACTIVITY_MOWING, ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
+            return mapped
+
+        # Unknown/transient vendor states do not create synthetic transitions.
+        # Keep the previous confirmed state until a known private/MQTT state lands.
+        return self._observed_activity
 
     @callback
     def _handle_update(self) -> None:
         snapshot = self.coordinator.data or {}
-        current_value = snapshot.get("activity")
-        current = str(current_value) if current_value else None
+        current = self._confirmed_activity(snapshot)
 
         if current == ACTIVITY_MOWING:
             progress = _as_float(snapshot.get("mowing_progress"))
@@ -397,16 +422,16 @@ class NavimowerNotificationCenter:
                 confidence="confirmed_ha_command",
                 event_key=key or None,
             )
+            selected_ids = (
+                mow_trace.get("requested_zone_ids")
+                if explicit
+                else mow_trace.get("resolved_zone_ids")
+            )
             self._active_task = {
                 "task_id": (item or {}).get("message_id") or key,
                 "origin": "home_assistant",
                 "trigger": str(mow_trace.get("source") or "ha_mow"),
-                "zone_ids": list(
-                    mow_trace.get("requested_zone_ids")
-                    if explicit
-                    else mow_trace.get("resolved_zone_ids")
-                    or []
-                ),
+                "zone_ids": list(selected_ids or []),
                 "zone_names": names,
                 "ordered": ordered,
                 "reset": reset,
@@ -551,6 +576,14 @@ class NavimowerNotificationCenter:
         if battery is None:
             battery = _as_float(snapshot.get("battery"))
 
+        if self._active_task is None:
+            self._ensure_task_context(
+                snapshot,
+                task_id=f"observed-{int(datetime.now(UTC).timestamp())}",
+                origin="observed",
+                trigger="observed_active_task",
+                zone_names=self._task_zone_names(snapshot),
+            )
         if self._active_task is not None:
             self._active_task["progress_before_pause"] = progress
             self._active_task["battery_before_pause"] = battery
