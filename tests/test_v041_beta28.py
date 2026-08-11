@@ -77,7 +77,13 @@ def test_beta28_extracts_request_structure_from_target_chunks() -> None:
 def test_beta28_download_discovery_retires_after_exact_feed_recovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     action = (COMPONENT / "action_diagnostics.py").read_text()
-    if _beta_number() >= 29:
+    if _beta_number() >= 30:
+        assert "notification_feed_probe" not in diagnostics
+        assert "notification_history_probe" not in diagnostics
+        assert "notification_feed_discovery" not in diagnostics
+        assert "probe_main_notification_feed" not in diagnostics
+        assert "coordinator.client.notification_feed" not in diagnostics
+    elif _beta_number() >= 29:
         assert "notification_feed_probe" in diagnostics
         assert "notification_history_probe" not in diagnostics
         assert "notification_feed_discovery" not in diagnostics
