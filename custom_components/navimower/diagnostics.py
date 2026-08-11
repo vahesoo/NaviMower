@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .diagnostics_export import async_build_diagnostics, inventory, sanitize
+from .notification_feed_discovery import probe_main_notification_feed
 
 _NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
 
@@ -39,9 +40,10 @@ async def async_get_config_entry_diagnostics(
             coordinator.state_transition_diagnostics()
         )
 
-    # Beta26 replaces public-H5 source scanning with the exact read-only vendor
-    # endpoint recovered in beta25. The private-cloud client still owns auth,
-    # p:101 encryption and session refresh; diagnostics receives only decoded data.
+    # Keep the exact beta26 vehicle-history contract visible while beta27
+    # investigates whether the main Notification -> Device feed is a different
+    # request path. The vendor call is read-only and uses the existing p:101
+    # client; no message is marked read.
     try:
         response = await hass.async_add_executor_job(
             coordinator.client.notification_history,
@@ -76,6 +78,24 @@ async def async_get_config_entry_diagnostics(
             "response": clean,
             "inventory": inventory(clean),
         }
+
+    # Beta27 re-enters public H5 discovery, but only around exact strings from
+    # the main Notification UI. This scanner never receives credentials or the
+    # mower serial and persists only bounded structural context.
+    try:
+        discovery = await hass.async_add_executor_job(
+            probe_main_notification_feed,
+            coordinator.client,
+        )
+    except Exception as err:  # noqa: BLE001 - optional diagnostics discovery.
+        document["notification_feed_discovery"] = {
+            "ok": False,
+            "read_only": True,
+            "error_type": type(err).__name__,
+            "error": sanitize(str(err)),
+        }
+    else:
+        document["notification_feed_discovery"] = sanitize(discovery)
 
     document["diagnostics_source"] = "home_assistant_download"
     return document
