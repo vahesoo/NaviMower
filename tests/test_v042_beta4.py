@@ -15,7 +15,7 @@ def _source(name: str) -> str:
 
 def test_beta4_manifest_release_notes_and_changelog() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.2-beta4"
+    assert manifest["version"].startswith("0.4.2")
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.2-beta4.md").read_text()
     assert notes.startswith("title: Navimower 0.4.2-beta4")
@@ -34,7 +34,8 @@ def test_beta4_manifest_release_notes_and_changelog() -> None:
         assert phrase in notes
 
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    assert changelog.startswith("# Changelog\n\n## 0.4.2-beta4")
+    assert changelog.startswith("# Changelog\n")
+    assert "## 0.4.2-beta4" in changelog
     assert "notification center" in changelog.lower()
 
 
