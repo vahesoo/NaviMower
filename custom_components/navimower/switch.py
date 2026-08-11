@@ -1,9 +1,10 @@
 """Switch platform for Navimower cloud settings.
 
-``nightMowSwitch`` is a legacy setting written through the plain
-``save-set-data`` form with a zero-padded boolean string (``"01"``/``"00"``).
-Modern MowerSettingBean toggles use ``operation_type:"iot_set"`` and are sent
-to the mower first so the change applies immediately.
+Legacy boolean settings keep their confirmed plain ``save-set-data`` cloud
+format with zero-padded strings (``"01"``/``"00"``). Selected legacy controls
+also send the matching value to the mower first so its onboard setting cannot
+later overwrite the cloud copy. Modern MowerSettingBean toggles use
+``operation_type:"iot_set"`` and are likewise sent to the mower first.
 
 Settings writes use one transaction and delayed cloud readback so an eventually
 consistent ``set_list`` cannot briefly restore the previous switch state.
@@ -38,6 +39,7 @@ class NavimowSwitchDescription(SwitchEntityDescription):
     numeric: bool = False
     robot_key: str | None = None
     robot_numeric: bool = True
+    legacy_device_write: bool = False
     enabled_default: bool = True
     assumed: bool = False
     gate_key: str | None = None
@@ -67,6 +69,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("night_mow"),
         write_key="nightMowSwitch",
         proven=True,
+        legacy_device_write=True,
         raw_read_path=("camerabox", "nightMowSwitch"),
         raw_fallback_keys=("nightMowSwitch", "night_mow_switch"),
     ),
@@ -89,6 +92,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("rain_detection"),
         write_key="rainDetectionSwitch",
         proven=True,
+        legacy_device_write=True,
     ),
     NavimowSwitchDescription(
         key="rain_sensor",
@@ -98,6 +102,7 @@ SWITCHES: tuple[NavimowSwitchDescription, ...] = (
         value_fn=lambda s: s.get("rain_sensor"),
         write_key="rainSensor",
         proven=True,
+        legacy_device_write=True,
     ),
     NavimowSwitchDescription(
         key="weather_rain",
@@ -491,6 +496,18 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
             )
         else:
             cloud_value = "01" if on else "00"
+            if desc.legacy_device_write:
+                robot_value = (
+                    (1 if on else 0)
+                    if desc.robot_numeric
+                    else ("1" if on else "0")
+                )
+                operations.append(
+                    (
+                        self.coordinator.client.send_setting_device,
+                        (self._sn, {desc.robot_key or desc.write_key: robot_value}),
+                    )
+                )
             operations.append(
                 (
                     self.coordinator.client.set_bool_setting,
