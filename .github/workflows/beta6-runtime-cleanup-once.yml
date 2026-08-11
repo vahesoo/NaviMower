@@ -1,0 +1,65 @@
+name: Migrate beta-numbered runtime modules for beta6 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/beta6-runtime-cleanup-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Apply semantic runtime migration
+        run: python .github/scripts/migrate_beta_runtime_cleanup.py
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+
+      - name: Compile integration
+        run: python -m compileall -q custom_components/navimower
+
+      - name: Run full regression suite before version bump
+        run: python -m pytest -q
+
+      - name: Validate clean diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test ! -e custom_components/navimower/beta16_runtime.py
+          test ! -e custom_components/navimower/beta17_runtime.py
+          test ! -e custom_components/navimower/beta18_runtime.py
+          test ! -e custom_components/navimower/beta26_runtime.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("custom_components/navimower")
+          for path in root.rglob("*.py"):
+              text = path.read_text(encoding="utf-8")
+              assert "install_beta" not in text, path
+              assert re.search(r"_beta\d+_", text) is None, path
+          PY
+
+      - name: Commit semantic runtime cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A custom_components/navimower
+          git add docs/ARCHITECTURE.md tests/test_runtime_architecture.py tests/test_v042_beta6.py CHANGELOG.md .github/release-notes/0.4.2-beta6.md
+          git commit -m "Replace beta runtime layers with semantic modules"
+          git push origin HEAD:main
