@@ -8,6 +8,11 @@
   custom sequencing, listing zones explicitly also fixes their mowing order.
   First-generation H-series mowers still accept the selected zones but choose
   their order themselves.
+- ``navimower.mark_notification_read`` opens one Device notification through the
+  same encrypted detail route as the official app and then refreshes the Device
+  feed to confirm the resulting vendor read state.
+- ``navimower.mark_all_notifications_read`` executes the official app's Mark all
+  as read request for the selected mower/account and refreshes the Device feed.
 
 Diagnostics are exposed through Home Assistant's native Download diagnostics
 flow rather than custom development services.
@@ -20,21 +25,27 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
+from .beta16_runtime import install_beta16_runtime
+from .beta26_runtime import install_beta26_runtime
 from .const import (
     ACTIVITY_MOWING,
     DOMAIN,
     encode_partition_ids,
     mow_setup,
 )
-from .beta16_runtime import install_beta16_runtime
-from .beta26_runtime import install_beta26_runtime
 from .model_support import supports_ordered_zone_mowing
+from .notification_actions import (
+    async_mark_all_notifications_read,
+    async_mark_notification_read,
+)
 
 install_beta16_runtime()
 install_beta26_runtime()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
+SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
+SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
@@ -71,6 +82,19 @@ MOW_SCHEMA = vol.Schema(
     }
 )
 
+MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Required("message_id"): vol.All(cv.string, vol.Length(min=1, max=128)),
+    }
+)
+
+MARK_ALL_NOTIFICATIONS_READ_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+    }
+)
+
 
 def _hhmm_to_min(value: str) -> int:
     parts = str(value).strip().split(":")
@@ -82,9 +106,7 @@ def _hhmm_to_min(value: str) -> int:
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
-    """Register integration services once."""
-    if hass.services.has_service(DOMAIN, SERVICE_MOW):
-        return
+    """Register integration services once, including services added by upgrades."""
 
     def _resolve_coordinator(call: ServiceCall):
         store = hass.data.get(DOMAIN) or {}
@@ -225,7 +247,45 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
-    hass.services.async_register(
-        DOMAIN, SERVICE_SET_SCHEDULE, _set_schedule, schema=SET_SCHEDULE_SCHEMA
-    )
-    hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
+    async def _mark_notification_read(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        message_id = str(call.data["message_id"]).strip()
+        try:
+            await async_mark_notification_read(coordinator, message_id)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimow mark_notification_read failed: {err}"
+            ) from err
+
+    async def _mark_all_notifications_read(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            await async_mark_all_notifications_read(coordinator)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimow mark_all_notifications_read failed: {err}"
+            ) from err
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_SCHEDULE,
+            _set_schedule,
+            schema=SET_SCHEDULE_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_MOW):
+        hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_MARK_NOTIFICATION_READ):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_MARK_NOTIFICATION_READ,
+            _mark_notification_read,
+            schema=MARK_NOTIFICATION_READ_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_MARK_ALL_NOTIFICATIONS_READ):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_MARK_ALL_NOTIFICATIONS_READ,
+            _mark_all_notifications_read,
+            schema=MARK_ALL_NOTIFICATIONS_READ_SCHEMA,
+        )
