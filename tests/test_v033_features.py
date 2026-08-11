@@ -48,9 +48,9 @@ def test_selected_zone_order_falls_back_to_robot_order_for_h1() -> None:
     assert "sel if requested_ordered else []" in mower
 
 
-def test_mow_command_trace_is_exported_with_live_status_lookup() -> None:
+def test_mow_command_trace_remains_internal_without_diagnostics_lookup() -> None:
     coordinator = (COMPONENT / "coordinator.py").read_text()
-    diagnostics = (COMPONENT / "diagnostics_export.py").read_text()
+    diagnostics = (COMPONENT / "diagnostics.py").read_text()
     services = (COMPONENT / "services.py").read_text()
     mower = (COMPONENT / "lawn_mower.py").read_text()
     for marker in (
@@ -63,10 +63,11 @@ def test_mow_command_trace_is_exported_with_live_status_lookup() -> None:
         "request_shape",
     ):
         assert marker in coordinator
-    assert 'client.command_status, sn, str(cmd_num)' in diagnostics
-    assert '"last_mow_command": sanitize(deepcopy(last_mow_command))' in diagnostics
     assert "coordinator.begin_mow_command_trace(" in services
     assert "self.coordinator.begin_mow_command_trace(" in mower
+    assert "command_status" not in diagnostics
+    assert "last_mow_command" not in diagnostics
+    assert "extra vendor requests" in diagnostics
 
 
 def test_command_number_extraction_handles_known_response_shapes() -> None:
