@@ -63,6 +63,13 @@ async def async_get_config_entry_diagnostics(
         if hasattr(coordinator, "problem_diagnostics")
         else None
     )
+    notification_center = getattr(coordinator, "notification_center", None)
+    notification_center_diagnostics = (
+        notification_center.diagnostics()
+        if notification_center is not None
+        and hasattr(notification_center, "diagnostics")
+        else None
+    )
 
     history_index = (
         coordinator.history.sessions_index_payload()
@@ -220,12 +227,20 @@ async def async_get_config_entry_diagnostics(
                 "type": data.get("notification_type"),
                 "style": data.get("notification_style"),
                 "notification_code": data.get("notification_code"),
+                "origin": data.get("notification_origin"),
+                "kind": data.get("notification_kind"),
+                "confidence": data.get("notification_confidence"),
+                "count": data.get("notification_count"),
+                "vendor_count": data.get("notification_vendor_count"),
+                "local_count": data.get("notification_local_count"),
                 "source": data.get("notification_source"),
                 "source_age": data.get("notification_source_age"),
+                "vendor_source_age": data.get("notification_vendor_source_age"),
                 "last_error": data.get("notification_error"),
                 "recent": deepcopy(data.get("notification_history") or []),
             }
         ),
+        "notification_center": sanitize(deepcopy(notification_center_diagnostics)),
         "last_resume_command": sanitize(resume_command_diagnostics(coordinator)),
         "private_polling": sanitize(deepcopy(private_polling)),
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
@@ -233,6 +248,7 @@ async def async_get_config_entry_diagnostics(
         "notes": [
             "Download diagnostics is generated from current coordinator state and existing caches only; it makes no extra vendor or public-H5 requests.",
             "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
+            "The notification center keeps at most 10 vendor rows and 20 persistent Navimower-local rows, then merges them newest-first for Latest notification.",
             "Notification read actions are explicit Home Assistant services and are never executed by Download diagnostics.",
             "Account, mower, network and physical GPS identifiers are sanitized/redacted.",
             "Local map X/Y coordinates may remain because they are relative map geometry rather than GPS coordinates.",
