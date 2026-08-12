@@ -12,6 +12,7 @@ from .capability_profile import build_capability_profile
 from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
 from .private_cloud_region import private_cloud_region_diagnostics
+from .maintenance_h5_discovery import probe_maintenance_h5
 from .resume import resume_command_diagnostics
 
 
@@ -26,9 +27,9 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return a sanitized snapshot for Home Assistant Download diagnostics.
 
-    Diagnostics are built only from the config entry, coordinator state and
-    existing caches. Downloading diagnostics performs no additional Navimow or
-    public-H5 requests and never executes notification mutation actions.
+    Normal diagnostics use the config entry, coordinator state and caches.
+    0.4.3-beta1 additionally performs a bounded read-only public-H5 inspection for
+    Maintenance & Tools request structure and executes no mutation action.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -48,6 +49,8 @@ async def async_get_config_entry_diagnostics(
     map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
     settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
+    maintenance = data.get("maintenance") if isinstance(data.get("maintenance"), dict) else {}
+    raw_maintenance = raw.get("maintenance") if isinstance(raw.get("maintenance"), dict) else {}
     capabilities = data.get("capabilities")
     if not isinstance(capabilities, dict):
         capabilities = build_capability_profile(data)
@@ -89,6 +92,17 @@ async def async_get_config_entry_diagnostics(
         and hasattr(coordinator.history, "cycle_diagnostics")
         else None
     )
+
+    try:
+        maintenance_h5_discovery = await hass.async_add_executor_job(
+            probe_maintenance_h5, coordinator.client
+        )
+    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
+        maintenance_h5_discovery = {
+            "ok": False, "read_only": True, "beta_only": True,
+            "mutation_calls_executed": False,
+            "error_type": type(err).__name__, "error": sanitize(str(err)),
+        }
 
     return {
         "format": "navimower-diagnostics-v2",
@@ -147,6 +161,8 @@ async def async_get_config_entry_diagnostics(
             private_cloud_region_diagnostics(coordinator)
         ),
         "capabilities": sanitize(deepcopy(capabilities)),
+        "maintenance": sanitize({"parsed": deepcopy(maintenance), "raw_component_maintenance": deepcopy(raw_maintenance)}),
+        "maintenance_h5_discovery": maintenance_h5_discovery,
         "positioning": sanitize(
             _selected(
                 data,
@@ -255,7 +271,8 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "Download diagnostics is generated from current coordinator state and existing caches only; it makes no extra vendor or public-H5 requests.",
+            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta1 additionally performs bounded public H5 Maintenance & Tools discovery.",
+            "The beta H5 inspection sends no account or mower identity and executes no maintenance mutation or mower command.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
             "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
             "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
