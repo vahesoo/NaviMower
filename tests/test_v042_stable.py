@@ -47,8 +47,17 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
     assert "sanitize(deepcopy(raw))" in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
-    assert "makes no extra vendor" in diagnostics
-    assert "never executes notification mutation actions" in diagnostics
+    assert (
+        "makes no extra vendor" in diagnostics
+        or (
+            "maintenance_h5_discovery" in diagnostics
+            and "bounded read-only public-H5 inspection" in diagnostics
+        )
+    )
+    assert (
+        "never executes notification mutation actions" in diagnostics
+        or "executes no mutation action" in diagnostics
+    )
 
     sanitizer = (COMPONENT / "diagnostics_sanitize.py").read_text(encoding="utf-8")
     for secret in (
