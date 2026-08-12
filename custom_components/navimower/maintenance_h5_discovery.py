@@ -142,13 +142,21 @@ PRIORITY_FILENAME_TOKENS = (
 )
 TARGETED_THEME_TERMS = (
     "maintenance",
-    "repair",
     "parts",
     "blade",
     "knife",
     "chassis",
     "replacement",
     "clean",
+    "report",
+    "mowing",
+)
+
+# Temporary beta-only fallback for the exact Mowing Records chunk already observed in
+# current public H5. Semantic source-context routing remains authoritative and this hint
+# is removed with discovery cleanup once the contract is integrated.
+OBSERVED_REPORT_ASSET_BASENAMES = (
+    "index-594ad42d.js",
 )
 
 MAX_HTML = 256 * 1024
@@ -165,7 +173,7 @@ MAX_REQUEST_CANDIDATES = 180
 MAX_JS_CANDIDATES = 220
 MAX_UNFETCHED_CANDIDATES = 120
 SMALL_JSON_MAX = 8192
-MAX_SOURCE_MAPS = 2
+MAX_SOURCE_MAPS = 0
 MAX_SOURCE_MAP = 4 * 1024 * 1024
 MAX_SOURCE_MAP_MATCHING_SOURCES = 32
 CONTEXT_RADIUS = 2200
@@ -219,9 +227,10 @@ MOWER_SET_WRAPPER_RE = re.compile(
 )
 MOWER_SET_ARROW_WRAPPER_RE = re.compile(
     r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)"
-    r"(?:\s*=\s*\{\})?\s*\)?\s*=>[^;]{0,700}?"
-    r"(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
-    re.I | re.S,
+    r"(?:\s*=\s*\{\})?\s*\)?\s*=>\s*"
+    r"(?:(?:[A-Za-z_$][\w$]*)\.)*(?:callNative|sendMessageToNative)"
+    r"\s*\(\s*[\"']handleH5MowerSet[\"']",
+    re.I,
 )
 
 
@@ -272,7 +281,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
                 "text/html,application/json,application/javascript,"
                 "text/javascript,*/*;q=0.8"
             ),
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta7",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta8",
         },
         method="GET",
     )
@@ -697,20 +706,32 @@ def _source_map_findings(map_text: str, map_url: str, asset_url: str) -> dict[st
         "matching_sources": matching_sources,
     }
 
-def _is_targeted_candidate(candidate: dict[str, Any]) -> bool:
+def _targeted_reasons(candidate: dict[str, Any]) -> list[str]:
     url = str(candidate.get("url") or "")
+    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
     theme_terms = {str(value).lower() for value in candidate.get("theme_terms") or []}
-    return (
-        _filename_bonus(url) >= 130
-        or int(candidate.get("score") or 0) >= 180
-        or any(term in theme_terms for term in TARGETED_THEME_TERMS)
-    )
+    reasons: list[str] = []
+    if basename in OBSERVED_REPORT_ASSET_BASENAMES:
+        reasons.append("observed_report_asset")
+    for term in TARGETED_THEME_TERMS:
+        if term in theme_terms:
+            reasons.append(f"theme:{term}")
+    filename_bonus = _filename_bonus(url)
+    if filename_bonus >= 130:
+        reasons.append("semantic_filename")
+    if int(candidate.get("score") or 0) >= 180:
+        reasons.append("high_context_score")
+    return list(dict.fromkeys(reasons))
+
+
+def _is_targeted_candidate(candidate: dict[str, Any]) -> bool:
+    return bool(_targeted_reasons(candidate))
 
 def _filename_bonus(url: str) -> int:
     name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
     rules = (
         ("maintenance", 320),
-        ("repair", 310),
+        ("repair", 60),
         ("parts", 300),
         ("blade", 280),
         ("knife", 280),
@@ -754,6 +775,9 @@ def _candidate_score(
         score += 220
     if "skipencryption" in nearby or "needrawresponse" in nearby:
         score += 80
+    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
+    if basename in OBSERVED_REPORT_ASSET_BASENAMES:
+        score += 900
     return score, terms
 
 
@@ -777,16 +801,19 @@ def _js_candidates(
             continue
         seen.add(url)
         score, terms = _candidate_score(text, match, url)
-        rows.append(
-            {
-                "url": url,
-                "source": _safe_url(base_url),
-                "basename": parsed.path.rsplit("/", 1)[-1],
-                "score": score,
-                "theme_terms": terms,
-                "order": order,
-            }
-        )
+        context_lo = max(0, match.start() - 900)
+        context_hi = min(len(text), match.end() + 900)
+        candidate = {
+            "url": url,
+            "source": _safe_url(base_url),
+            "basename": parsed.path.rsplit("/", 1)[-1],
+            "score": score,
+            "theme_terms": terms,
+            "source_context": re.sub(r"\s+", " ", text[context_lo:context_hi]).strip(),
+            "order": order,
+        }
+        candidate["targeted_reason"] = _targeted_reasons(candidate)
+        rows.append(candidate)
     rows.sort(
         key=lambda row: (-int(row["score"]), int(row["order"]), str(row["url"]))
     )
@@ -844,6 +871,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     request_candidates: list[dict[str, Any]] = []
     bridge_candidates: list[dict[str, Any]] = []
     js_candidates: dict[str, dict[str, Any]] = {}
+    targeted_candidates: dict[str, dict[str, Any]] = {}
     fetched: set[str] = set()
     request_markers: set[tuple[str, str]] = set()
     bridge_markers: set[tuple[str, str, str]] = set()
@@ -870,6 +898,8 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         and request_count < MAX_TOTAL_REQUESTS
     ):
         neg_score, _, url, reason = heapq.heappop(queue)
+        if reason != "root_script" and url in targeted_candidates:
+            continue
         if url in fetched:
             continue
         fetched.add(url)
@@ -1014,9 +1044,13 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             previous = js_candidates.get(candidate_url)
             if previous is None or int(candidate["score"]) > int(previous["score"]):
                 js_candidates[candidate_url] = candidate
-            new_score = int(candidate["score"])
+            selected = js_candidates[candidate_url]
             if candidate_url in fetched:
                 continue
+            if _is_targeted_candidate(selected):
+                targeted_candidates[candidate_url] = selected
+                continue
+            new_score = int(selected["score"])
             if new_score <= best_scores.get(candidate_url, -1):
                 continue
             best_scores[candidate_url] = new_score
@@ -1031,9 +1065,11 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     targeted_queue: list[tuple[int, int, str, dict[str, Any]]] = []
     targeted_queued: set[str] = set()
     targeted_sequence = 0
-    for candidate in js_candidates.values():
+    targeted_candidate_count_before_targeted_phase = len(targeted_candidates)
+    targeted_enqueued_count = 0
+    for candidate in targeted_candidates.values():
         candidate_url = str(candidate["url"])
-        if candidate_url in fetched or not _is_targeted_candidate(candidate):
+        if candidate_url in fetched:
             continue
         targeted_queued.add(candidate_url)
         heapq.heappush(
@@ -1041,6 +1077,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             (-int(candidate["score"]), targeted_sequence, candidate_url, candidate),
         )
         targeted_sequence += 1
+        targeted_enqueued_count += 1
 
     targeted_queue_initial_count = len(targeted_queue)
     targeted_success = 0
@@ -1069,6 +1106,8 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "basename": candidate.get("basename"),
             "source": candidate.get("source"),
             "theme_terms": candidate.get("theme_terms") or [],
+            "targeted_reason": candidate.get("targeted_reason") or [],
+            "source_context": candidate.get("source_context") or "",
             "candidate_score": -neg_score,
             "ok": bool(result.get("ok")),
             "http_status": result.get("http_status"),
@@ -1187,18 +1226,21 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             previous = js_candidates.get(child_url)
             if previous is None or int(child["score"]) > int(previous["score"]):
                 js_candidates[child_url] = child
+            selected_child = js_candidates[child_url]
             if (
                 child_url in fetched
                 or child_url in targeted_queued
-                or not _is_targeted_candidate(child)
+                or not _is_targeted_candidate(selected_child)
             ):
                 continue
+            targeted_candidates[child_url] = selected_child
             targeted_queued.add(child_url)
             heapq.heappush(
                 targeted_queue,
-                (-int(child["score"]), targeted_sequence, child_url, child),
+                (-int(selected_child["score"]), targeted_sequence, child_url, selected_child),
             )
             targeted_sequence += 1
+            targeted_enqueued_count += 1
 
         targeted_fetches.append(targeted_record)
         assets.append(row)
@@ -1295,7 +1337,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "h5_observed_outer_shape": "body.data after native handleEncipherment",
             "private_cloud_observed_outer_shape": "p:101 envelope fields d,h,k,p,t",
             "reason": (
-                "The observable envelope shapes differ, so beta7 does not guess that "
+                "The observable envelope shapes differ, so beta8 does not guess that "
                 "private-cloud p:101 is interchangeable with the H5 native bridge."
             ),
         },
@@ -1319,7 +1361,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
         "bridge_candidates": bridge_candidates[:96],
         "js_discovery": {
-            "strategy": "semantic_hash_agnostic_priority+independent_targeted_request_reserve+callsite_recovery",
+            "strategy": "semantic_source_context_routing+reserved_targeted_queue+precise_mower_set_wrapper",
             "candidate_count": len(candidate_rows),
             "candidates": candidate_rows[:MAX_JS_CANDIDATES],
             "fetched_count": len(fetched),
@@ -1329,6 +1371,8 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "targeted_request_count": targeted_request_count,
             "source_map_request_count": source_map_request_count,
             "failed_request_count": request_count - successful_assets - source_map_success,
+            "targeted_candidate_count_before_targeted_phase": targeted_candidate_count_before_targeted_phase,
+            "targeted_enqueued_count": targeted_enqueued_count,
             "targeted_queue_initial_count": targeted_queue_initial_count,
             "targeted_fetch_count": len(targeted_fetches),
             "targeted_success_count": targeted_success,
@@ -1339,10 +1383,10 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "unfetched_candidates": unfetched,
         },
         "note": (
-            "0.4.3-beta7 fixes the beta6 crawl-budget starvation by reserving "
-            "independent request budgets for broad and targeted phases, then traces "
-            "Parts maintenance and Mowing Reports call sites before low-value source-map "
-            "probing. It remains read-only and executes no report API request, maintenance "
-            "mutation or mower command."
+            "0.4.3-beta8 fixes targeted candidate routing at discovery time, reserves "
+            "report/maintenance chunks before broad fetching, and anchors handleH5MowerSet "
+            "wrapper recovery to the actual native call expression. Public source-map "
+            "probing is disabled after repeated 404s. It remains read-only and executes no "
+            "report API request, maintenance mutation or mower command."
         ),
     }

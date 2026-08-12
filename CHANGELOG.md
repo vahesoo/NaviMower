@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3-beta8
+
+Targeted candidate routing and precise mower-set wrapper recovery.
+
+### Fixed
+
+- Classify high-value H5 candidates when their import/reference is discovered and reserve them from the broad queue, fixing beta7's zero-sized targeted queue.
+- Treat `report` and `mowing` source-context evidence as targeted signals; generic `repair` alone is no longer enough to dominate discovery.
+- Preserve a bounded source-context preview and explicit targeted reason for each candidate/fetch so route/import decisions are auditable.
+- Add a temporary beta-only fallback for the already observed Mowing Records chunk `index-594ad42d.js`, while keeping semantic source-context routing authoritative.
+- Anchor arrow-wrapper detection directly to `callNative("handleH5MowerSet", ...)`, preventing the preceding `handleDecrypt` wrapper from being misidentified as the mower-set wrapper.
+- Disable public source-map requests after repeated beta6/beta7 404 results.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta7
 
 Independent targeted-request reserve for Parts maintenance and Mowing Reports discovery.
