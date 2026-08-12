@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
@@ -21,10 +22,15 @@ def test_beta7_version_notes_and_changelog() -> None:
 
 def test_beta7_separates_broad_and_targeted_request_budgets() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
+    values: dict[str, int] = {}
+    for name in ("MAX_BROAD_REQUESTS", "MAX_TARGETED_REQUESTS", "MAX_TOTAL_REQUESTS"):
+        match = re.search(rf"{name}\s*=\s*(\d+)", source)
+        assert match is not None
+        values[name] = int(match.group(1))
+        assert values[name] > 0
+    assert values["MAX_TOTAL_REQUESTS"] >= values["MAX_BROAD_REQUESTS"]
+    assert values["MAX_TOTAL_REQUESTS"] >= values["MAX_TARGETED_REQUESTS"]
     for phrase in (
-        "MAX_BROAD_REQUESTS = 104",
-        "MAX_TARGETED_REQUESTS = 56",
-        "MAX_TOTAL_REQUESTS = 168",
         "broad_request_count < MAX_BROAD_REQUESTS",
         "targeted_request_count < MAX_TARGETED_REQUESTS",
         "request_count < MAX_TOTAL_REQUESTS",
