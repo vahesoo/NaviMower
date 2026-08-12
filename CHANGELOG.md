@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3-beta7
+
+Independent targeted-request reserve for Parts maintenance and Mowing Reports discovery.
+
+### Fixed
+
+- Fix beta6 crawl-budget starvation: broad crawling can no longer consume the request budget reserved for the targeted phase.
+- Give broad and targeted phases separate bounded request ceilings while retaining an overall request ceiling.
+- Expose broad/targeted/source-map request counts and the targeted queue size in diagnostics so the reserve can be verified directly.
+- Keep the 24-success targeted asset goal and include candidate source/theme evidence in targeted fetch diagnostics.
+- De-prioritize public source-map probing after beta6 showed the sampled `.map` URLs were unavailable; targeted JS contract recovery now runs first.
+- Add maintenance notification/UI evidence such as `Time to clean your mower`, `Maintenance point reached`, `review parts usage`, `start cleaning` and `reset the timer` to the search vocabulary.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta6
 
 Parts maintenance UI/source-map recovery and Mowing Reports transport proof.

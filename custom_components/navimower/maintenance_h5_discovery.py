@@ -58,6 +58,14 @@ MAINTENANCE_UI_TARGETS = (
     "mallEntranceUrl",
     "knife",
     "chassis",
+    "Time to clean your mower",
+    "Maintenance point reached",
+    "review parts usage",
+    "start cleaning",
+    "reset the timer",
+    "partsUsage",
+    "maintenancePoint",
+    "cleanMower",
 )
 
 REPORT_ENDPOINTS = (
@@ -147,13 +155,17 @@ MAX_HTML = 256 * 1024
 MAX_JS = 2 * 1024 * 1024
 MAX_ASSETS = 48
 MAX_TARGETED_ASSETS = 24
-MAX_REQUESTS = 160
+MAX_BROAD_REQUESTS = 104
+MAX_TARGETED_REQUESTS = 56
+MAX_TOTAL_REQUESTS = 168
+# Compatibility alias for historical diagnostics/tests; phase limits above are authoritative.
+MAX_REQUESTS = MAX_TOTAL_REQUESTS
 MAX_CONTEXTS = 112
 MAX_REQUEST_CANDIDATES = 180
 MAX_JS_CANDIDATES = 220
 MAX_UNFETCHED_CANDIDATES = 120
 SMALL_JSON_MAX = 8192
-MAX_SOURCE_MAPS = 6
+MAX_SOURCE_MAPS = 2
 MAX_SOURCE_MAP = 4 * 1024 * 1024
 MAX_SOURCE_MAP_MATCHING_SOURCES = 32
 CONTEXT_RADIUS = 2200
@@ -260,7 +272,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
                 "text/html,application/json,application/javascript,"
                 "text/javascript,*/*;q=0.8"
             ),
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta6",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta7",
         },
         method="GET",
     )
@@ -847,13 +859,22 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     source_map_findings: list[dict[str, Any]] = []
     successful_assets = 0
     request_count = 0
+    broad_request_count = 0
+    targeted_request_count = 0
+    source_map_request_count = 0
 
-    while queue and successful_assets < MAX_ASSETS and request_count < MAX_REQUESTS:
+    while (
+        queue
+        and successful_assets < MAX_ASSETS
+        and broad_request_count < MAX_BROAD_REQUESTS
+        and request_count < MAX_TOTAL_REQUESTS
+    ):
         neg_score, _, url, reason = heapq.heappop(queue)
         if url in fetched:
             continue
         fetched.add(url)
         request_count += 1
+        broad_request_count += 1
         result = _fetch(url, MAX_JS)
         text = str(result.get("_text") or "")
         row = _public(result)
@@ -1021,17 +1042,20 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         )
         targeted_sequence += 1
 
+    targeted_queue_initial_count = len(targeted_queue)
     targeted_success = 0
     while (
         targeted_queue
         and targeted_success < MAX_TARGETED_ASSETS
-        and request_count < MAX_REQUESTS
+        and targeted_request_count < MAX_TARGETED_REQUESTS
+        and request_count < MAX_TOTAL_REQUESTS
     ):
         neg_score, _, url, candidate = heapq.heappop(targeted_queue)
         if url in fetched:
             continue
         fetched.add(url)
         request_count += 1
+        targeted_request_count += 1
         result = _fetch(url, MAX_JS)
         text = str(result.get("_text") or "")
         row = _public(result)
@@ -1043,6 +1067,8 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         targeted_record: dict[str, Any] = {
             "url": _safe_url(url),
             "basename": candidate.get("basename"),
+            "source": candidate.get("source"),
+            "theme_terms": candidate.get("theme_terms") or [],
             "candidate_score": -neg_score,
             "ok": bool(result.get("ok")),
             "http_status": result.get("http_status"),
@@ -1183,10 +1209,11 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         key=lambda row: (-int(row["score"]), str(row["url"])),
     )
     for map_candidate in source_map_rows[:MAX_SOURCE_MAPS]:
-        if request_count >= MAX_REQUESTS:
+        if request_count >= MAX_TOTAL_REQUESTS:
             break
         map_url = str(map_candidate["url"])
         request_count += 1
+        source_map_request_count += 1
         result = _fetch(map_url, MAX_SOURCE_MAP)
         map_text = str(result.get("_text") or "")
         fetch_row = _public(result)
@@ -1240,6 +1267,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "max_broad_successful_assets": MAX_ASSETS,
             "max_targeted_successful_assets": MAX_TARGETED_ASSETS,
             "max_total_successful_assets": MAX_ASSETS + MAX_TARGETED_ASSETS,
+            "max_broad_requests": MAX_BROAD_REQUESTS,
+            "max_targeted_requests": MAX_TARGETED_REQUESTS,
+            "max_total_requests": MAX_TOTAL_REQUESTS,
             "max_requests": MAX_REQUESTS,
             "max_contexts": MAX_CONTEXTS,
             "max_request_candidates": MAX_REQUEST_CANDIDATES,
@@ -1265,7 +1295,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "h5_observed_outer_shape": "body.data after native handleEncipherment",
             "private_cloud_observed_outer_shape": "p:101 envelope fields d,h,k,p,t",
             "reason": (
-                "The observable envelope shapes differ, so beta6 does not guess that "
+                "The observable envelope shapes differ, so beta7 does not guess that "
                 "private-cloud p:101 is interchangeable with the H5 native bridge."
             ),
         },
@@ -1289,24 +1319,30 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
         "bridge_candidates": bridge_candidates[:96],
         "js_discovery": {
-            "strategy": "semantic_hash_agnostic_priority+targeted_callsite_recovery+ui_source_map_recovery",
+            "strategy": "semantic_hash_agnostic_priority+independent_targeted_request_reserve+callsite_recovery",
             "candidate_count": len(candidate_rows),
             "candidates": candidate_rows[:MAX_JS_CANDIDATES],
             "fetched_count": len(fetched),
             "successful_asset_count": successful_assets,
             "request_count": request_count,
+            "broad_request_count": broad_request_count,
+            "targeted_request_count": targeted_request_count,
+            "source_map_request_count": source_map_request_count,
             "failed_request_count": request_count - successful_assets - source_map_success,
+            "targeted_queue_initial_count": targeted_queue_initial_count,
             "targeted_fetch_count": len(targeted_fetches),
             "targeted_success_count": targeted_success,
+            "targeted_request_reserve_exhausted": targeted_request_count >= MAX_TARGETED_REQUESTS,
             "source_map_candidate_count": len(source_map_rows),
             "source_map_fetch_count": len(source_map_fetches),
             "source_map_success_count": source_map_success,
             "unfetched_candidates": unfetched,
         },
         "note": (
-            "0.4.3-beta6 steps back to Parts maintenance UI/i18n/route/source-map "
-            "recovery, fixes default-argument handleH5MowerSet wrapper detection, and "
-            "keeps Mowing Reports focused on transport proof. It remains read-only and "
-            "executes no report API request, maintenance mutation or mower command."
+            "0.4.3-beta7 fixes the beta6 crawl-budget starvation by reserving "
+            "independent request budgets for broad and targeted phases, then traces "
+            "Parts maintenance and Mowing Reports call sites before low-value source-map "
+            "probing. It remains read-only and executes no report API request, maintenance "
+            "mutation or mower command."
         ),
     }

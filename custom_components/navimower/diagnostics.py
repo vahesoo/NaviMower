@@ -28,8 +28,8 @@ async def async_get_config_entry_diagnostics(
     """Return a sanitized snapshot for Home Assistant Download diagnostics.
 
     Normal diagnostics use the config entry, coordinator state and caches.
-    0.4.3-beta6 performs Parts maintenance UI/i18n/source-map recovery plus Mowing Reports transport recovery
-    within the bounded read-only public-H5 inspection; no mutation or report API request runs.
+    0.4.3-beta7 performs Parts maintenance targeted-callsite recovery plus Mowing Reports transport recovery
+    within the bounded read-only public-H5 inspection; broad and targeted request budgets are independent, and no mutation or report API request runs.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -271,7 +271,7 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta6 traces Parts maintenance UI/source maps and the remaining Mowing Reports transport layer.",
+            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta7 reserves an independent targeted H5 request phase for Parts maintenance and Mowing Reports contract recovery.",
             "The beta H5 inspection sends no account or mower identity and executes no maintenance mutation or mower command.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
             "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
