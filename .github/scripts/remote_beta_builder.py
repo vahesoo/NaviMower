@@ -118,11 +118,19 @@ source = replace_once(
     '''        fetched.add(url)
         request_count += 1
         result = _fetch(url, MAX_JS)
+        text = str(result.get("_text") or "")
+        row = _public(result)
+        row["kind"] = "asset"
+        row["discovery_reason"] = reason
 ''',
     '''        fetched.add(url)
         request_count += 1
         broad_request_count += 1
         result = _fetch(url, MAX_JS)
+        text = str(result.get("_text") or "")
+        row = _public(result)
+        row["kind"] = "asset"
+        row["discovery_reason"] = reason
 ''',
     "broad request counter",
 )
@@ -148,7 +156,6 @@ source = replace_once(
     "targeted request budget",
 )
 
-# The second occurrence belongs to the targeted phase. Replace it after the broad one above changed.
 source = replace_once(
     source,
     '''        fetched.add(url)
