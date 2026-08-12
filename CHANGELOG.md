@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3-beta6
+
+Parts maintenance UI/source-map recovery and Mowing Reports transport proof.
+
+### Changed
+
+- Broaden Maintenance discovery from guessed endpoint names back to the actual Parts maintenance UI and i18n semantics.
+- Target generic repair-themed lazy chunks and increase the reserved targeted asset budget from 16 to 24.
+- Recover default-argument `handleH5MowerSet` wrappers such as `(e={})=>...` without spanning unrelated functions.
+- Add bounded public source-map discovery for high-value maintenance/report assets.
+- Capture likely Parts maintenance translation keys, UI contexts and original-source contexts.
+- Keep the recovered Mowing Reports business contract while explicitly comparing H5 `body.data`/native encryption evidence with the existing private-cloud p:101 envelope shape.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No report API request, maintenance counter reset, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta5
 
 Targeted Maintenance + Mowing Reports H5 call-site recovery.
