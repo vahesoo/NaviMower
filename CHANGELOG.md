@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3-beta1
+
+First beta in the cumulative 0.4.3 line, based directly on stable 0.4.2.
+
+### Added
+- Bounded public H5 Maintenance & Tools discovery in Download diagnostics only.
+- Focused parsed/raw maintenance diagnostics for blade/chassis runtime correlation.
+
+### Investigation targets
+- Blade/knife runtime reset after blade replacement.
+- Mower maintenance mode and the service flow that lowers the cutting deck.
+- Nearby maintenance endpoints, HTTP/encryption metadata, payload keys and native bridge methods.
+
+### Safety and architecture
+- No maintenance mutation or mower/account identity is sent by beta1 discovery.
+- No user-facing maintenance controls are added until contracts are proven.
+- Temporary discovery is removed once useful contracts are recovered; later betas stay cumulative.
+
 ## 0.4.2
 
 Stable cumulative release from the 0.4.2 beta line. No beta release needs to be installed first.
