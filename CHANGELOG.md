@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.3-beta2
+
+Focused hotfix for beta1 Maintenance & Tools H5 discovery.
+
+### Fixed
+
+- Fixed the malformed import-time `BRIDGE_RE` expression that prevented Home Assistant from loading Navimower diagnostics and hid Download diagnostics.
+- Removed beta1's extra escaping layer from all Maintenance H5 regular expressions and JavaScript whitespace normalization.
+
+### Validation
+
+- Added regression coverage that compiles every discovery `re.compile(...)` expression and verifies intended JavaScript regex syntax.
+- Maintenance discovery remains read-only and Download-diagnostics-only; no maintenance mutation is added in beta2.
+
 ## 0.4.3-beta1
 
 First beta in the cumulative 0.4.3 line, based directly on stable 0.4.2.

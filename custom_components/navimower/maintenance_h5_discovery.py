@@ -26,15 +26,15 @@ MAX_CONTEXTS = 48
 RADIUS = 6000
 TIMEOUT = 5
 
-SCRIPT_RE = re.compile(r"<script\\b[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", re.I)
-JS_RE = re.compile(r"[\"']([^\"'\\r\\n]{1,420}\\.js(?:\\?[^\"'\\r\\n]{0,120})?)[\"']", re.I)
-MOWERBOT_RE = re.compile(r"[\"'](/mowerbot/[^\"'\\r\\n]{1,280})[\"']", re.I)
-HTTP_RE = re.compile(r"method\\s*:\\s*[\"']?(GET|POST|PUT|DELETE|PATCH)[\"']?", re.I)
-SKIP_RE = re.compile(r"skipEncryption\\s*:\\s*(true|false)", re.I)
-OBJECT_KEY_RE = re.compile(r"(?:^|[,{])\\s*[\"']?([A-Za-z_$][\\w$]{0,90})[\"']?\\s*:")
+SCRIPT_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I)
+JS_RE = re.compile(r"[\"']([^\"'\r\n]{1,420}\.js(?:\?[^\"'\r\n]{0,120})?)[\"']", re.I)
+MOWERBOT_RE = re.compile(r"[\"'](/mowerbot/[^\"'\r\n]{1,280})[\"']", re.I)
+HTTP_RE = re.compile(r"method\s*:\s*[\"']?(GET|POST|PUT|DELETE|PATCH)[\"']?", re.I)
+SKIP_RE = re.compile(r"skipEncryption\s*:\s*(true|false)", re.I)
+OBJECT_KEY_RE = re.compile(r"(?:^|[,{])\s*[\"']?([A-Za-z_$][\w$]{0,90})[\"']?\s*:")
 BRIDGE_RE = re.compile(
-    r"(?P<callee>(?:[A-Za-z_$][\\w$]*\\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
-    r"\\s*\\(\\s*[\"'](?P<method>[^\"']{1,160})[\"']", re.I
+    r"(?P<callee>(?:[A-Za-z_$][\w$]*\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
+    r"\s*\(\s*[\"'](?P<method>[^\"']{1,160})[\"']", re.I
 )
 
 def _host(client: Any) -> str:
@@ -50,7 +50,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
         url,
         headers={
             "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta1",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta2",
         },
         method="GET",
     )
@@ -120,7 +120,7 @@ def _contexts(text: str, source: str) -> list[dict[str, Any]]:
                 "term": term,
                 "source": _safe_url(source),
                 **_structure(nearby),
-                "context": re.sub(r"\\s+", " ", nearby).strip(),
+                "context": re.sub(r"\s+", " ", nearby).strip(),
             })
             start = idx + len(term)
     return rows
@@ -219,5 +219,5 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "assets": assets,
         "contexts": unique_contexts,
         "request_candidates": requests,
-        "note": "0.4.3-beta1 records bounded public H5 source context only. It does not reset maintenance counters, enter maintenance mode, change cutting height or execute any mower command.",
+        "note": "0.4.3-beta2 records bounded public H5 source context only. It does not reset maintenance counters, enter maintenance mode, change cutting height or execute any mower command.",
     }
