@@ -8,8 +8,10 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from .capability_profile import build_capability_profile
 from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
+from .private_cloud_region import private_cloud_region_diagnostics
 from .resume import resume_command_diagnostics
 
 
@@ -46,6 +48,9 @@ async def async_get_config_entry_diagnostics(
     map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
     settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
+    capabilities = data.get("capabilities")
+    if not isinstance(capabilities, dict):
+        capabilities = build_capability_profile(data)
 
     mqtt_bridge = getattr(coordinator, "mqtt_bridge", None)
     mqtt_health = (
@@ -138,6 +143,10 @@ async def async_get_config_entry_diagnostics(
                 ),
             )
         ),
+        "private_cloud_region": sanitize(
+            private_cloud_region_diagnostics(coordinator)
+        ),
+        "capabilities": sanitize(deepcopy(capabilities)),
         "positioning": sanitize(
             _selected(
                 data,
@@ -247,6 +256,8 @@ async def async_get_config_entry_diagnostics(
         "raw": sanitize(deepcopy(raw)),
         "notes": [
             "Download diagnostics is generated from current coordinator state and existing caches only; it makes no extra vendor or public-H5 requests.",
+            "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
+            "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
             "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
             "The notification center keeps at most 10 vendor rows and 20 persistent Navimower-local rows, then merges them newest-first for Latest notification.",
             "Notification read actions are explicit Home Assistant services and are never executed by Download diagnostics.",

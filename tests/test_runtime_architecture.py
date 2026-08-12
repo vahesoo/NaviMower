@@ -9,7 +9,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 SEMANTIC_RUNTIME_FILES = {
     "runtime.py",
     "state_semantics.py",
+    "private_cloud_region.py",
     "capability_extensions.py",
+    "capability_profile.py",
     "navigation_fallback.py",
     "notification_feed.py",
 }
@@ -41,7 +43,9 @@ def test_semantic_runtime_has_one_composition_point() -> None:
     runtime = (COMPONENT / "runtime.py").read_text(encoding="utf-8")
     expected = [
         "install_state_semantics()",
+        "install_private_cloud_region()",
         "install_capability_extensions()",
+        "install_capability_profile()",
         "install_navigation_fallback()",
         "install_notification_feed()",
     ]

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.2-beta7
+
+Seventh beta in the cumulative 0.4.2 development line.
+
+### Added
+
+- Added regional private-cloud account discovery across Europe (`fra`/`eu`), Asia-Pacific (`sg`/`sea`), Americas (`us`/`ore`) and mainland China (`bj`) using the signed passport `/v3/region` lookup before password login.
+- Added per-client mower-cloud host probing and persistence so the private mobile-app cloud is no longer hardwired to FRA at runtime.
+- Added an evidence-first capability profile to mower snapshots and Download diagnostics, including endpoint presence, reported setting key paths, positive capability evidence and narrow proven model constraints.
+
+### Changed
+
+- Kept official Smart Home OAuth/MQTT routing independent from the private-cloud region; MQTT continues to use the `mqttHost` / `mqttUrl` returned by the official API.
+- Updated the semantic runtime architecture and permanent architecture guard for responsibility-based private-region and capability-profile modules.
+
+### Safeguards
+
+- Region discovery fails closed when a regional directory cannot be checked instead of sending the account password to a guessed server.
+- One empty or missing endpoint response is not treated as proof that a mower lacks a capability; positive observations remain sticky for the loaded coordinator.
+- General sensors are not pruned in beta7. Existing field-driven switch/number/select provisioning remains unchanged while the capability profile gathers safer cross-model evidence.
+
 ## 0.4.2-beta6
 
 Sixth beta in the cumulative 0.4.2 development line.

@@ -1,17 +1,11 @@
-"""Segway/Ninebot passport authentication (standalone, no phone/hooks).
+"""Segway/Ninebot passport authentication with regional account discovery.
 
-Faithful port of the proven reference (scratchpad/LOGIN_BIND_TEST.py and
-navimow_auth/scripts/passport_auth.py).
+The account directory is regional.  ``lookup_region`` asks the regional
+passport servers which one owns the e-mail address using signed ``GET /v3/region``
+before the password is offered to any server.
 
-    sign = SHA256_hex_lower( sorted "k=v&..." join ) over the map
-           {app_version, clientKey, os, os_language, os_version, timestamp, url}
-           PLUS the request params.
-    - url = path only (e.g. "/v3/user/login")
-    - clientKey goes in the SIGN but NOT in the headers.
-    - headers carry clientId=mowerbot_app_prod.
-
-Synchronous (urllib) on purpose: run off the event loop via an executor.
-Never logs tokens or passwords.
+Synchronous (urllib) on purpose: Home Assistant runs this client in an executor.
+Never logs tokens, passwords, e-mail addresses or full account identifiers.
 """
 from __future__ import annotations
 
@@ -20,16 +14,22 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from .regions import (
+    ALL_PASSPORT_HOSTS,
+    DEFAULT_REGION,
+    canonical_region,
+    passport_hosts,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
-HOST = "https://api-passport-fra.willand.com"
-
-# App identity (self-consistent; the server validates the sign against these).
+# App identity used by the mobile-app passport protocol.
 CLIENT_ID = "mowerbot_app_prod"
-CLIENT_KEY = "830247f0-da96-5c21-8cf0-ca09299795f9"  # app-wide, goes in sign only
+CLIENT_KEY = "830247f0-da96-5c21-8cf0-ca09299795f9"
 APP_VERSION = "402000003"
 OS_NAME = "Android"
 OS_VERSION = "13"
@@ -37,8 +37,8 @@ OS_LANGUAGE = "en"
 DEVICE = "ANDROID"
 
 _RESULT_OK = "90000"
-# resultCodes that mean the access token is expired / must be refreshed.
 RESULT_TOKEN_EXPIRED = {"90015", "90016"}
+RESULT_ACCOUNT_NOT_EXISTS = "00002"
 
 
 class PassportError(Exception):
@@ -61,7 +61,7 @@ class Tokens:
     access_token: str
     refresh_token: str
     uuid: str = ""
-    region: str = "fra"
+    region: str = DEFAULT_REGION
 
     def redacted(self) -> dict:
         """A log-safe view (no token values)."""
@@ -73,22 +73,22 @@ class Tokens:
         }
 
 
-def _sign(m: dict) -> str:
+def _sign(values: dict) -> str:
     return hashlib.sha256(
-        "&".join(f"{k}={m[k]}" for k in sorted(m)).encode("utf-8")
+        "&".join(f"{key}={values[key]}" for key in sorted(values)).encode("utf-8")
     ).hexdigest()
 
 
-def _signed_headers(url: str, req_params: dict) -> dict:
-    ts = str(int(time.time() * 1000))
+def _signed_headers(path: str, req_params: dict) -> dict:
+    timestamp = str(int(time.time() * 1000))
     sign_map = {
         "app_version": APP_VERSION,
         "clientKey": CLIENT_KEY,
         "os": OS_NAME,
         "os_language": OS_LANGUAGE,
         "os_version": OS_VERSION,
-        "timestamp": ts,
-        "url": url,
+        "timestamp": timestamp,
+        "url": path,
     }
     sign_map.update(req_params)
     return {
@@ -97,22 +97,38 @@ def _signed_headers(url: str, req_params: dict) -> dict:
         "os": OS_NAME,
         "os_language": OS_LANGUAGE,
         "os_version": OS_VERSION,
-        "timestamp": ts,
+        "timestamp": timestamp,
         "sign": _sign(sign_map),
         "content-type": "application/json",
         "user-agent": "Segway_Mowerbot/4.02.0 (android)",
     }
 
 
-def _post(path: str, params: dict, timeout: int = 20) -> dict:
-    body = json.dumps(params).encode()
-    req = urllib.request.Request(
-        HOST + path, data=body, headers=_signed_headers(path, params), method="POST"
+def _request(
+    host: str,
+    path: str,
+    params: dict,
+    *,
+    method: str,
+    timeout: int = 20,
+) -> dict:
+    """Make one signed passport call against a specific regional host."""
+    url = f"https://{host}{path}"
+    body = None
+    if method == "POST":
+        body = json.dumps(params).encode()
+    elif params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=_signed_headers(path, params),
+        method=method,
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as err:  # noqa: PERF203
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as err:
         try:
             return json.loads(err.read())
         except Exception as inner:  # pragma: no cover - defensive
@@ -122,45 +138,114 @@ def _post(path: str, params: dict, timeout: int = 20) -> dict:
 
 
 def _extract_tokens(data: dict) -> Tokens:
+    raw_region = data.get("region")
     return Tokens(
         access_token=str(data.get("access_token", "")),
         refresh_token=str(data.get("refresh_token", "")),
         uuid=str(data.get("uuid") or ""),
-        region=str(data.get("region") or "fra"),
+        region=canonical_region(raw_region) if raw_region else "",
     )
 
 
-def login(username: str, password: str) -> Tokens:
-    """POST /v3/user/login -> Tokens. Raises PassportAuthError on bad creds."""
+def lookup_region(email: str, hosts: tuple[str, ...] | None = None) -> str | None:
+    """Return the region that owns an account, without sending its password."""
+    params = {"account": email, "device": DEVICE}
+    last_transport_error: PassportError | None = None
+    for host in hosts or ALL_PASSPORT_HOSTS:
+        try:
+            result = _request(host, "/v3/region", params, method="GET", timeout=15)
+        except PassportError as err:
+            last_transport_error = err
+            _LOGGER.debug("Navimow region lookup host failed: %s", err.code)
+            continue
+        code = str(result.get("resultCode"))
+        if code == _RESULT_OK:
+            raw_region = (result.get("data") or {}).get("region")
+            region = canonical_region(raw_region)
+            _LOGGER.debug("Navimow private account region resolved to %s", region)
+            return region
+        if code != RESULT_ACCOUNT_NOT_EXISTS:
+            _LOGGER.debug("Navimow region lookup returned code %s", code)
+    if last_transport_error is not None:
+        # If even one regional directory could not be asked, absence is not
+        # proven. Fail closed rather than sending the password to a guessed host.
+        raise last_transport_error
+    return None
+
+
+def login(username: str, password: str, region: str | None = None) -> Tokens:
+    """Log in on the account's owning region and return refreshable tokens."""
+    discovered = region is None
+    if region is None:
+        resolved = lookup_region(username)
+        if resolved is None:
+            raise PassportAuthError(
+                RESULT_ACCOUNT_NOT_EXISTS,
+                "account not found on any known regional passport service",
+            )
+        selected_region = canonical_region(resolved)
+    else:
+        selected_region = canonical_region(region)
     params = {"username": username, "password": password, "device": DEVICE}
-    j = _post("/v3/user/login", params)
-    code = str(j.get("resultCode"))
-    if code != _RESULT_OK:
-        # Wrong email/password and similar user-facing failures.
-        raise PassportAuthError(code, str(j.get("resultDesc", "")))
-    data = j.get("data") or {}
-    tokens = _extract_tokens(data)
-    _LOGGER.debug("passport login ok: %s", tokens.redacted())
-    return tokens
+    last_error: PassportAuthError | None = None
+    last_transport_error: PassportError | None = None
+
+    for host in passport_hosts(selected_region):
+        try:
+            result = _request(host, "/v3/user/login", params, method="POST")
+        except PassportError as err:
+            last_transport_error = err
+            continue
+        code = str(result.get("resultCode"))
+        if code == _RESULT_OK:
+            tokens = _extract_tokens(result.get("data") or {})
+            tokens.region = canonical_region(tokens.region or selected_region)
+            _LOGGER.debug("Navimow passport login ok: %s", tokens.redacted())
+            return tokens
+        last_error = PassportAuthError(code, str(result.get("resultDesc", "")))
+        # Wrong server is retryable. Wrong credentials or another business error
+        # must not spray the password across unrelated regional servers.
+        if code != RESULT_ACCOUNT_NOT_EXISTS:
+            raise last_error
+
+    # Future manual callers may pin a wrong region. Resolve once globally and
+    # retry only if the directory proves the account belongs somewhere else.
+    if not discovered:
+        found = lookup_region(username)
+        if found and canonical_region(found) != selected_region:
+            return login(username, password, found)
+    if last_error is not None:
+        raise last_error
+    if last_transport_error is not None:
+        raise last_transport_error
+    raise PassportError("network", "no regional passport host responded")
 
 
-def refresh(tokens: Tokens) -> Tokens:
-    """POST /v3/user/refresh -> new Tokens (perpetual refresh)."""
+def refresh(tokens: Tokens, region: str | None = None) -> Tokens:
+    """Refresh passport tokens through the known owning region."""
+    selected_region = canonical_region(region or tokens.region or DEFAULT_REGION)
     params = {
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
         "device": DEVICE,
     }
-    j = _post("/v3/user/refresh", params)
-    code = str(j.get("resultCode"))
-    if code != _RESULT_OK:
-        raise PassportAuthError(code, str(j.get("resultDesc", "")))
-    data = j.get("data") or {}
-    new = _extract_tokens(data)
-    # Some backends omit uuid/region on refresh -> keep the previous values.
-    if not new.uuid:
-        new.uuid = tokens.uuid
-    if not new.region or new.region == "fra":
-        new.region = tokens.region or new.region
-    _LOGGER.debug("passport refresh ok: %s", new.redacted())
-    return new
+    last_error: PassportError | None = None
+    for host in passport_hosts(selected_region):
+        try:
+            result = _request(host, "/v3/user/refresh", params, method="POST")
+        except PassportError as err:
+            last_error = err
+            continue
+        code = str(result.get("resultCode"))
+        if code != _RESULT_OK:
+            raise PassportAuthError(code, str(result.get("resultDesc", "")))
+        new = _extract_tokens(result.get("data") or {})
+        if not new.uuid:
+            new.uuid = tokens.uuid
+        if not new.region:
+            new.region = selected_region
+        _LOGGER.debug("Navimow passport refresh ok: %s", new.redacted())
+        return new
+    if last_error is not None:
+        raise last_error
+    raise PassportError("network", "no regional passport host responded")
