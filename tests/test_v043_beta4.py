@@ -35,7 +35,7 @@ def test_beta4_discovery_fixes_duplicate_asset_paths() -> None:
     assert 'row["counts_toward_asset_limit"] = counts_toward_limit' in source
 
 
-def test_beta4_targets_report_contracts_and_hash_agnostic_chunks() -> None:
+def test_beta4_targets_report_contracts_and_hashed_chunks_semantically() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
         "/vehicle/report/get-day-week-month-data",
@@ -50,9 +50,10 @@ def test_beta4_targets_report_contracts_and_hash_agnostic_chunks() -> None:
         '"request_shape_contexts": request_shape_contexts',
         '"bridge_call_contexts": bridge_call_contexts',
         '"report_endpoints_found": sorted(report_endpoints_found)',
+        "def _filename_bonus",
+        "def _candidate_score",
     ):
         assert phrase in source
-    assert "semantic_hash_agnostic_priority" in source
 
 
 def test_beta4_regexes_compile_and_probe_remains_non_mutating() -> None:
