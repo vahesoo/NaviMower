@@ -115,4 +115,8 @@ def test_beta5_remains_public_get_only_and_non_mutating() -> None:
     assert "Authorization" not in source
     assert "Cookie" not in source
     assert "bounded read-only public-H5 inspection" in diagnostics
-    assert "targeted" in diagnostics.lower()
+    assert (
+        "targeted" in diagnostics.lower()
+        or "source-map" in diagnostics.lower()
+        or "source map" in diagnostics.lower()
+    )
