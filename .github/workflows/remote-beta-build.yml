@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA2 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA3 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta2
+      BUILD_BRANCH: release/0.4.3-beta3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,70 +49,613 @@ jobs:
 
           manifest_path = COMPONENT / "manifest.json"
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          if manifest.get("version") != "0.4.3-beta1":
+          if manifest.get("version") != "0.4.3-beta2":
               raise SystemExit(
-                  f"Expected 0.4.3-beta1 base, got {manifest.get('version')!r}"
+                  f"Expected 0.4.3-beta2 base, got {manifest.get('version')!r}"
               )
-          manifest["version"] = "0.4.3-beta2"
+          manifest["version"] = "0.4.3-beta3"
           manifest_path.write_text(
               json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
               encoding="utf-8",
           )
 
-          discovery_path = COMPONENT / "maintenance_h5_discovery.py"
-          discovery = discovery_path.read_text(encoding="utf-8")
-          if 'BRIDGE_RE = re.compile(' not in discovery:
-              raise SystemExit("BRIDGE_RE marker missing")
-          if "\\\\s*\\\\(" not in discovery:
-              raise SystemExit("Expected beta1 double-escaped regex layer is missing")
+          discovery = r'''"""Read-only public H5 discovery for Navimow Maintenance & Tools."""
+          from __future__ import annotations
 
-          # beta1 was generated through an extra raw-string escaping layer. Every
-          # regex backslash in this responsibility-isolated discovery module was
-          # doubled once too many. Collapse exactly that one layer.
-          discovery = discovery.replace("\\\\", "\\")
-          discovery = discovery.replace(
-              "NavimowerDiagnostics/0.4.3-beta1",
-              "NavimowerDiagnostics/0.4.3-beta2",
+          import hashlib
+          import heapq
+          import json
+          import re
+          from typing import Any
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          from .api.regions import canonical_region
+          from .diagnostics_sanitize import sanitize
+
+          ENTRY_PATHS = (
+              "/old/",
+              "/maintenance/",
+              "/vehicle/maintenance/",
+              "/setting/maintenance/",
           )
-          discovery = discovery.replace(
-              "0.4.3-beta1 records bounded public H5 source context only.",
-              "0.4.3-beta2 records bounded public H5 source context only.",
+          TARGET_TERMS = (
+              "componentMaintenance",
+              "partsMaintenance",
+              "partMaintenance",
+              "get-component-maintenance",
+              "resetBlade",
+              "resetKnife",
+              "changeBlade",
+              "maintenanceMode",
+              "enterMaintenance",
+              "exitMaintenance",
+              "cutHeight",
+              "cuttingHeight",
+              "ToolBox",
+              "knifeDurationSet",
+              "chassisDurationSet",
+              "knifeDefaultDuration",
+              "chassisDefaultDuration",
+              "usedTime",
+              "setTime",
           )
-          discovery_path.write_text(discovery, encoding="utf-8")
+          THEME_TERMS = (
+              "maintenance",
+              "component",
+              "blade",
+              "knife",
+              "toolbox",
+              "service",
+              "repair",
+              "cutheight",
+              "cuttingheight",
+              "duration",
+          )
+          MAX_HTML = 256 * 1024
+          MAX_JS = 2 * 1024 * 1024
+          MAX_ASSETS = 48
+          MAX_CONTEXTS = 80
+          MAX_REQUESTS = 120
+          MAX_JS_CANDIDATES = 160
+          MAX_UNFETCHED_CANDIDATES = 80
+          SMALL_JSON_MAX = 8192
+          CONTEXT_RADIUS = 1800
+          CANDIDATE_RADIUS = 1400
+          TIMEOUT = 5
+
+          SCRIPT_RE = re.compile(
+              r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']",
+              re.I,
+          )
+          JS_RE = re.compile(
+              r"[\"']([^\"'\r\n]{1,420}\.js(?:\?[^\"'\r\n]{0,120})?)[\"']",
+              re.I,
+          )
+          ENDPOINT_RE = re.compile(
+              r"[\"']((?:https?://[^\"'\s]+)?/?(?:mowerbot|vehicle|setting|robot|maintenance|toolbox|api)/[^\"'\r\n]{1,320})[\"']",
+              re.I,
+          )
+          HTTP_RE = re.compile(
+              r"method\s*:\s*[\"']?(GET|POST|PUT|DELETE|PATCH)[\"']?",
+              re.I,
+          )
+          SKIP_RE = re.compile(r"skipEncryption\s*:\s*(true|false)", re.I)
+          OBJECT_KEY_RE = re.compile(
+              r"(?:^|[,{])\s*[\"']?([A-Za-z_$][\w$]{0,90})[\"']?\s*:"
+          )
+          BRIDGE_RE = re.compile(
+              r"(?P<callee>(?:[A-Za-z_$][\w$]*\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
+              r"\s*\(\s*[\"'](?P<method>[^\"']{1,160})[\"']",
+              re.I,
+          )
+
+
+          def _host(client: Any) -> str:
+              region = canonical_region(getattr(client, "region", "fra"))
+              return f"https://navimow-h5-{region}.willand.com"
+
+
+          def _safe_url(url: str) -> str:
+              parsed = urllib.parse.urlsplit(str(url))
+              return urllib.parse.urlunsplit(
+                  (parsed.scheme, parsed.netloc, parsed.path, "", "")
+              )
+
+
+          def _fetch(url: str, limit: int) -> dict[str, Any]:
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": (
+                          "text/html,application/json,application/javascript,"
+                          "text/javascript,*/*;q=0.8"
+                      ),
+                      "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta3",
+                  },
+                  method="GET",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                      raw = response.read(limit + 1)
+                      status = int(getattr(response, "status", 200))
+                      content_type = str(response.headers.get("Content-Type", ""))
+              except urllib.error.HTTPError as err:
+                  raw = err.read(limit + 1)
+                  status = int(err.code)
+                  content_type = str(err.headers.get("Content-Type", ""))
+              except urllib.error.URLError as err:
+                  return {
+                      "ok": False,
+                      "url": _safe_url(url),
+                      "transport_error": sanitize(str(err.reason)),
+                  }
+              except Exception as err:  # noqa: BLE001 - optional beta diagnostics
+                  return {
+                      "ok": False,
+                      "url": _safe_url(url),
+                      "transport_error": sanitize(f"{type(err).__name__}: {err}"),
+                  }
+
+              truncated = len(raw) > limit
+              raw = raw[:limit]
+              return {
+                  "ok": 200 <= status < 400,
+                  "url": _safe_url(url),
+                  "http_status": status,
+                  "content_type": content_type,
+                  "body_length_read": len(raw),
+                  "body_sha256": hashlib.sha256(raw).hexdigest(),
+                  "truncated": truncated,
+                  "_text": raw.decode("utf-8", errors="replace"),
+              }
+
+
+          def _public(result: dict[str, Any]) -> dict[str, Any]:
+              return {key: value for key, value in result.items() if key != "_text"}
+
+
+          def _small_json(result: dict[str, Any]) -> Any | None:
+              text = str(result.get("_text") or "")
+              content_type = str(result.get("content_type") or "").lower()
+              body_length = int(result.get("body_length_read") or 0)
+              if not text or "json" not in content_type or body_length > SMALL_JSON_MAX:
+                  return None
+              try:
+                  return sanitize(json.loads(text))
+              except Exception:  # noqa: BLE001 - diagnostics preview only
+                  return sanitize(text[:SMALL_JSON_MAX])
+
+
+          def _endpoint_path(value: str) -> str:
+              parsed = urllib.parse.urlsplit(value)
+              if parsed.scheme and parsed.netloc:
+                  return parsed.path
+              return value.split("?", 1)[0].split("#", 1)[0]
+
+
+          def _object_keys(text: str) -> list[str]:
+              ignored = {"class", "style", "children", "props", "key", "ref", "render"}
+              rows: list[str] = []
+              for key in OBJECT_KEY_RE.findall(text):
+                  if key.lower() in ignored or key in rows:
+                      continue
+                  rows.append(key)
+                  if len(rows) >= 100:
+                      break
+              return rows
+
+
+          def _bridge_calls(text: str) -> list[dict[str, str]]:
+              rows: list[dict[str, str]] = []
+              for match in BRIDGE_RE.finditer(text):
+                  row = {
+                      "callee": match.group("callee"),
+                      "method": match.group("method"),
+                  }
+                  if row not in rows:
+                      rows.append(row)
+                  if len(rows) >= 48:
+                      break
+              return rows
+
+
+          def _matched_terms(text: str) -> list[str]:
+              lower = text.lower()
+              return [term for term in TARGET_TERMS if term.lower() in lower]
+
+
+          def _structure(text: str) -> dict[str, Any]:
+              endpoint_paths = sorted(
+                  {
+                      _endpoint_path(value)
+                      for value in ENDPOINT_RE.findall(text)
+                      if value
+                  }
+              )[:96]
+              return {
+                  "matched_terms": _matched_terms(text),
+                  "endpoint_paths": endpoint_paths,
+                  "http_methods": sorted(
+                      {value.upper() for value in HTTP_RE.findall(text)}
+                  ),
+                  "skip_encryption": sorted(
+                      {value.lower() for value in SKIP_RE.findall(text)}
+                  ),
+                  "object_keys": _object_keys(text),
+                  "bridge_calls": _bridge_calls(text),
+              }
+
+
+          def _contexts(text: str, source: str) -> list[dict[str, Any]]:
+              lower = text.lower()
+              rows: list[dict[str, Any]] = []
+              for term in TARGET_TERMS:
+                  start = 0
+                  found = 0
+                  needle = term.lower()
+                  while found < 3 and len(rows) < MAX_CONTEXTS:
+                      index = lower.find(needle, start)
+                      if index < 0:
+                          break
+                      lo = max(0, index - CONTEXT_RADIUS)
+                      hi = min(len(text), index + len(term) + CONTEXT_RADIUS)
+                      nearby = text[lo:hi]
+                      rows.append(
+                          {
+                              "term": term,
+                              "source": _safe_url(source),
+                              **_structure(nearby),
+                              "context": re.sub(r"\s+", " ", nearby).strip(),
+                          }
+                      )
+                      start = index + len(needle)
+                      found += 1
+              return rows
+
+
+          def _candidate_score(text: str, match: re.Match[str], url: str) -> tuple[int, list[str]]:
+              lo = max(0, match.start() - CANDIDATE_RADIUS)
+              hi = min(len(text), match.end() + CANDIDATE_RADIUS)
+              nearby = text[lo:hi].lower()
+              url_lower = url.lower()
+              terms = sorted(
+                  {
+                      term
+                      for term in THEME_TERMS
+                      if term in nearby or term in url_lower
+                  }
+              )
+              score = len(terms) * 8
+              if any(term.lower() in nearby for term in TARGET_TERMS):
+                  score += 80
+              if any(
+                  token in url_lower
+                  for token in (
+                      "maintenance",
+                      "toolbox",
+                      "knife",
+                      "blade",
+                      "component",
+                      "service",
+                      "repair",
+                  )
+              ):
+                  score += 40
+              return score, terms
+
+
+          def _js_candidates(
+              text: str,
+              base_url: str,
+              allowed_hosts: set[str],
+          ) -> list[dict[str, Any]]:
+              rows: list[dict[str, Any]] = []
+              seen: set[str] = set()
+              for order, match in enumerate(JS_RE.finditer(text)):
+                  url = _safe_url(
+                      urllib.parse.urljoin(base_url, match.group(1).strip())
+                  )
+                  parsed = urllib.parse.urlsplit(url)
+                  if (
+                      parsed.scheme != "https"
+                      or not parsed.netloc
+                      or parsed.netloc not in allowed_hosts
+                      or url in seen
+                  ):
+                      continue
+                  seen.add(url)
+                  score, terms = _candidate_score(text, match, url)
+                  rows.append(
+                      {
+                          "url": url,
+                          "source": _safe_url(base_url),
+                          "score": score,
+                          "theme_terms": terms,
+                          "order": order,
+                      }
+                  )
+              rows.sort(
+                  key=lambda row: (
+                      -int(row["score"]),
+                      int(row["order"]),
+                      str(row["url"]),
+                  )
+              )
+              return rows
+
+
+          def probe_maintenance_h5(client: Any) -> dict[str, Any]:
+              """Inspect public H5 source for Maintenance & Tools request structure."""
+              host = _host(client)
+              host_name = urllib.parse.urlsplit(host).netloc
+              pages: list[dict[str, Any]] = []
+              root_scripts: list[str] = []
+              allowed_hosts: set[str] = {host_name}
+
+              for entry_path in ENTRY_PATHS:
+                  url = urllib.parse.urljoin(host + "/", entry_path.lstrip("/"))
+                  result = _fetch(url, MAX_HTML)
+                  text = str(result.get("_text") or "")
+                  row = _public(result)
+                  json_body = _small_json(result)
+                  if json_body is not None:
+                      row["json_body"] = json_body
+                  scripts: list[str] = []
+                  if text:
+                      for value in SCRIPT_RE.findall(text):
+                          asset = _safe_url(
+                              urllib.parse.urljoin(url, value.strip())
+                          )
+                          parsed = urllib.parse.urlsplit(asset)
+                          if parsed.scheme != "https" or not parsed.netloc:
+                              continue
+                          allowed_hosts.add(parsed.netloc)
+                          if asset not in scripts:
+                              scripts.append(asset)
+                      row["script_urls"] = scripts[:12]
+                      root_scripts.extend(scripts[:12])
+                  pages.append(row)
+
+              queue: list[tuple[int, int, str, str]] = []
+              queued: set[str] = set()
+              sequence = 0
+              for url in root_scripts:
+                  if url in queued:
+                      continue
+                  queued.add(url)
+                  heapq.heappush(queue, (-1000, sequence, url, "root_script"))
+                  sequence += 1
+
+              assets: list[dict[str, Any]] = []
+              contexts: list[dict[str, Any]] = []
+              request_candidates: list[dict[str, Any]] = []
+              bridge_candidates: list[dict[str, Any]] = []
+              js_candidates: dict[str, dict[str, Any]] = {}
+              fetched: set[str] = set()
+              request_markers: set[tuple[str, str]] = set()
+              bridge_markers: set[tuple[str, str, str]] = set()
+
+              while queue and len(assets) < MAX_ASSETS:
+                  neg_score, _, url, reason = heapq.heappop(queue)
+                  if url in fetched:
+                      continue
+                  fetched.add(url)
+                  result = _fetch(url, MAX_JS)
+                  text = str(result.get("_text") or "")
+                  row = _public(result)
+                  row["kind"] = "asset"
+                  row["discovery_reason"] = reason
+                  row["candidate_score"] = -neg_score if neg_score != -1000 else None
+
+                  if text:
+                      structure = _structure(text)
+                      row.update(structure)
+                      found_contexts = _contexts(text, url)
+                      contexts.extend(found_contexts)
+
+                      for path in structure["endpoint_paths"]:
+                          marker = (str(path), _safe_url(url))
+                          if marker in request_markers:
+                              continue
+                          request_markers.add(marker)
+                          request_candidates.append(
+                              {
+                                  "path": path,
+                                  "source": _safe_url(url),
+                                  "matched_terms": structure["matched_terms"],
+                                  "http_methods": structure["http_methods"],
+                                  "skip_encryption": structure["skip_encryption"],
+                                  "object_keys": structure["object_keys"],
+                                  "bridge_calls": structure["bridge_calls"],
+                              }
+                          )
+
+                      for bridge in structure["bridge_calls"]:
+                          marker = (
+                              str(bridge.get("callee")),
+                              str(bridge.get("method")),
+                              _safe_url(url),
+                          )
+                          if marker in bridge_markers:
+                              continue
+                          bridge_markers.add(marker)
+                          bridge_candidates.append(
+                              {
+                                  **bridge,
+                                  "source": _safe_url(url),
+                                  "matched_terms": structure["matched_terms"],
+                              }
+                          )
+
+                      candidates = _js_candidates(text, url, allowed_hosts)
+                      row["js_reference_count"] = len(candidates)
+                      for candidate in candidates:
+                          candidate_url = str(candidate["url"])
+                          previous = js_candidates.get(candidate_url)
+                          if previous is None or int(candidate["score"]) > int(previous["score"]):
+                              js_candidates[candidate_url] = candidate
+                          if candidate_url in queued or candidate_url in fetched:
+                              continue
+                          queued.add(candidate_url)
+                          score = int(candidate["score"])
+                          reason_text = (
+                              "scored_lazy_chunk" if score > 0 else "bounded_lazy_chunk"
+                          )
+                          heapq.heappush(
+                              queue,
+                              (-score, sequence, candidate_url, reason_text),
+                          )
+                          sequence += 1
+                  assets.append(row)
+
+              unique_contexts: list[dict[str, Any]] = []
+              context_markers: set[tuple[str, str, str]] = set()
+              for row in contexts:
+                  marker = (
+                      str(row["term"]),
+                      str(row["source"]),
+                      str(row["context"]),
+                  )
+                  if marker in context_markers:
+                      continue
+                  context_markers.add(marker)
+                  unique_contexts.append(row)
+                  if len(unique_contexts) >= MAX_CONTEXTS:
+                      break
+
+              request_candidates.sort(
+                  key=lambda row: (
+                      0 if row["matched_terms"] else 1,
+                      str(row["path"]),
+                      str(row["source"]),
+                  )
+              )
+              request_candidates = request_candidates[:MAX_REQUESTS]
+
+              bridge_candidates.sort(
+                  key=lambda row: (
+                      0 if row["matched_terms"] else 1,
+                      str(row.get("method")),
+                  )
+              )
+              bridge_candidates = bridge_candidates[:MAX_REQUESTS]
+
+              candidate_rows = sorted(
+                  js_candidates.values(),
+                  key=lambda row: (
+                      -int(row["score"]),
+                      int(row["order"]),
+                      str(row["url"]),
+                  ),
+              )[:MAX_JS_CANDIDATES]
+              unfetched = [
+                  row for row in candidate_rows if str(row["url"]) not in fetched
+              ][:MAX_UNFETCHED_CANDIDATES]
+
+              return {
+                  "read_only": True,
+                  "beta_only": True,
+                  "public_unauthenticated_h5_only": True,
+                  "normal_mower_polling_unchanged": True,
+                  "mutation_calls_executed": False,
+                  "source": "home_assistant_download",
+                  "host": host,
+                  "entry_paths": list(ENTRY_PATHS),
+                  "targets": list(TARGET_TERMS),
+                  "theme_terms": list(THEME_TERMS),
+                  "limits": {
+                      "timeout_seconds_per_request": TIMEOUT,
+                      "max_html_bytes": MAX_HTML,
+                      "max_js_bytes_per_asset": MAX_JS,
+                      "max_assets": MAX_ASSETS,
+                      "max_contexts": MAX_CONTEXTS,
+                      "max_request_candidates": MAX_REQUESTS,
+                      "max_js_candidates": MAX_JS_CANDIDATES,
+                      "small_json_max_bytes": SMALL_JSON_MAX,
+                  },
+                  "credential_safety": (
+                      "No token, cookie, uid, device id, mower serial or encrypted "
+                      "p:101 business payload is sent to H5. Only public GET resources "
+                      "are read."
+                  ),
+                  "investigation_goal": (
+                      "Recover official Maintenance & Tools request structure for blade "
+                      "runtime reset and mower maintenance mode, including lazy chunks, "
+                      "small JSON route responses, endpoint paths, payload keys, HTTP "
+                      "methods, encryption flags and native bridge calls."
+                  ),
+                  "pages": pages,
+                  "assets": assets,
+                  "contexts": unique_contexts,
+                  "request_candidates": request_candidates,
+                  "bridge_candidates": bridge_candidates,
+                  "js_discovery": {
+                      "allowed_hosts": sorted(allowed_hosts),
+                      "root_script_count": len(set(root_scripts)),
+                      "candidate_count": len(js_candidates),
+                      "fetched_asset_count": len(fetched),
+                      "candidates": candidate_rows,
+                      "unfetched_candidates": unfetched,
+                  },
+                  "note": (
+                      "0.4.3-beta3 broadens bounded public H5 discovery only. It does "
+                      "not reset maintenance counters, enter maintenance mode, change "
+                      "cutting height or execute any mower command."
+                  ),
+              }
+          '''
+          (COMPONENT / "maintenance_h5_discovery.py").write_text(
+              textwrap.dedent(discovery), encoding="utf-8"
+          )
 
           diagnostics_path = COMPONENT / "diagnostics.py"
           diagnostics = diagnostics_path.read_text(encoding="utf-8")
           diagnostics = diagnostics.replace(
-              "0.4.3-beta1 additionally performs a bounded read-only public-H5 inspection",
-              "0.4.3-beta2 performs the corrected bounded read-only public-H5 inspection",
+              "0.4.3-beta2 performs the corrected bounded read-only public-H5 inspection for\n"
+              "    Maintenance & Tools request structure and executes no mutation action.",
+              "0.4.3-beta3 performs broadened bounded read-only public-H5 inspection for\n"
+              "    Maintenance & Tools lazy chunks and request structure; no mutation runs.",
           )
           diagnostics = diagnostics.replace(
-              "0.4.3-beta1 additionally performs bounded public H5 Maintenance & Tools discovery.",
-              "0.4.3-beta2 performs corrected bounded public H5 Maintenance & Tools discovery.",
+              "Normal diagnostics use current coordinator state and caches; 0.4.3-beta2 performs corrected bounded public H5 Maintenance & Tools discovery.",
+              "Normal diagnostics use current coordinator state and caches; 0.4.3-beta3 broadens bounded public H5 Maintenance & Tools lazy-chunk discovery.",
           )
           diagnostics_path.write_text(diagnostics, encoding="utf-8")
 
-          notes = '''title: Navimower 0.4.3-beta2
+          beta2_test_path = ROOT / "tests" / "test_v043_beta2.py"
+          beta2_test = beta2_test_path.read_text(encoding="utf-8")
+          beta2_test = beta2_test.replace(
+              'assert manifest["version"] == "0.4.3-beta2"',
+              'assert manifest["version"].startswith("0.4.3")',
+          )
+          beta2_test = beta2_test.replace(
+              'assert "NavimowerDiagnostics/0.4.3-beta2" in source',
+              'assert "NavimowerDiagnostics/0.4.3-beta" in source',
+          )
+          beta2_test_path.write_text(beta2_test, encoding="utf-8")
 
-          Navimower 0.4.3-beta2 is a focused hotfix for the Maintenance & Tools discovery introduced in beta1.
+          notes = '''title: Navimower 0.4.3-beta3
 
-          ### Fixed: Download diagnostics registration
+          Navimower 0.4.3-beta3 broadens the temporary read-only Maintenance & Tools H5 discovery after beta2 diagnostics showed that the public H5 entry pages and JavaScript assets were reachable but the first scanner did not reach the relevant lazy chunk.
 
-          - Fixed an import-time `re.PatternError` in `maintenance_h5_discovery.py` caused by an extra regex escaping layer generated in beta1.
-          - Because `diagnostics.py` imports that discovery module, the import failure prevented Home Assistant from detecting Navimower diagnostics support and **Download diagnostics** disappeared from the menu.
-          - Removed the extra escaping layer from every Maintenance H5 regex, not only the `BRIDGE_RE` pattern that failed immediately. The other beta1 patterns compiled but matched literal backslashes instead of actual JavaScript syntax.
-          - Corrected JavaScript whitespace normalization for the same escaping issue.
+          ### Broader lazy-chunk discovery
 
-          ### Regression protection
+          - Inspect up to 48 public JavaScript assets during Download diagnostics. Root scripts are always inspected first; lazy chunks with nearby maintenance/toolbox/blade/knife/component/service clues are prioritized, while bounded zero-score chunks are no longer discarded.
+          - Record discovered JavaScript candidates and which candidates remain unfetched when the request budget is exhausted. This makes the next refinement evidence-driven instead of guessing chunk names.
+          - Search every fetched asset globally for endpoint-like `/vehicle/`, `/mowerbot/`, `/setting/`, `/maintenance/`, `/toolbox/` and related paths, plus native bridge calls, HTTP methods and `skipEncryption` flags. These are no longer visible only when a target keyword happened to be nearby.
+          - Expand target vocabulary with the already observed private-cloud maintenance keys `knifeDurationSet`, `chassisDurationSet`, `knifeDefaultDuration`, `chassisDefaultDuration`, `usedTime` and `setTime`.
 
-          - Added a test that extracts and compiles every `re.compile(...)` expression from the discovery module so import-time regex failures are caught by CI rather than Python syntax compilation alone.
-          - Added syntax assertions proving the discovery patterns now target real H5 JavaScript syntax.
+          ### Small JSON route responses
 
-          ### Scope
+          - Preserve a sanitized parsed preview of public `application/json` responses up to 8 KiB. This specifically lets us see the 49-byte response previously observed from `/vehicle/maintenance/` without sending credentials or mower identity.
 
-          Beta2 otherwise keeps the beta1 plan unchanged. Maintenance H5 discovery runs only when Download diagnostics is explicitly requested, remains public/unauthenticated/read-only, and executes no blade reset, maintenance-mode command, cutting-height mutation or other mower control.
+          ### Safety
+
+          Beta3 remains Download-diagnostics-only and strictly read-only. It uses only public HTTPS GET requests, follows only JavaScript URLs on the already observed H5/script hosts, sends no account or mower identifiers, and executes no blade reset, maintenance-mode command, cutting-height change or other mower mutation.
           '''
-          (ROOT / ".github" / "release-notes" / "0.4.3-beta2.md").write_text(
+          (ROOT / ".github" / "release-notes" / "0.4.3-beta3.md").write_text(
               textwrap.dedent(notes), encoding="utf-8"
           )
 
@@ -121,19 +664,21 @@ jobs:
           header = "# Changelog\n\n"
           if not changelog.startswith(header):
               raise SystemExit("Unexpected changelog header")
-          section = '''## 0.4.3-beta2
+          section = '''## 0.4.3-beta3
 
-          Focused hotfix for beta1 Maintenance & Tools H5 discovery.
+          Broader read-only Maintenance & Tools discovery based on the first successful beta2 diagnostics sample.
 
-          ### Fixed
+          ### Changed
 
-          - Fixed the malformed import-time `BRIDGE_RE` expression that prevented Home Assistant from loading Navimower diagnostics and hid Download diagnostics.
-          - Removed beta1's extra escaping layer from all Maintenance H5 regular expressions and JavaScript whitespace normalization.
+          - Crawl a bounded set of public lazy JavaScript chunks instead of discarding chunks whose import reference has no nearby maintenance keyword.
+          - Collect endpoint paths and native bridge calls globally from each fetched asset, with maintenance-related chunks prioritized within the fixed request budget.
+          - Add observed maintenance setting names such as `knifeDurationSet`, `chassisDurationSet`, `usedTime` and `setTime` to the discovery vocabulary.
+          - Preserve sanitized previews of small public JSON route responses, including the `/vehicle/maintenance/` route seen in beta2 diagnostics.
 
-          ### Validation
+          ### Safety
 
-          - Added regression coverage that compiles every discovery `re.compile(...)` expression and verifies intended JavaScript regex syntax.
-          - Maintenance discovery remains read-only and Download-diagnostics-only; no maintenance mutation is added in beta2.
+          - Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+          - No maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
 
           '''
           changelog_path.write_text(
@@ -141,7 +686,7 @@ jobs:
               encoding="utf-8",
           )
 
-          test_content = r'''"""Regression contracts for Navimower 0.4.3-beta2 diagnostics hotfix."""
+          test_content = r'''"""Regression contracts for Navimower 0.4.3-beta3 H5 discovery."""
           from __future__ import annotations
 
           import ast
@@ -153,17 +698,19 @@ jobs:
           COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-          def test_beta2_version_and_notes() -> None:
+          def test_beta3_version_notes_and_changelog() -> None:
               manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-              assert manifest["version"] == "0.4.3-beta2"
-              notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta2.md").read_text(encoding="utf-8")
-              assert notes.startswith("title: Navimower 0.4.3-beta2")
-              assert "Download diagnostics" in notes
-              assert "re.PatternError" in notes
-              assert "literal backslashes" in notes
+              assert manifest["version"] == "0.4.3-beta3"
+              notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta3.md").read_text(encoding="utf-8")
+              assert notes.startswith("title: Navimower 0.4.3-beta3")
+              assert "48 public JavaScript assets" in notes
+              assert "49-byte response" in notes
+              assert "strictly read-only" in notes
+              changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+              assert changelog.startswith("# Changelog\n\n## 0.4.3-beta3")
 
 
-          def test_beta2_all_discovery_regexes_compile() -> None:
+          def test_beta3_discovery_has_bounded_lazy_chunk_crawler() -> None:
               source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
               tree = ast.parse(source)
               patterns: list[str] = []
@@ -177,36 +724,50 @@ jobs:
                       and node.func.attr == "compile"
                   ):
                       continue
-                  assert node.args
                   pattern = ast.literal_eval(node.args[0])
                   assert isinstance(pattern, str)
-                  patterns.append(pattern)
                   re.compile(pattern)
+                  patterns.append(pattern)
               assert len(patterns) >= 7
+              assert "MAX_ASSETS = 48" in source
+              assert "MAX_JS_CANDIDATES = 160" in source
+              assert "bounded_lazy_chunk" in source
+              assert '"unfetched_candidates": unfetched' in source
+              assert "heapq.heappush" in source
 
 
-          def test_beta2_patterns_target_real_javascript_syntax() -> None:
+          def test_beta3_collects_small_json_and_global_request_structure() -> None:
               source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-              assert r'<script\b' in source
-              assert r'method\s*:\s*' in source
-              assert r'skipEncryption\s*:\s*' in source
-              assert r'\s*\(\s*' in source
-              assert r're.sub(r"\s+"' in source
-              assert r'<script\\b' not in source
-              assert r'\\s*\\(' not in source
-              assert "NavimowerDiagnostics/0.4.3-beta2" in source
+              for phrase in (
+                  "SMALL_JSON_MAX = 8192",
+                  'row["json_body"] = json_body',
+                  "ENDPOINT_RE = re.compile",
+                  '"endpoint_paths": endpoint_paths',
+                  '"bridge_candidates": bridge_candidates',
+                  "knifeDurationSet",
+                  "chassisDurationSet",
+                  "knifeDefaultDuration",
+                  "chassisDefaultDuration",
+                  "usedTime",
+                  "setTime",
+              ):
+                  assert phrase in source
+              assert "ENDPOINT_RE.findall(text)" in source
+              assert "_structure(text)" in source
 
 
-          def test_beta2_diagnostics_keeps_read_only_maintenance_probe() -> None:
+          def test_beta3_remains_public_get_only_and_non_mutating() -> None:
+              source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
               diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-              discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-              assert "from .maintenance_h5_discovery import probe_maintenance_h5" in diagnostics
-              assert "await hass.async_add_executor_job" in diagnostics
-              assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
-              assert '"mutation_calls_executed": False' in discovery
-              assert "client.call(" not in discovery
+              assert 'method="GET"' in source
+              assert '"mutation_calls_executed": False' in source
+              assert '"public_unauthenticated_h5_only": True' in source
+              assert "client.call(" not in source
+              assert "Authorization" not in source
+              assert "Cookie" not in source
+              assert "0.4.3-beta3" in diagnostics
           '''
-          (ROOT / "tests" / "test_v043_beta2.py").write_text(
+          (ROOT / "tests" / "test_v043_beta3.py").write_text(
               textwrap.dedent(test_content), encoding="utf-8"
           )
           PY
@@ -222,10 +783,11 @@ jobs:
             custom_components/navimower/manifest.json \
             custom_components/navimower/diagnostics.py \
             custom_components/navimower/maintenance_h5_discovery.py \
-            .github/release-notes/0.4.3-beta2.md \
+            .github/release-notes/0.4.3-beta3.md \
             CHANGELOG.md \
-            tests/test_v043_beta2.py
-          git commit -m "Prepare Navimower 0.4.3-beta2 diagnostics hotfix"
+            tests/test_v043_beta2.py \
+            tests/test_v043_beta3.py
+          git commit -m "Prepare Navimower 0.4.3-beta3 H5 discovery"
 
           REMOTE_SHA="$(git ls-remote --heads origin "refs/heads/${BUILD_BRANCH}" | awk '{print $1}')"
           if [ -n "${REMOTE_SHA}" ]; then
@@ -241,12 +803,12 @@ jobs:
         shell: bash
         run: |
           {
-            echo "Navimower 0.4.3-beta2 remote build outcome: ${{ steps.build.outcome }}"
+            echo "Navimower 0.4.3-beta3 remote build outcome: ${{ steps.build.outcome }}"
             echo
             echo "Target branch: \`${BUILD_BRANCH}\`"
             echo
             echo '```text'
-            tail -n 180 /tmp/remote-beta-build.log 2>/dev/null || true
+            tail -n 200 /tmp/remote-beta-build.log 2>/dev/null || true
             echo '```'
           } > /tmp/result.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/result.md
