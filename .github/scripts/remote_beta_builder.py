@@ -158,9 +158,8 @@ def _named_callsite_contexts(
         if not name:
             continue
         definition_offset = int(definition.get("definition_offset") or -10_000)
-        pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
         captured = 0
-        for match in pattern.finditer(text):
+        for match in re.finditer(r"\b" + re.escape(name) + r"\s*\(", text):
             if definition_offset - 20 <= match.start() <= definition_offset + 180:
                 continue
             open_index = text.find("(", match.start(), match.end() + 1)
@@ -478,8 +477,8 @@ diagnostics = replace_once(
     diagnostics,
     '''    0.4.3-beta4 performs broadened bounded read-only public-H5 inspection for
     Maintenance + Mowing Reports contracts and request structure; no mutation runs.''',
-    '''    0.4.3-beta5 performs targeted read-only public-H5 call-site recovery for
-    Maintenance + Mowing Reports contracts; no mutation runs.''',
+    '''    0.4.3-beta5 performs targeted call-site recovery within the bounded read-only public-H5 inspection
+    for Maintenance + Mowing Reports contracts; no mutation runs.''',
     "diagnostics docstring",
 )
 diagnostics = replace_once(
