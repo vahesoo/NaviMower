@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.3-beta3 H5 discovery."""
+"""Regression contracts for Navimower 0.4.3-beta3 and later 0.4.3 betas."""
 from __future__ import annotations
 
 import ast
@@ -12,14 +12,14 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta3_version_notes_and_changelog() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta3"
+    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta3.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta3")
     assert "48 public JavaScript assets" in notes
     assert "49-byte response" in notes
     assert "strictly read-only" in notes
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta3")
+    assert "## 0.4.3-beta3" in changelog
 
 
 def test_beta3_discovery_has_bounded_lazy_chunk_crawler() -> None:
@@ -77,4 +77,4 @@ def test_beta3_remains_public_get_only_and_non_mutating() -> None:
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta3" in diagnostics
+    assert "0.4.3-beta" in diagnostics
