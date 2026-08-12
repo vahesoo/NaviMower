@@ -90,7 +90,8 @@ PRIORITY_FILENAME_TOKENS = (
 MAX_HTML = 256 * 1024
 MAX_JS = 2 * 1024 * 1024
 MAX_ASSETS = 48
-MAX_REQUESTS = 96
+MAX_TARGETED_ASSETS = 16
+MAX_REQUESTS = 128
 MAX_CONTEXTS = 96
 MAX_REQUEST_CANDIDATES = 160
 MAX_JS_CANDIDATES = 160
@@ -98,6 +99,8 @@ MAX_UNFETCHED_CANDIDATES = 80
 SMALL_JSON_MAX = 8192
 CONTEXT_RADIUS = 2200
 CANDIDATE_RADIUS = 1500
+CALLSITE_RADIUS = 2600
+MAX_CALLSITES_PER_WRAPPER = 8
 TIMEOUT = 5
 
 SCRIPT_RE = re.compile(
@@ -124,6 +127,26 @@ BRIDGE_RE = re.compile(
     r"(?P<callee>(?:[A-Za-z_$][\w$]*\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
     r"\s*\(\s*[\"'](?P<method>[^\"']{1,160})[\"']",
     re.I,
+)
+REPORT_WRAPPER_RE = re.compile(
+    r"function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)"
+    r"\s*\{.{0,1400}?[\"'](?P<endpoint>/vehicle/report/(?:get-day-week-month-data|vehicle-main-report))[\"']",
+    re.I | re.S,
+)
+REPORT_ARROW_WRAPPER_RE = re.compile(
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)?"
+    r"\s*=>.{0,1400}?[\"'](?P<endpoint>/vehicle/report/(?:get-day-week-month-data|vehicle-main-report))[\"']",
+    re.I | re.S,
+)
+MOWER_SET_WRAPPER_RE = re.compile(
+    r"function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)"
+    r"\s*\{.{0,1800}?(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
+    re.I | re.S,
+)
+MOWER_SET_ARROW_WRAPPER_RE = re.compile(
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)?"
+    r"\s*=>.{0,1800}?(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
+    re.I | re.S,
 )
 
 
@@ -174,7 +197,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
                 "text/html,application/json,application/javascript,"
                 "text/javascript,*/*;q=0.8"
             ),
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta4",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta5",
         },
         method="GET",
     )
@@ -331,6 +354,169 @@ def _contexts_for_terms(
     return rows
 
 
+
+def _balanced_argument(text: str, open_index: int, limit: int = 1800) -> tuple[str, bool]:
+    """Return the first balanced call argument body after an opening parenthesis."""
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    end_limit = min(len(text), open_index + limit)
+    for index in range(open_index, end_limit):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth == 0:
+                value = text[open_index + 1:index]
+                return re.sub(r"\s+", " ", value).strip(), False
+    value = text[open_index + 1:end_limit]
+    return re.sub(r"\s+", " ", value).strip(), True
+
+
+def _wrapper_definitions(
+    text: str,
+    source: str,
+    regexes: tuple[tuple[str, re.Pattern[str]], ...],
+    focus: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int]] = set()
+    for wrapper_kind, regex in regexes:
+        for match in regex.finditer(text):
+            name = match.group("name")
+            endpoint = match.groupdict().get("endpoint") or ""
+            marker = (name, endpoint, match.start())
+            if marker in seen:
+                continue
+            seen.add(marker)
+            nearby = text[
+                max(0, match.start() - 350):
+                min(len(text), match.end() + 1200)
+            ]
+            rows.append(
+                {
+                    "focus": focus,
+                    "wrapper_kind": wrapper_kind,
+                    "name": name,
+                    "param": match.groupdict().get("param") or "",
+                    "endpoint": endpoint or None,
+                    "source": _safe_url(source),
+                    "definition_offset": match.start(),
+                    **_structure(nearby),
+                    "context": re.sub(r"\s+", " ", nearby).strip(),
+                }
+            )
+            if len(rows) >= 32:
+                return rows
+    return rows
+
+
+def _named_callsite_contexts(
+    text: str,
+    source: str,
+    definitions: list[dict[str, Any]],
+    focus: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for definition in definitions:
+        name = str(definition.get("name") or "")
+        if not name:
+            continue
+        definition_offset = int(definition.get("definition_offset") or -10_000)
+        captured = 0
+        for match in re.finditer(r"\b" + re.escape(name) + r"\s*\(", text):
+            if definition_offset - 20 <= match.start() <= definition_offset + 180:
+                continue
+            open_index = text.find("(", match.start(), match.end() + 1)
+            if open_index < 0:
+                continue
+            argument_preview, argument_truncated = _balanced_argument(text, open_index)
+            lo = max(0, match.start() - CALLSITE_RADIUS)
+            hi = min(len(text), match.end() + CALLSITE_RADIUS)
+            nearby = text[lo:hi]
+            lower = nearby.lower()
+            report_terms = [term for term in REPORT_TARGETS if term.lower() in lower]
+            maintenance_terms = [
+                term
+                for term in (
+                    "maintenance",
+                    "partsMaintenance",
+                    "blade",
+                    "knife",
+                    "componentMaintenance",
+                    "knifeDurationSet",
+                    "chassisDurationSet",
+                    "cutHeight",
+                    "cuttingHeight",
+                )
+                if term.lower() in lower
+            ]
+            rows.append(
+                {
+                    "focus": focus,
+                    "wrapper_name": name,
+                    "endpoint": definition.get("endpoint"),
+                    "source": _safe_url(source),
+                    "call_offset": match.start(),
+                    "argument_preview": argument_preview[:1800],
+                    "argument_truncated": argument_truncated,
+                    "report_terms_nearby": report_terms,
+                    "maintenance_terms_nearby": maintenance_terms,
+                    **_structure(nearby),
+                    "context": re.sub(r"\s+", " ", nearby).strip(),
+                }
+            )
+            captured += 1
+            if captured >= MAX_CALLSITES_PER_WRAPPER or len(rows) >= 64:
+                break
+    return rows
+
+
+def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]]:
+    report_definitions = _wrapper_definitions(
+        text,
+        source,
+        (("function", REPORT_WRAPPER_RE), ("arrow", REPORT_ARROW_WRAPPER_RE)),
+        "report_wrapper_definition",
+    )
+    mower_set_definitions = _wrapper_definitions(
+        text,
+        source,
+        (("function", MOWER_SET_WRAPPER_RE), ("arrow", MOWER_SET_ARROW_WRAPPER_RE)),
+        "mower_set_wrapper_definition",
+    )
+    return {
+        "report_wrapper_definitions": report_definitions,
+        "report_callsite_contexts": _named_callsite_contexts(
+            text, source, report_definitions, "report_wrapper_callsite"
+        ),
+        "report_field_contexts": _contexts_for_terms(
+            text, source, REPORT_TARGETS, "report_response_fields", max_per_term=3
+        ),
+        "mower_set_wrapper_definitions": mower_set_definitions,
+        "mower_set_callsite_contexts": _named_callsite_contexts(
+            text, source, mower_set_definitions, "maintenance_mower_set_callsite"
+        ),
+    }
+
+
+def _is_targeted_candidate(candidate: dict[str, Any]) -> bool:
+    url = str(candidate.get("url") or "")
+    return _filename_bonus(url) >= 130 or int(candidate.get("score") or 0) >= 180
+
 def _filename_bonus(url: str) -> int:
     name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
     rules = (
@@ -465,6 +651,12 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     request_markers: set[tuple[str, str]] = set()
     bridge_markers: set[tuple[str, str, str]] = set()
     report_endpoints_found: set[str] = set()
+    report_wrapper_definitions: list[dict[str, Any]] = []
+    report_callsite_contexts: list[dict[str, Any]] = []
+    report_field_contexts: list[dict[str, Any]] = []
+    mower_set_wrapper_definitions: list[dict[str, Any]] = []
+    mower_set_callsite_contexts: list[dict[str, Any]] = []
+    targeted_fetches: list[dict[str, Any]] = []
     successful_assets = 0
     request_count = 0
 
@@ -513,6 +705,13 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "request_infrastructure",
             max_per_term=2,
         )
+        callsite_findings = _callsite_findings(text, url)
+        report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
+        report_callsite_contexts.extend(callsite_findings["report_callsite_contexts"])
+        report_field_contexts.extend(callsite_findings["report_field_contexts"])
+        mower_set_wrapper_definitions.extend(callsite_findings["mower_set_wrapper_definitions"])
+        mower_set_callsite_contexts.extend(callsite_findings["mower_set_callsite_contexts"])
+
         maintenance_contexts.extend(found_maintenance)
         report_contexts.extend(found_reports)
         request_shape_contexts.extend(found_request_shape)
@@ -587,6 +786,143 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
 
         assets.append(row)
 
+    targeted_queue: list[tuple[int, int, str, dict[str, Any]]] = []
+    targeted_queued: set[str] = set()
+    targeted_sequence = 0
+    for candidate in js_candidates.values():
+        candidate_url = str(candidate["url"])
+        if candidate_url in fetched or not _is_targeted_candidate(candidate):
+            continue
+        targeted_queued.add(candidate_url)
+        heapq.heappush(
+            targeted_queue,
+            (-int(candidate["score"]), targeted_sequence, candidate_url, candidate),
+        )
+        targeted_sequence += 1
+
+    targeted_success = 0
+    while (
+        targeted_queue
+        and targeted_success < MAX_TARGETED_ASSETS
+        and request_count < MAX_REQUESTS
+    ):
+        neg_score, _, url, candidate = heapq.heappop(targeted_queue)
+        if url in fetched:
+            continue
+        fetched.add(url)
+        request_count += 1
+        result = _fetch(url, MAX_JS)
+        text = str(result.get("_text") or "")
+        row = _public(result)
+        row["kind"] = "asset"
+        row["discovery_reason"] = "targeted_priority_reserve"
+        row["candidate_score"] = -neg_score
+        counts_toward_limit = bool(result.get("ok") and text)
+        row["counts_toward_asset_limit"] = counts_toward_limit
+        targeted_record: dict[str, Any] = {
+            "url": _safe_url(url),
+            "basename": candidate.get("basename"),
+            "candidate_score": -neg_score,
+            "ok": bool(result.get("ok")),
+            "http_status": result.get("http_status"),
+        }
+        if not counts_toward_limit:
+            row["matched_terms"] = []
+            row["endpoint_paths"] = []
+            row["http_methods"] = []
+            row["skip_encryption"] = []
+            row["request_shape_markers"] = []
+            row["object_keys"] = []
+            row["bridge_calls"] = []
+            row["js_reference_count"] = 0
+            targeted_fetches.append(targeted_record)
+            assets.append(row)
+            continue
+
+        successful_assets += 1
+        targeted_success += 1
+        structure = _structure(text)
+        row.update(structure)
+        targeted_record["matched_terms"] = structure["matched_terms"]
+        targeted_record["endpoint_paths"] = structure["endpoint_paths"]
+
+        found_maintenance = _contexts_for_terms(
+            text, url, MAINTENANCE_TARGETS, "maintenance", max_per_term=2
+        )
+        found_reports = _contexts_for_terms(
+            text, url, REPORT_ENDPOINTS, "mowing_reports", max_per_term=3
+        )
+        found_request_shape = _contexts_for_terms(
+            text,
+            url,
+            REQUEST_SHAPE_TERMS,
+            "request_infrastructure",
+            max_per_term=2,
+        )
+        maintenance_contexts.extend(found_maintenance)
+        report_contexts.extend(found_reports)
+        request_shape_contexts.extend(found_request_shape)
+        bridge_call_contexts.extend(
+            [
+                item
+                for item in found_request_shape
+                if item["term"]
+                in ("handleH5MowerSet", "handleEncipherment", "handleDecrypt")
+            ]
+        )
+
+        callsite_findings = _callsite_findings(text, url)
+        report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
+        report_callsite_contexts.extend(callsite_findings["report_callsite_contexts"])
+        report_field_contexts.extend(callsite_findings["report_field_contexts"])
+        mower_set_wrapper_definitions.extend(callsite_findings["mower_set_wrapper_definitions"])
+        mower_set_callsite_contexts.extend(callsite_findings["mower_set_callsite_contexts"])
+
+        for path in structure["endpoint_paths"]:
+            marker = (url, path)
+            if marker in request_markers:
+                continue
+            request_markers.add(marker)
+            nearby = _context_around(text, path)
+            focus = "supporting"
+            if path in REPORT_ENDPOINTS:
+                focus = "mowing_reports"
+                report_endpoints_found.add(path)
+            elif "maintenance" in path.lower():
+                focus = "maintenance"
+            request_candidates.append(
+                {
+                    "focus": focus,
+                    "source": _safe_url(url),
+                    "path": path,
+                    **(_structure(nearby) if nearby else {}),
+                    "context": nearby,
+                }
+            )
+
+        discovered = _js_candidates(text, url, allowed_hosts)
+        row["js_reference_count"] = len(discovered)
+        for child in discovered:
+            child_url = str(child["url"])
+            previous = js_candidates.get(child_url)
+            if previous is None or int(child["score"]) > int(previous["score"]):
+                js_candidates[child_url] = child
+            if (
+                child_url in fetched
+                or child_url in targeted_queued
+                or not _is_targeted_candidate(child)
+            ):
+                continue
+            targeted_queued.add(child_url)
+            heapq.heappush(
+                targeted_queue,
+                (-int(child["score"]), targeted_sequence, child_url, child),
+            )
+            targeted_sequence += 1
+
+        targeted_fetches.append(targeted_record)
+        assets.append(row)
+
     candidate_rows = sorted(
         js_candidates.values(),
         key=lambda row: (-int(row["score"]), int(row["order"]), str(row["url"])),
@@ -615,7 +951,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "timeout_seconds_per_request": TIMEOUT,
             "max_html_bytes": MAX_HTML,
             "max_js_bytes_per_asset": MAX_JS,
-            "max_successful_assets": MAX_ASSETS,
+            "max_broad_successful_assets": MAX_ASSETS,
+            "max_targeted_successful_assets": MAX_TARGETED_ASSETS,
+            "max_total_successful_assets": MAX_ASSETS + MAX_TARGETED_ASSETS,
             "max_requests": MAX_REQUESTS,
             "max_contexts": MAX_CONTEXTS,
             "max_request_candidates": MAX_REQUEST_CANDIDATES,
@@ -638,22 +976,29 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "report_contexts": report_contexts[:MAX_CONTEXTS],
         "request_shape_contexts": request_shape_contexts[:MAX_CONTEXTS],
         "bridge_call_contexts": bridge_call_contexts[:MAX_CONTEXTS],
+        "report_wrapper_definitions": report_wrapper_definitions[:64],
+        "report_callsite_contexts": report_callsite_contexts[:96],
+        "report_field_contexts": report_field_contexts[:96],
+        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:64],
+        "mower_set_callsite_contexts": mower_set_callsite_contexts[:96],
+        "targeted_fetches": targeted_fetches,
         "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
         "bridge_candidates": bridge_candidates[:96],
         "js_discovery": {
-            "strategy": "semantic_hash_agnostic_priority",
+            "strategy": "semantic_hash_agnostic_priority+targeted_callsite_recovery",
             "candidate_count": len(candidate_rows),
             "candidates": candidate_rows[:MAX_JS_CANDIDATES],
             "fetched_count": len(fetched),
             "successful_asset_count": successful_assets,
             "request_count": request_count,
             "failed_request_count": request_count - successful_assets,
+            "targeted_fetch_count": len(targeted_fetches),
+            "targeted_success_count": targeted_success,
             "unfetched_candidates": unfetched,
         },
         "note": (
-            "0.4.3-beta4 is a bounded read-only contract-recovery pass. Hashed chunk "
-            "suffixes are treated as build artifacts; semantic chunk prefixes and "
-            "import relationships drive priority. No maintenance mutation or mower "
-            "command is executed."
+            "0.4.3-beta5 performs targeted wrapper/call-site recovery on top of the "
+            "hash-agnostic crawl, with a reserved high-priority asset pass. It remains "
+            "read-only and executes no maintenance mutation or mower command."
         ),
     }
