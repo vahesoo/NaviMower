@@ -61,24 +61,23 @@ jobs:
 
           discovery_path = COMPONENT / "maintenance_h5_discovery.py"
           discovery = discovery_path.read_text(encoding="utf-8")
+          if 'BRIDGE_RE = re.compile(' not in discovery:
+              raise SystemExit("BRIDGE_RE marker missing")
+          if "\\\\s*\\\\(" not in discovery:
+              raise SystemExit("Expected beta1 double-escaped regex layer is missing")
 
-          replacements = {
-              r'r"<script\\b[^>]*\\bsrc\\s*=\\s*[\"\']([^\"\']+)[\"\']"': r'r"<script\b[^>]*\bsrc\s*=\s*[\"\']([^\"\']+)[\"\']"',
-              r'r"[\"\']([^\"\'\\r\\n]{1,420}\\.js(?:\\?[^\"\'\\r\\n]{0,120})?)[\"\']"': r'r"[\"\']([^\"\'\r\n]{1,420}\.js(?:\?[^\"\'\r\n]{0,120})?)[\"\']"',
-              r'r"[\"\'](/mowerbot/[^\"\'\\r\\n]{1,280})[\"\']"': r'r"[\"\'](/mowerbot/[^\"\'\r\n]{1,280})[\"\']"',
-              r'r"method\\s*:\\s*[\"\']?(GET|POST|PUT|DELETE|PATCH)[\"\']?"': r'r"method\s*:\s*[\"\']?(GET|POST|PUT|DELETE|PATCH)[\"\']?"',
-              r'r"skipEncryption\\s*:\\s*(true|false)"': r'r"skipEncryption\s*:\s*(true|false)"',
-              r'r"(?:^|[,{])\\s*[\"\']?([A-Za-z_$][\\w$]{0,90})[\"\']?\\s*:"': r'r"(?:^|[,{])\s*[\"\']?([A-Za-z_$][\w$]{0,90})[\"\']?\s*:"',
-              r'r"(?P<callee>(?:[A-Za-z_$][\\w$]*\\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"': r'r"(?P<callee>(?:[A-Za-z_$][\w$]*\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"',
-              r'r"\\s*\\(\\s*[\"\'](?P<method>[^\"\']{1,160})[\"\']"': r'r"\s*\(\s*[\"\'](?P<method>[^\"\']{1,160})[\"\']"',
-              r'r"\\s+"': r'r"\s+"',
-              "NavimowerDiagnostics/0.4.3-beta1": "NavimowerDiagnostics/0.4.3-beta2",
-              "0.4.3-beta1 records bounded public H5 source context only.": "0.4.3-beta2 records bounded public H5 source context only.",
-          }
-          for old, new in replacements.items():
-              if old not in discovery:
-                  raise SystemExit(f"maintenance discovery replacement marker missing: {old}")
-              discovery = discovery.replace(old, new)
+          # beta1 was generated through an extra raw-string escaping layer. Every
+          # regex backslash in this responsibility-isolated discovery module was
+          # doubled once too many. Collapse exactly that one layer.
+          discovery = discovery.replace("\\\\", "\\")
+          discovery = discovery.replace(
+              "NavimowerDiagnostics/0.4.3-beta1",
+              "NavimowerDiagnostics/0.4.3-beta2",
+          )
+          discovery = discovery.replace(
+              "0.4.3-beta1 records bounded public H5 source context only.",
+              "0.4.3-beta2 records bounded public H5 source context only.",
+          )
           discovery_path.write_text(discovery, encoding="utf-8")
 
           diagnostics_path = COMPONENT / "diagnostics.py"
@@ -99,19 +98,19 @@ jobs:
 
           ### Fixed: Download diagnostics registration
 
-          - Fixed an import-time `re.PatternError` in `maintenance_h5_discovery.py` caused by over-escaped generated regular expressions.
-          - The failed diagnostics-module import prevented Home Assistant from detecting Navimower diagnostics support, so **Download diagnostics** disappeared from the device/config-entry menu in beta1.
-          - Corrected the escaping of every H5 discovery regex, not only the pattern that raised immediately. The remaining beta1 expressions compiled but matched literal backslashes instead of the intended JavaScript syntax and therefore would not have produced useful discovery data.
-          - Corrected whitespace normalization for captured JavaScript context for the same reason.
+          - Fixed an import-time `re.PatternError` in `maintenance_h5_discovery.py` caused by an extra regex escaping layer generated in beta1.
+          - Because `diagnostics.py` imports that discovery module, the import failure prevented Home Assistant from detecting Navimower diagnostics support and **Download diagnostics** disappeared from the menu.
+          - Removed the extra escaping layer from every Maintenance H5 regex, not only the `BRIDGE_RE` pattern that failed immediately. The other beta1 patterns compiled but matched literal backslashes instead of actual JavaScript syntax.
+          - Corrected JavaScript whitespace normalization for the same escaping issue.
 
           ### Regression protection
 
-          - Added a test that extracts and compiles every `re.compile(...)` pattern from the discovery module, so malformed import-time regexes are caught in CI instead of relying on Python `compileall` alone.
-          - Added direct assertions for the intended regex syntax and beta2 diagnostics wiring.
+          - Added a test that extracts and compiles every `re.compile(...)` expression from the discovery module so import-time regex failures are caught by CI rather than Python syntax compilation alone.
+          - Added syntax assertions proving the discovery patterns now target real H5 JavaScript syntax.
 
           ### Scope
 
-          Beta2 otherwise keeps the beta1 plan unchanged: Download diagnostics performs bounded public unauthenticated H5 discovery only when explicitly requested. No blade reset, maintenance-mode command, cutting-height mutation or other mower control is executed.
+          Beta2 otherwise keeps the beta1 plan unchanged. Maintenance H5 discovery runs only when Download diagnostics is explicitly requested, remains public/unauthenticated/read-only, and executes no blade reset, maintenance-mode command, cutting-height mutation or other mower control.
           '''
           (ROOT / ".github" / "release-notes" / "0.4.3-beta2.md").write_text(
               textwrap.dedent(notes), encoding="utf-8"
@@ -128,12 +127,12 @@ jobs:
 
           ### Fixed
 
-          - Fixed the import-time malformed `BRIDGE_RE` expression that prevented Home Assistant from loading `diagnostics.py` and therefore hid Download diagnostics.
-          - Fixed over-escaping across all Maintenance H5 regexes and JavaScript whitespace normalization so discovery matches actual H5 source rather than literal backslashes.
+          - Fixed the malformed import-time `BRIDGE_RE` expression that prevented Home Assistant from loading Navimower diagnostics and hid Download diagnostics.
+          - Removed beta1's extra escaping layer from all Maintenance H5 regular expressions and JavaScript whitespace normalization.
 
           ### Validation
 
-          - Added regression coverage that compiles every `re.compile(...)` expression from the discovery module and checks the intended regex syntax.
+          - Added regression coverage that compiles every discovery `re.compile(...)` expression and verifies intended JavaScript regex syntax.
           - Maintenance discovery remains read-only and Download-diagnostics-only; no maintenance mutation is added in beta2.
 
           '''
@@ -179,31 +178,26 @@ jobs:
                   ):
                       continue
                   assert node.args
-                  pattern_node = node.args[0]
-                  if isinstance(pattern_node, ast.Constant) and isinstance(pattern_node.value, str):
-                      pattern = pattern_node.value
-                  elif isinstance(pattern_node, ast.BinOp):
-                      pattern = ast.literal_eval(pattern_node)
-                  else:
-                      raise AssertionError(f"Unsupported regex AST: {ast.dump(pattern_node)}")
+                  pattern = ast.literal_eval(node.args[0])
+                  assert isinstance(pattern, str)
                   patterns.append(pattern)
                   re.compile(pattern)
               assert len(patterns) >= 7
 
 
-          def test_beta2_discovery_patterns_target_real_javascript_syntax() -> None:
+          def test_beta2_patterns_target_real_javascript_syntax() -> None:
               source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-              assert r'r"<script\b' in source
-              assert r'r"method\s*:\s*' in source
-              assert r'r"skipEncryption\s*:\s*' in source
-              assert r'r"\s*\(\s*' in source
-              assert r'r"\s+"' in source
-              assert r'r"<script\\b' not in source
-              assert r'r"\\s*\\(' not in source
+              assert r'<script\b' in source
+              assert r'method\s*:\s*' in source
+              assert r'skipEncryption\s*:\s*' in source
+              assert r'\s*\(\s*' in source
+              assert r're.sub(r"\s+"' in source
+              assert r'<script\\b' not in source
+              assert r'\\s*\\(' not in source
               assert "NavimowerDiagnostics/0.4.3-beta2" in source
 
 
-          def test_beta2_diagnostics_still_uses_read_only_maintenance_probe() -> None:
+          def test_beta2_diagnostics_keeps_read_only_maintenance_probe() -> None:
               diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
               discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
               assert "from .maintenance_h5_discovery import probe_maintenance_h5" in diagnostics
