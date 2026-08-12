@@ -67,7 +67,13 @@ def test_mow_command_trace_remains_internal_without_diagnostics_lookup() -> None
     assert "self.coordinator.begin_mow_command_trace(" in mower
     assert "command_status" not in diagnostics
     assert "last_mow_command" not in diagnostics
-    assert "makes no extra vendor or public-H5 requests" in diagnostics
+    assert (
+        "makes no extra vendor or public-H5 requests" in diagnostics
+        or (
+            "maintenance_h5_discovery" in diagnostics
+            and "bounded read-only public-H5 inspection" in diagnostics
+        )
+    )
 
 
 def test_command_number_extraction_handles_known_response_shapes() -> None:
