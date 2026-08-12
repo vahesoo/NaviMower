@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.2
+
+Stable cumulative release from the 0.4.2 beta line. No beta release needs to be installed first.
+
+### Added
+
+- Added persistent Navimower-local mower activity notifications and merged them with the vendor Device notification feed.
+- Added `navimower.mark_notification_read`, `navimower.mark_all_notifications_read` and the dedicated retained-task `navimower.resume` action.
+- Added private-cloud account region discovery/host persistence across the observed Europe, Asia-Pacific, Americas and mainland China routes while keeping official Smart Home OAuth/MQTT routing independent.
+- Added an evidence-first capability profile to parsed mower snapshots and Home Assistant Download diagnostics for future model-aware entity provisioning.
+
+### Fixed
+
+- Fixed zone-restricted schedule `partitionPlan` writes to encode selected zone ids as little-endian uint16, preventing shifted payloads and phantom `00:15-00:15` periods.
+- Preserved already-working schedule master On/Off behavior while correcting only the selected-zone wire format.
+
+### Changed
+
+- Removed Legacy Map Camera; Navimower Map Card is the supported map UI.
+- Replaced accumulated beta-numbered runtime layers with responsibility-based semantic modules and one explicit runtime composition point.
+- Download diagnostics remains sanitized/read-only but intentionally information-rich: config/model state, connectivity, regional routing, capability evidence, settings, telemetry, positioning, map/history/problem context, notifications, polling/MQTT health and the sanitized raw private-cloud snapshot are retained for support.
+
+### Validation and compatibility
+
+- The 0.4.2 beta line was exercised on H2- and X3-series mowers for the functionality available on those test devices, including local notifications and local Mark as read.
+- Non-European regional routing follows upstream field evidence but was not locally hardware-tested before stable; future diagnostics can refine routing or capability mapping when real users report differences.
+- Existing config entries, entities, histories and notification storage are retained.
+
 ## 0.4.2-beta7
 
 Seventh beta in the cumulative 0.4.2 development line.

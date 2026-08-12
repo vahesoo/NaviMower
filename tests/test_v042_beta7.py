@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,9 +18,7 @@ def _load_regions():
     return module
 
 
-def test_beta7_manifest_and_release_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.2-beta7"
+def test_beta7_release_contract_is_retained() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.2-beta7.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.2-beta7")
     assert "region" in notes.lower()
