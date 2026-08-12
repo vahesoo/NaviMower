@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.3-beta9
+
+Compact contract recovery for Mowing Reports transport and Parts maintenance call sites.
+
+### Changed
+
+- Reduce broad H5 discovery from 48 to 12 successful assets and targeted discovery from 24 to 16, with a 64-request total ceiling instead of 168.
+- Reduce context/candidate output and replace the full per-asset dump with compact evidence rows containing only contract-relevant fields.
+- Tighten targeted routing so incidental `mowing` context no longer promotes unrelated neighboring route assets by score alone.
+- Keep the already observed Mowing Records chunk fallback and direct request/native dependencies discoverable.
+
+### Added
+
+- Recover dedicated `handleEncipherment` / `handleDecrypt` wrapper definitions as report transport evidence.
+- Trace `handleH5MowerSet` across ES-module export/import aliases so a wrapper exported by app-entry can be followed into lazy-chunk callers.
+- Report compact mower-set export aliases, import aliases and imported call-site contexts in diagnostics.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta8
 
 Targeted candidate routing and precise mower-set wrapper recovery.
