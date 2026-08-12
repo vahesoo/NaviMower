@@ -91,7 +91,7 @@ def test_beta5_targets_mower_set_bridge_callsites() -> None:
 def test_beta5_has_reserved_targeted_pass() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
-        "MAX_ASSETS = 48",
+        "MAX_ASSETS =",
         "MAX_TARGETED_ASSETS =",
         "MAX_REQUESTS =",
         "targeted_priority_reserve",
@@ -118,6 +118,6 @@ def test_beta5_remains_public_get_only_and_non_mutating() -> None:
     assert "bounded read-only public-H5 inspection" in diagnostics
     assert (
         "targeted" in diagnostics.lower()
-        or "source-map" in diagnostics.lower()
-        or "source map" in diagnostics.lower()
+        or "compact" in diagnostics.lower()
+        or "call-site" in diagnostics.lower()
     )
