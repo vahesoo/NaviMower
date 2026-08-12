@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3-beta4
+
+Focused Maintenance + Mowing Reports public-H5 contract recovery.
+
+### Changed
+
+- Fix lazy-chunk URL canonicalization so duplicate `static/js/static/js` and `assets/assets` paths do not waste the crawl budget.
+- Count only successful JavaScript fetches toward the 48-asset limit while keeping a separate bounded request limit.
+- Prioritize semantic hash-agnostic `native-*`, `request-*`, `service-*`, report, maintenance, blade and knife chunks.
+- Capture dedicated contexts for the day/week/month report and vehicle main report endpoints, plus request/encryption/native-bridge call sites.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta3
 
 Broader read-only Maintenance & Tools discovery based on the first successful beta2 diagnostics sample.
