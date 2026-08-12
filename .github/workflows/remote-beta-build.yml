@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA7 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA8 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta7
+      BUILD_BRANCH: release/0.4.3-beta8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,10 +48,10 @@ jobs:
           git add custom_components/navimower/manifest.json \
                   custom_components/navimower/diagnostics.py \
                   custom_components/navimower/maintenance_h5_discovery.py \
-                  tests/test_v043_beta7.py \
+                  tests/test_v043_beta8.py \
                   CHANGELOG.md \
-                  .github/release-notes/0.4.3-beta7.md
-          git commit -m "Prepare Navimower 0.4.3-beta7 targeted request reserve"
+                  .github/release-notes/0.4.3-beta8.md
+          git commit -m "Prepare Navimower 0.4.3-beta8 candidate routing"
           git push --force-with-lease origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -59,7 +59,7 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta7 remote build succeeded. Full test suite passed and branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta8 remote build succeeded. Full test suite passed and branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
 
       - name: Comment failure
         if: steps.build.outcome != 'success'
@@ -67,7 +67,7 @@ jobs:
         run: |
           tail -n 120 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta7 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta8 remote build failed before publishing the release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
