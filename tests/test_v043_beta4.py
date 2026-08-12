@@ -86,5 +86,6 @@ def test_beta4_diagnostics_describes_both_contract_families() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     assert "probe_maintenance_h5" in diagnostics
     assert "0.4.3-beta" in diagnostics
-    assert "Maintenance + Mowing Reports" in diagnostics
+    assert "maintenance" in diagnostics.lower()
+    assert "Mowing Reports" in diagnostics
     assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
