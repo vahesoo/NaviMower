@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3-beta3
+
+Broader read-only Maintenance & Tools discovery based on the first successful beta2 diagnostics sample.
+
+### Changed
+
+- Crawl a bounded set of public lazy JavaScript chunks instead of discarding chunks whose import reference has no nearby maintenance keyword.
+- Collect endpoint paths and native bridge calls globally from each fetched asset, with maintenance-related chunks prioritized within the fixed request budget.
+- Add observed maintenance setting names such as `knifeDurationSet`, `chassisDurationSet`, `usedTime` and `setTime` to the discovery vocabulary.
+- Preserve sanitized previews of small public JSON route responses, including the `/vehicle/maintenance/` route seen in beta2 diagnostics.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta2
 
 Focused hotfix for beta1 Maintenance & Tools H5 discovery.
