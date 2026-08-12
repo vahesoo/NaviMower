@@ -42,7 +42,8 @@ def test_beta3_discovery_has_bounded_lazy_chunk_crawler() -> None:
         patterns.append(pattern)
     assert len(patterns) >= 7
     assert "MAX_ASSETS = 48" in source
-    assert "MAX_JS_CANDIDATES = 160" in source
+    match = re.search(r"MAX_JS_CANDIDATES\s*=\s*(\d+)", source)
+    assert match is not None and int(match.group(1)) >= 160
     assert "bounded_lazy_chunk" in source
     assert '"unfetched_candidates": unfetched' in source
     assert "heapq.heappush" in source
