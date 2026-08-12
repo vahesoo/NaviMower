@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3-beta5
+
+Targeted Maintenance + Mowing Reports H5 call-site recovery.
+
+### Changed
+
+- Recover minified report wrapper definitions and their call sites for the day/week/month and vehicle-main report endpoints.
+- Capture bounded report wrapper arguments and nearby mowing area/time/count response-field contexts.
+- Recover `handleH5MowerSet` wrapper definitions and bounded maintenance-related call sites.
+- Reserve up to 16 additional successful asset fetches for high-priority chunks discovered after the 48-asset broad crawl.
+
+### Safety
+
+- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
+- No report API request, maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
+
 ## 0.4.3-beta4
 
 Focused Maintenance + Mowing Reports public-H5 contract recovery.
