@@ -161,24 +161,24 @@ OBSERVED_REPORT_ASSET_BASENAMES = (
 
 MAX_HTML = 256 * 1024
 MAX_JS = 2 * 1024 * 1024
-MAX_ASSETS = 48
-MAX_TARGETED_ASSETS = 24
-MAX_BROAD_REQUESTS = 104
-MAX_TARGETED_REQUESTS = 56
-MAX_TOTAL_REQUESTS = 168
+MAX_ASSETS = 12
+MAX_TARGETED_ASSETS = 16
+MAX_BROAD_REQUESTS = 28
+MAX_TARGETED_REQUESTS = 28
+MAX_TOTAL_REQUESTS = 64
 # Compatibility alias for historical diagnostics/tests; phase limits above are authoritative.
 MAX_REQUESTS = MAX_TOTAL_REQUESTS
-MAX_CONTEXTS = 112
-MAX_REQUEST_CANDIDATES = 180
-MAX_JS_CANDIDATES = 220
-MAX_UNFETCHED_CANDIDATES = 120
+MAX_CONTEXTS = 48
+MAX_REQUEST_CANDIDATES = 56
+MAX_JS_CANDIDATES = 72
+MAX_UNFETCHED_CANDIDATES = 24
 SMALL_JSON_MAX = 8192
 MAX_SOURCE_MAPS = 0
 MAX_SOURCE_MAP = 4 * 1024 * 1024
 MAX_SOURCE_MAP_MATCHING_SOURCES = 32
-CONTEXT_RADIUS = 2200
-CANDIDATE_RADIUS = 1500
-CALLSITE_RADIUS = 2600
+CONTEXT_RADIUS = 1500
+CANDIDATE_RADIUS = 700
+CALLSITE_RADIUS = 2200
 MAX_CALLSITES_PER_WRAPPER = 8
 TIMEOUT = 5
 
@@ -232,6 +232,20 @@ MOWER_SET_ARROW_WRAPPER_RE = re.compile(
     r"\s*\(\s*[\"']handleH5MowerSet[\"']",
     re.I,
 )
+REPORT_TRANSPORT_ARROW_RE = re.compile(
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)?"
+    r"\s*=>[^;]{0,1000}?(?:sendEncryptionData)\s*\(\s*[\"']"
+    r"(?P<method>handleEncipherment|handleDecrypt)[\"']",
+    re.I | re.S,
+)
+EXPORT_BLOCK_RE = re.compile(
+    r"export\s*\{(?P<bindings>[^}]{1,12000})\}",
+    re.I,
+)
+IMPORT_BLOCK_RE = re.compile(
+    r"import\s*\{(?P<bindings>[^}]{1,12000})\}\s*from\s*[\"'](?P<source>[^\"']+)[\"']",
+    re.I,
+)
 
 
 def _host(client: Any) -> str:
@@ -281,7 +295,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
                 "text/html,application/json,application/javascript,"
                 "text/javascript,*/*;q=0.8"
             ),
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta8",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta9",
         },
         method="GET",
     )
@@ -323,6 +337,55 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
 
 def _public(result: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if key != "_text"}
+
+
+def _compact_asset_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
+    interesting_methods = {"handleH5MowerSet", "handleEncipherment", "handleDecrypt"}
+    bridge_calls = [
+        item for item in row.get("bridge_calls") or []
+        if str(item.get("method") or "") in interesting_methods
+    ]
+    endpoint_paths = [
+        path for path in row.get("endpoint_paths") or []
+        if path in REPORT_ENDPOINTS or "maintenance" in str(path).lower()
+    ]
+    matched_terms = list(row.get("matched_terms") or [])
+    markers = list(row.get("request_shape_markers") or [])
+    basename = urllib.parse.urlsplit(str(row.get("url") or "")).path.rsplit("/", 1)[-1].lower()
+    if not (
+        matched_terms
+        or endpoint_paths
+        or markers
+        or bridge_calls
+        or basename in OBSERVED_REPORT_ASSET_BASENAMES
+    ):
+        return None
+    return {
+        "url": row.get("url"),
+        "http_status": row.get("http_status"),
+        "body_length_read": row.get("body_length_read"),
+        "body_sha256": row.get("body_sha256"),
+        "truncated": row.get("truncated"),
+        "discovery_reason": row.get("discovery_reason"),
+        "candidate_score": row.get("candidate_score"),
+        "matched_terms": matched_terms[:28],
+        "endpoint_paths": endpoint_paths[:24],
+        "request_shape_markers": markers[:12],
+        "bridge_calls": bridge_calls[:12],
+        "js_reference_count": row.get("js_reference_count", 0),
+    }
+
+
+def _compact_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "url": row.get("url"),
+        "source": row.get("source"),
+        "basename": row.get("basename"),
+        "score": row.get("score"),
+        "theme_terms": list(row.get("theme_terms") or [])[:16],
+        "targeted_reason": list(row.get("targeted_reason") or [])[:12],
+        "source_context": str(row.get("source_context") or "")[:700],
+    }
 
 
 def _small_json(result: dict[str, Any]) -> Any | None:
@@ -470,6 +533,51 @@ def _balanced_argument(text: str, open_index: int, limit: int = 1800) -> tuple[s
     return re.sub(r"\s+", " ", value).strip(), True
 
 
+def _exported_aliases(text: str, local_name: str) -> list[str]:
+    aliases: list[str] = []
+    for match in EXPORT_BLOCK_RE.finditer(text):
+        for binding in match.group("bindings").split(","):
+            parts = re.split(r"\s+as\s+", binding.strip(), maxsplit=1, flags=re.I)
+            if not parts or parts[0].strip() != local_name:
+                continue
+            exported = parts[1].strip() if len(parts) > 1 else local_name
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", exported) and exported not in aliases:
+                aliases.append(exported)
+    return aliases
+
+
+def _import_aliases_for_source(
+    text: str,
+    base_url: str,
+    source_url: str,
+    exported_names: list[str],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    wanted = set(exported_names)
+    for match in IMPORT_BLOCK_RE.finditer(text):
+        resolved_source = _resolve_js_url(base_url, match.group("source"))
+        if _safe_url(resolved_source) != _safe_url(source_url):
+            continue
+        for binding in match.group("bindings").split(","):
+            parts = re.split(r"\s+as\s+", binding.strip(), maxsplit=1, flags=re.I)
+            if not parts:
+                continue
+            exported = parts[0].strip()
+            if exported not in wanted:
+                continue
+            local = parts[1].strip() if len(parts) > 1 else exported
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*", local):
+                continue
+            row = {
+                "exported_name": exported,
+                "local_name": local,
+                "imported_from": _safe_url(source_url),
+            }
+            if row not in rows:
+                rows.append(row)
+    return rows
+
+
 def _wrapper_definitions(
     text: str,
     source: str,
@@ -563,6 +671,31 @@ def _named_callsite_contexts(
     return rows
 
 
+def _report_transport_wrapper_definitions(text: str, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for match in REPORT_TRANSPORT_ARROW_RE.finditer(text):
+        nearby = text[max(0, match.start() - 220):min(len(text), match.end() + 900)]
+        row = {
+            "focus": "report_transport_wrapper_definition",
+            "name": match.group("name"),
+            "param": match.group("param"),
+            "method": match.group("method"),
+            "source": _safe_url(source),
+            "definition_offset": match.start(),
+            "context": re.sub(r"\s+", " ", nearby).strip(),
+        }
+        if not any(
+            item["name"] == row["name"]
+            and item["method"] == row["method"]
+            and item["source"] == row["source"]
+            for item in rows
+        ):
+            rows.append(row)
+        if len(rows) >= 16:
+            break
+    return rows
+
+
 def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]]:
     report_definitions = _wrapper_definitions(
         text,
@@ -576,7 +709,9 @@ def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]
         (("function", MOWER_SET_WRAPPER_RE), ("arrow", MOWER_SET_ARROW_WRAPPER_RE)),
         "mower_set_wrapper_definition",
     )
+    report_transport_definitions = _report_transport_wrapper_definitions(text, source)
     return {
+        "report_transport_wrapper_definitions": report_transport_definitions,
         "report_wrapper_definitions": report_definitions,
         "report_callsite_contexts": _named_callsite_contexts(
             text, source, report_definitions, "report_wrapper_callsite"
@@ -710,16 +845,34 @@ def _targeted_reasons(candidate: dict[str, Any]) -> list[str]:
     url = str(candidate.get("url") or "")
     basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
     theme_terms = {str(value).lower() for value in candidate.get("theme_terms") or []}
+    source_context = str(candidate.get("source_context") or "").lower()
     reasons: list[str] = []
-    if basename in OBSERVED_REPORT_ASSET_BASENAMES:
+    observed_report = basename in OBSERVED_REPORT_ASSET_BASENAMES
+    direct_theme = any(
+        term in theme_terms for term in TARGETED_THEME_TERMS if term != "mowing"
+    )
+    in_mowing_route = "mowing_records" in source_context or "mowingrecords" in source_context
+    filename_bonus = _filename_bonus(url)
+    if observed_report:
         reasons.append("observed_report_asset")
     for term in TARGETED_THEME_TERMS:
-        if term in theme_terms:
-            reasons.append(f"theme:{term}")
-    filename_bonus = _filename_bonus(url)
-    if filename_bonus >= 130:
+        if term not in theme_terms:
+            continue
+        if term == "mowing" and not (
+            in_mowing_route and (observed_report or filename_bonus >= 130)
+        ):
+            continue
+        reasons.append(f"theme:{term}")
+    if filename_bonus >= 130 and (
+        direct_theme
+        or in_mowing_route
+        or any(endpoint.lower() in source_context for endpoint in REPORT_ENDPOINTS)
+        or "handleh5mowerset" in source_context
+    ):
         reasons.append("semantic_filename")
-    if int(candidate.get("score") or 0) >= 180:
+    if int(candidate.get("score") or 0) >= 180 and (
+        observed_report or direct_theme or "semantic_filename" in reasons
+    ):
         reasons.append("high_context_score")
     return list(dict.fromkeys(reasons))
 
@@ -801,8 +954,8 @@ def _js_candidates(
             continue
         seen.add(url)
         score, terms = _candidate_score(text, match, url)
-        context_lo = max(0, match.start() - 900)
-        context_hi = min(len(text), match.end() + 900)
+        context_lo = max(0, match.start() - 500)
+        context_hi = min(len(text), match.end() + 500)
         candidate = {
             "url": url,
             "source": _safe_url(base_url),
@@ -872,15 +1025,19 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     bridge_candidates: list[dict[str, Any]] = []
     js_candidates: dict[str, dict[str, Any]] = {}
     targeted_candidates: dict[str, dict[str, Any]] = {}
+    asset_texts: dict[str, str] = {}
     fetched: set[str] = set()
     request_markers: set[tuple[str, str]] = set()
     bridge_markers: set[tuple[str, str, str]] = set()
     report_endpoints_found: set[str] = set()
+    report_transport_wrapper_definitions: list[dict[str, Any]] = []
     report_wrapper_definitions: list[dict[str, Any]] = []
     report_callsite_contexts: list[dict[str, Any]] = []
     report_field_contexts: list[dict[str, Any]] = []
     mower_set_wrapper_definitions: list[dict[str, Any]] = []
     mower_set_callsite_contexts: list[dict[str, Any]] = []
+    mower_set_export_aliases: list[dict[str, Any]] = []
+    mower_set_import_aliases: list[dict[str, Any]] = []
     targeted_fetches: list[dict[str, Any]] = []
     source_map_candidates: dict[str, dict[str, Any]] = {}
     source_map_fetches: list[dict[str, Any]] = []
@@ -928,6 +1085,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             assets.append(row)
             continue
 
+        asset_texts[_safe_url(url)] = text
         structure = _structure(text)
         row.update(structure)
         row["ui_key_candidates"] = _ui_key_candidates(text)
@@ -976,6 +1134,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             max_per_term=3,
         )
         callsite_findings = _callsite_findings(text, url)
+        report_transport_wrapper_definitions.extend(
+            callsite_findings["report_transport_wrapper_definitions"]
+        )
         report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
         report_callsite_contexts.extend(callsite_findings["report_callsite_contexts"])
         report_field_contexts.extend(callsite_findings["report_field_contexts"])
@@ -1127,6 +1288,7 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
 
         successful_assets += 1
         targeted_success += 1
+        asset_texts[_safe_url(url)] = text
         structure = _structure(text)
         row.update(structure)
         row["ui_key_candidates"] = _ui_key_candidates(text)
@@ -1191,6 +1353,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         )
 
         callsite_findings = _callsite_findings(text, url)
+        report_transport_wrapper_definitions.extend(
+            callsite_findings["report_transport_wrapper_definitions"]
+        )
         report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
         report_callsite_contexts.extend(callsite_findings["report_callsite_contexts"])
         report_field_contexts.extend(callsite_findings["report_field_contexts"])
@@ -1276,12 +1441,68 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             )
         source_map_fetches.append(fetch_row)
 
+    alias_callsite_markers: set[tuple[str, str, int]] = set()
+    for definition in mower_set_wrapper_definitions:
+        definition_source = _safe_url(str(definition.get("source") or ""))
+        local_name = str(definition.get("name") or "")
+        definition_text = asset_texts.get(definition_source, "")
+        if not definition_source or not local_name or not definition_text:
+            continue
+        exported_names = _exported_aliases(definition_text, local_name)
+        if not exported_names:
+            exported_names = [local_name]
+        for exported_name in exported_names:
+            export_row = {
+                "source": definition_source,
+                "local_name": local_name,
+                "exported_name": exported_name,
+            }
+            if export_row not in mower_set_export_aliases:
+                mower_set_export_aliases.append(export_row)
+        for asset_url, asset_text in asset_texts.items():
+            if asset_url == definition_source:
+                continue
+            imports = _import_aliases_for_source(
+                asset_text,
+                asset_url,
+                definition_source,
+                exported_names,
+            )
+            for import_row in imports:
+                full_import_row = {"source": asset_url, **import_row}
+                if full_import_row not in mower_set_import_aliases:
+                    mower_set_import_aliases.append(full_import_row)
+                synthetic_definition = {
+                    "name": import_row["local_name"],
+                    "endpoint": None,
+                    "definition_offset": -10000,
+                }
+                for callsite in _named_callsite_contexts(
+                    asset_text,
+                    asset_url,
+                    [synthetic_definition],
+                    "maintenance_mower_set_import_callsite",
+                ):
+                    marker = (
+                        str(callsite.get("source") or ""),
+                        str(callsite.get("wrapper_name") or ""),
+                        int(callsite.get("call_offset") or -1),
+                    )
+                    if marker in alias_callsite_markers:
+                        continue
+                    alias_callsite_markers.add(marker)
+                    callsite["exported_name"] = import_row["exported_name"]
+                    callsite["imported_from"] = import_row["imported_from"]
+                    mower_set_callsite_contexts.append(callsite)
+
     candidate_rows = sorted(
         js_candidates.values(),
         key=lambda row: (-int(row["score"]), int(row["order"]), str(row["url"])),
     )
     unfetched = [
-        row for row in candidate_rows if str(row["url"]) not in fetched
+        _compact_candidate(row)
+        for row in candidate_rows
+        if str(row["url"]) not in fetched and _is_targeted_candidate(row)
     ][:MAX_UNFETCHED_CANDIDATES]
 
     return {
@@ -1337,13 +1558,17 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "h5_observed_outer_shape": "body.data after native handleEncipherment",
             "private_cloud_observed_outer_shape": "p:101 envelope fields d,h,k,p,t",
             "reason": (
-                "The observable envelope shapes differ, so beta8 does not guess that "
+                "The observable envelope shapes differ, so beta9 does not guess that "
                 "private-cloud p:101 is interchangeable with the H5 native bridge."
             ),
         },
         "pages": pages,
-        "assets": assets,
-        "contexts": contexts[:MAX_CONTEXTS],
+        "asset_evidence": [
+            evidence
+            for row in assets
+            if (evidence := _compact_asset_evidence(row)) is not None
+        ],
+        "contexts": contexts[:12],
         "maintenance_contexts": maintenance_contexts[:MAX_CONTEXTS],
         "maintenance_ui_contexts": maintenance_ui_contexts[:MAX_CONTEXTS],
         "report_contexts": report_contexts[:MAX_CONTEXTS],
@@ -1352,18 +1577,30 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "source_map_fetches": source_map_fetches,
         "source_map_findings": source_map_findings,
         "bridge_call_contexts": bridge_call_contexts[:MAX_CONTEXTS],
-        "report_wrapper_definitions": report_wrapper_definitions[:64],
+        "report_transport_wrapper_definitions": report_transport_wrapper_definitions[:24],
+        "report_wrapper_definitions": report_wrapper_definitions[:48],
         "report_callsite_contexts": report_callsite_contexts[:96],
         "report_field_contexts": report_field_contexts[:96],
-        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:64],
-        "mower_set_callsite_contexts": mower_set_callsite_contexts[:96],
+        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:32],
+        "mower_set_export_aliases": mower_set_export_aliases[:24],
+        "mower_set_import_aliases": mower_set_import_aliases[:48],
+        "mower_set_callsite_contexts": mower_set_callsite_contexts[:64],
         "targeted_fetches": targeted_fetches,
-        "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
-        "bridge_candidates": bridge_candidates[:96],
+        "request_candidates": [
+            row for row in request_candidates if row.get("focus") != "supporting"
+        ][:MAX_REQUEST_CANDIDATES],
+        "bridge_candidates": [
+            row for row in bridge_candidates
+            if row.get("method") in ("handleH5MowerSet", "handleEncipherment", "handleDecrypt")
+        ][:24],
         "js_discovery": {
-            "strategy": "semantic_source_context_routing+reserved_targeted_queue+precise_mower_set_wrapper",
+            "strategy": "compact_contract_recovery+reserved_targeted_queue+cross_file_alias_trace",
             "candidate_count": len(candidate_rows),
-            "candidates": candidate_rows[:MAX_JS_CANDIDATES],
+            "candidates": [
+                _compact_candidate(row)
+                for row in candidate_rows
+                if _is_targeted_candidate(row)
+            ][:MAX_JS_CANDIDATES],
             "fetched_count": len(fetched),
             "successful_asset_count": successful_assets,
             "request_count": request_count,
@@ -1383,10 +1620,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "unfetched_candidates": unfetched,
         },
         "note": (
-            "0.4.3-beta8 fixes targeted candidate routing at discovery time, reserves "
-            "report/maintenance chunks before broad fetching, and anchors handleH5MowerSet "
-            "wrapper recovery to the actual native call expression. Public source-map "
-            "probing is disabled after repeated 404s. It remains read-only and executes no "
-            "report API request, maintenance mutation or mower command."
+            "0.4.3-beta9 narrows public-H5 fetching and diagnostics output to proven "
+            "Mowing Reports transport evidence and Parts maintenance call-site recovery, "
+            "including cross-file handleH5MowerSet export/import alias tracing. It remains "
+            "read-only and executes no report API request, maintenance mutation or mower command."
         ),
     }
