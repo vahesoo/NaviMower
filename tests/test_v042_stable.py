@@ -54,12 +54,15 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
             and "bounded read-only public-H5 inspection" in diagnostics
         )
     )
-    assert any(
-        phrase in diagnostics
-        for phrase in (
-            "never executes notification mutation actions",
-            "executes no mutation action",
-            "no mutation runs",
+    assert (
+        '"mutation_calls_executed": False' in diagnostics
+        or any(
+            phrase in diagnostics
+            for phrase in (
+                "never executes notification mutation actions",
+                "executes no mutation action",
+                "no mutation runs",
+            )
         )
     )
 
