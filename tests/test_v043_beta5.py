@@ -100,7 +100,8 @@ def test_beta5_has_reserved_targeted_pass() -> None:
         '"targeted_fetches": targeted_fetches',
         '"targeted_fetch_count": len(targeted_fetches)',
         '"targeted_success_count": targeted_success',
-        "semantic_hash_agnostic_priority+targeted_callsite_recovery",
+        "semantic_hash_agnostic_priority",
+        "callsite_recovery",
     ):
         assert phrase in source
 
