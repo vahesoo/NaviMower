@@ -40,6 +40,26 @@ MAINTENANCE_TARGETS = (
     "setTime",
 )
 
+MAINTENANCE_UI_TARGETS = (
+    "Parts maintenance",
+    "Blades",
+    "Used time",
+    "Remaining time",
+    "Replacement done",
+    "Chassis and other parts",
+    "Clean now",
+    "Buy now",
+    "Check now",
+    "replacementDone",
+    "replaceDone",
+    "cleanNow",
+    "remainingTime",
+    "tutorialVideosUrl",
+    "mallEntranceUrl",
+    "knife",
+    "chassis",
+)
+
 REPORT_ENDPOINTS = (
     "/vehicle/report/get-day-week-month-data",
     "/vehicle/report/vehicle-main-report",
@@ -58,7 +78,25 @@ REPORT_TARGETS = (
     "totalMowingTime",
 )
 
-TARGET_TERMS = MAINTENANCE_TARGETS + REPORT_ENDPOINTS + REPORT_TARGETS
+REPORT_TRANSPORT_TARGETS = (
+    "handleEncipherment",
+    "handleDecrypt",
+    "sendEncryptionData",
+    "keyDataOne",
+    "keyDataTwo",
+    "keyDataThree",
+    "keyDataFour",
+    "timeStamp",
+    "body:{data",
+    '"p":"101"',
+)
+
+TARGET_TERMS = (
+    MAINTENANCE_TARGETS
+    + MAINTENANCE_UI_TARGETS
+    + REPORT_ENDPOINTS
+    + REPORT_TARGETS
+)
 REQUEST_SHAPE_TERMS = (
     "handleH5MowerSet",
     "skipEncryption",
@@ -68,8 +106,12 @@ REQUEST_SHAPE_TERMS = (
 )
 THEME_TERMS = (
     "maintenance",
+    "parts",
     "blade",
     "knife",
+    "chassis",
+    "replacement",
+    "clean",
     "repair",
     "report",
     "mowing",
@@ -77,26 +119,43 @@ THEME_TERMS = (
 )
 PRIORITY_FILENAME_TOKENS = (
     "maintenance",
+    "repair",
+    "parts",
     "blade",
     "knife",
+    "chassis",
     "report",
     "request-",
     "native-",
     "service-",
+    "component",
     "mower",
     "setting",
+)
+TARGETED_THEME_TERMS = (
+    "maintenance",
+    "repair",
+    "parts",
+    "blade",
+    "knife",
+    "chassis",
+    "replacement",
+    "clean",
 )
 
 MAX_HTML = 256 * 1024
 MAX_JS = 2 * 1024 * 1024
 MAX_ASSETS = 48
-MAX_TARGETED_ASSETS = 16
-MAX_REQUESTS = 128
-MAX_CONTEXTS = 96
-MAX_REQUEST_CANDIDATES = 160
-MAX_JS_CANDIDATES = 160
-MAX_UNFETCHED_CANDIDATES = 80
+MAX_TARGETED_ASSETS = 24
+MAX_REQUESTS = 160
+MAX_CONTEXTS = 112
+MAX_REQUEST_CANDIDATES = 180
+MAX_JS_CANDIDATES = 220
+MAX_UNFETCHED_CANDIDATES = 120
 SMALL_JSON_MAX = 8192
+MAX_SOURCE_MAPS = 6
+MAX_SOURCE_MAP = 4 * 1024 * 1024
+MAX_SOURCE_MAP_MATCHING_SOURCES = 32
 CONTEXT_RADIUS = 2200
 CANDIDATE_RADIUS = 1500
 CALLSITE_RADIUS = 2600
@@ -128,6 +187,8 @@ BRIDGE_RE = re.compile(
     r"\s*\(\s*[\"'](?P<method>[^\"']{1,160})[\"']",
     re.I,
 )
+SOURCE_MAP_RE = re.compile(r"sourceMappingURL\s*=\s*([^\s*]+)", re.I)
+QUOTED_STRING_RE = re.compile(r"[\"']([^\"'\r\n]{2,180})[\"']")
 REPORT_WRAPPER_RE = re.compile(
     r"function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)"
     r"\s*\{.{0,1400}?[\"'](?P<endpoint>/vehicle/report/(?:get-day-week-month-data|vehicle-main-report))[\"']",
@@ -139,13 +200,15 @@ REPORT_ARROW_WRAPPER_RE = re.compile(
     re.I | re.S,
 )
 MOWER_SET_WRAPPER_RE = re.compile(
-    r"function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)"
-    r"\s*\{.{0,1800}?(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
+    r"function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*(?P<param>[A-Za-z_$][\w$]*)"
+    r"(?:\s*=\s*\{\})?\s*\)\s*\{[^{}]{0,700}?"
+    r"(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
     re.I | re.S,
 )
 MOWER_SET_ARROW_WRAPPER_RE = re.compile(
-    r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)\s*\)?"
-    r"\s*=>.{0,1800}?(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
+    r"(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*(?P<param>[A-Za-z_$][\w$]*)"
+    r"(?:\s*=\s*\{\})?\s*\)?\s*=>[^;]{0,700}?"
+    r"(?:callNative|sendMessageToNative)\s*\(\s*[\"']handleH5MowerSet[\"']",
     re.I | re.S,
 )
 
@@ -197,7 +260,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
                 "text/html,application/json,application/javascript,"
                 "text/javascript,*/*;q=0.8"
             ),
-            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta5",
+            "User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta6",
         },
         method="GET",
     )
@@ -452,15 +515,9 @@ def _named_callsite_contexts(
             maintenance_terms = [
                 term
                 for term in (
-                    "maintenance",
-                    "partsMaintenance",
-                    "blade",
-                    "knife",
-                    "componentMaintenance",
-                    "knifeDurationSet",
-                    "chassisDurationSet",
-                    "cutHeight",
-                    "cuttingHeight",
+                    MAINTENANCE_TARGETS
+                    + MAINTENANCE_UI_TARGETS
+                    + ("blade", "knife", "chassis", "repair")
                 )
                 if term.lower() in lower
             ]
@@ -513,19 +570,143 @@ def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]
     }
 
 
+
+def _ui_key_candidates(text: str) -> list[str]:
+    keywords = (
+        "maintenance",
+        "parts",
+        "blade",
+        "knife",
+        "chassis",
+        "replace",
+        "replacement",
+        "clean",
+        "remaining",
+        "used",
+    )
+    rows: list[str] = []
+    for value in QUOTED_STRING_RE.findall(text):
+        lower = value.lower()
+        if not any(keyword in lower for keyword in keywords):
+            continue
+        compact = re.sub(r"\s+", " ", value).strip()
+        if compact and compact not in rows:
+            rows.append(compact)
+        if len(rows) >= 96:
+            break
+    return rows
+
+
+def _source_map_url(text: str, asset_url: str) -> str:
+    matches = SOURCE_MAP_RE.findall(text)
+    if not matches:
+        return ""
+    raw = str(matches[-1]).strip().strip("'\"")
+    if not raw or raw.startswith("data:"):
+        return ""
+    return _safe_url(urllib.parse.urljoin(asset_url, raw))
+
+
+def _source_map_priority(text: str, asset_url: str) -> int:
+    lower = text.lower()
+    score = _filename_bonus(asset_url)
+    if "handleh5mowerset" in lower:
+        score += 700
+    if any(term.lower() in lower for term in MAINTENANCE_UI_TARGETS):
+        score += 560
+    if any(endpoint.lower() in lower for endpoint in REPORT_ENDPOINTS):
+        score += 500
+    if any(term.lower() in lower for term in REPORT_TRANSPORT_TARGETS):
+        score += 340
+    if "repair" in lower:
+        score += 180
+    return score
+
+
+def _source_map_findings(map_text: str, map_url: str, asset_url: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(map_text)
+    except Exception as err:  # noqa: BLE001 - diagnostics-only public source map
+        return {
+            "map_url": _safe_url(map_url),
+            "asset_url": _safe_url(asset_url),
+            "parse_error": sanitize(f"{type(err).__name__}: {err}"),
+        }
+    if not isinstance(payload, dict):
+        return {
+            "map_url": _safe_url(map_url),
+            "asset_url": _safe_url(asset_url),
+            "parse_error": "source map root is not an object",
+        }
+    sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    contents = (
+        payload.get("sourcesContent")
+        if isinstance(payload.get("sourcesContent"), list)
+        else []
+    )
+    target_terms = (
+        MAINTENANCE_UI_TARGETS
+        + MAINTENANCE_TARGETS
+        + REPORT_ENDPOINTS
+        + REPORT_TRANSPORT_TARGETS
+        + ("handleH5MowerSet", "repair", "knife", "chassis")
+    )
+    matching_sources: list[dict[str, Any]] = []
+    for index, source_name in enumerate(sources[:600]):
+        if index >= len(contents) or not isinstance(contents[index], str):
+            continue
+        content = contents[index]
+        lower = content.lower()
+        matched = [term for term in target_terms if term.lower() in lower]
+        if not matched:
+            continue
+        contexts: list[dict[str, str]] = []
+        for term in matched[:8]:
+            context = _context_around(content, term, radius=1400)
+            if context:
+                contexts.append({"term": term, "context": context})
+        matching_sources.append(
+            {
+                "source_name": sanitize(str(source_name)),
+                "matched_terms": matched[:32],
+                "ui_key_candidates": _ui_key_candidates(content)[:48],
+                "object_keys": _object_keys(content)[:80],
+                "contexts": sanitize(contexts[:12]),
+            }
+        )
+        if len(matching_sources) >= MAX_SOURCE_MAP_MATCHING_SOURCES:
+            break
+    return {
+        "map_url": _safe_url(map_url),
+        "asset_url": _safe_url(asset_url),
+        "source_count": len(sources),
+        "sources_content_count": len(contents),
+        "source_names": sanitize([str(value) for value in sources[:160]]),
+        "matching_sources": matching_sources,
+    }
+
 def _is_targeted_candidate(candidate: dict[str, Any]) -> bool:
     url = str(candidate.get("url") or "")
-    return _filename_bonus(url) >= 130 or int(candidate.get("score") or 0) >= 180
+    theme_terms = {str(value).lower() for value in candidate.get("theme_terms") or []}
+    return (
+        _filename_bonus(url) >= 130
+        or int(candidate.get("score") or 0) >= 180
+        or any(term in theme_terms for term in TARGETED_THEME_TERMS)
+    )
 
 def _filename_bonus(url: str) -> int:
     name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
     rules = (
-        ("maintenance", 280),
-        ("blade", 260),
-        ("knife", 260),
+        ("maintenance", 320),
+        ("repair", 310),
+        ("parts", 300),
+        ("blade", 280),
+        ("knife", 280),
+        ("chassis", 275),
         ("report", 250),
         ("request-", 240),
         ("native-", 230),
+        ("component", 220),
         ("service-", 190),
         ("mower", 150),
         ("setting", 130),
@@ -551,6 +732,8 @@ def _candidate_score(
     )
     score = _filename_bonus(url)
     score += min(120, len(terms) * 20)
+    if any(term in terms for term in TARGETED_THEME_TERMS):
+        score += 240
     if any(endpoint.lower() in nearby for endpoint in REPORT_ENDPOINTS):
         score += 360
     if any(term.lower() in nearby for term in MAINTENANCE_TARGETS):
@@ -641,7 +824,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     assets: list[dict[str, Any]] = []
     contexts: list[dict[str, Any]] = []
     maintenance_contexts: list[dict[str, Any]] = []
+    maintenance_ui_contexts: list[dict[str, Any]] = []
     report_contexts: list[dict[str, Any]] = []
+    report_transport_contexts: list[dict[str, Any]] = []
     request_shape_contexts: list[dict[str, Any]] = []
     bridge_call_contexts: list[dict[str, Any]] = []
     request_candidates: list[dict[str, Any]] = []
@@ -657,6 +842,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
     mower_set_wrapper_definitions: list[dict[str, Any]] = []
     mower_set_callsite_contexts: list[dict[str, Any]] = []
     targeted_fetches: list[dict[str, Any]] = []
+    source_map_candidates: dict[str, dict[str, Any]] = {}
+    source_map_fetches: list[dict[str, Any]] = []
+    source_map_findings: list[dict[str, Any]] = []
     successful_assets = 0
     request_count = 0
 
@@ -691,6 +879,23 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
 
         structure = _structure(text)
         row.update(structure)
+        row["ui_key_candidates"] = _ui_key_candidates(text)
+        map_url = _source_map_url(text, url)
+        if map_url:
+            parsed_map = urllib.parse.urlsplit(map_url)
+            if (
+                parsed_map.scheme == "https"
+                and parsed_map.netloc in allowed_hosts
+            ):
+                map_score = _source_map_priority(text, url)
+                row["source_map_url"] = map_url
+                previous_map = source_map_candidates.get(map_url)
+                if previous_map is None or map_score > int(previous_map["score"]):
+                    source_map_candidates[map_url] = {
+                        "url": map_url,
+                        "asset_url": _safe_url(url),
+                        "score": map_score,
+                    }
 
         found_maintenance = _contexts_for_terms(
             text, url, MAINTENANCE_TARGETS, "maintenance", max_per_term=2
@@ -705,6 +910,20 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "request_infrastructure",
             max_per_term=2,
         )
+        found_maintenance_ui = _contexts_for_terms(
+            text,
+            url,
+            MAINTENANCE_UI_TARGETS,
+            "parts_maintenance_ui",
+            max_per_term=3,
+        )
+        found_report_transport = _contexts_for_terms(
+            text,
+            url,
+            REPORT_TRANSPORT_TARGETS,
+            "report_transport",
+            max_per_term=3,
+        )
         callsite_findings = _callsite_findings(text, url)
         report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
         report_callsite_contexts.extend(callsite_findings["report_callsite_contexts"])
@@ -713,7 +932,9 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         mower_set_callsite_contexts.extend(callsite_findings["mower_set_callsite_contexts"])
 
         maintenance_contexts.extend(found_maintenance)
+        maintenance_ui_contexts.extend(found_maintenance_ui)
         report_contexts.extend(found_reports)
+        report_transport_contexts.extend(found_report_transport)
         request_shape_contexts.extend(found_request_shape)
         bridge_call_contexts.extend(
             [
@@ -843,6 +1064,23 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         targeted_success += 1
         structure = _structure(text)
         row.update(structure)
+        row["ui_key_candidates"] = _ui_key_candidates(text)
+        map_url = _source_map_url(text, url)
+        if map_url:
+            parsed_map = urllib.parse.urlsplit(map_url)
+            if (
+                parsed_map.scheme == "https"
+                and parsed_map.netloc in allowed_hosts
+            ):
+                map_score = _source_map_priority(text, url)
+                row["source_map_url"] = map_url
+                previous_map = source_map_candidates.get(map_url)
+                if previous_map is None or map_score > int(previous_map["score"]):
+                    source_map_candidates[map_url] = {
+                        "url": map_url,
+                        "asset_url": _safe_url(url),
+                        "score": map_score,
+                    }
         targeted_record["matched_terms"] = structure["matched_terms"]
         targeted_record["endpoint_paths"] = structure["endpoint_paths"]
 
@@ -859,8 +1097,24 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "request_infrastructure",
             max_per_term=2,
         )
+        found_maintenance_ui = _contexts_for_terms(
+            text,
+            url,
+            MAINTENANCE_UI_TARGETS,
+            "parts_maintenance_ui",
+            max_per_term=3,
+        )
+        found_report_transport = _contexts_for_terms(
+            text,
+            url,
+            REPORT_TRANSPORT_TARGETS,
+            "report_transport",
+            max_per_term=3,
+        )
         maintenance_contexts.extend(found_maintenance)
+        maintenance_ui_contexts.extend(found_maintenance_ui)
         report_contexts.extend(found_reports)
+        report_transport_contexts.extend(found_report_transport)
         request_shape_contexts.extend(found_request_shape)
         bridge_call_contexts.extend(
             [
@@ -923,6 +1177,36 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         targeted_fetches.append(targeted_record)
         assets.append(row)
 
+    source_map_success = 0
+    source_map_rows = sorted(
+        source_map_candidates.values(),
+        key=lambda row: (-int(row["score"]), str(row["url"])),
+    )
+    for map_candidate in source_map_rows[:MAX_SOURCE_MAPS]:
+        if request_count >= MAX_REQUESTS:
+            break
+        map_url = str(map_candidate["url"])
+        request_count += 1
+        result = _fetch(map_url, MAX_SOURCE_MAP)
+        map_text = str(result.get("_text") or "")
+        fetch_row = _public(result)
+        fetch_row["asset_url"] = map_candidate["asset_url"]
+        fetch_row["candidate_score"] = map_candidate["score"]
+        parsed_ok = bool(result.get("ok") and map_text and not result.get("truncated"))
+        fetch_row["parsed"] = parsed_ok
+        if parsed_ok:
+            source_map_success += 1
+            findings = _source_map_findings(
+                map_text,
+                map_url,
+                str(map_candidate["asset_url"]),
+            )
+            source_map_findings.append(findings)
+            fetch_row["matching_source_count"] = len(
+                findings.get("matching_sources") or []
+            )
+        source_map_fetches.append(fetch_row)
+
     candidate_rows = sorted(
         js_candidates.values(),
         key=lambda row: (-int(row["score"]), int(row["order"]), str(row["url"])),
@@ -942,8 +1226,10 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "focus": ["maintenance", "mowing_reports"],
         "entry_paths": list(ENTRY_PATHS),
         "maintenance_targets": list(MAINTENANCE_TARGETS),
+        "maintenance_ui_targets": list(MAINTENANCE_UI_TARGETS),
         "report_endpoints": list(REPORT_ENDPOINTS),
         "report_targets": list(REPORT_TARGETS),
+        "report_transport_targets": list(REPORT_TRANSPORT_TARGETS),
         "report_endpoints_found": sorted(report_endpoints_found),
         "request_shape_terms": list(REQUEST_SHAPE_TERMS),
         "priority_chunk_name_patterns": list(PRIORITY_FILENAME_TOKENS),
@@ -959,22 +1245,40 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
             "max_request_candidates": MAX_REQUEST_CANDIDATES,
             "max_js_candidates_in_output": MAX_JS_CANDIDATES,
             "small_json_max_bytes": SMALL_JSON_MAX,
+            "max_source_maps": MAX_SOURCE_MAPS,
+            "max_source_map_bytes": MAX_SOURCE_MAP,
+            "max_source_map_matching_sources": MAX_SOURCE_MAP_MATCHING_SOURCES,
         },
         "credential_safety": (
             "No token, cookie, uid, device id, mower serial or encrypted p:101 "
             "business payload is sent to H5. Only public GET resources are read."
         ),
         "investigation_goal": (
-            "Recover official Maintenance & Tools write-contract structure for blade "
-            "runtime reset and maintenance mode, plus read-only Mowing Reports "
-            "contracts for day/week/month data and the main vehicle report."
+            "Trace Parts maintenance from UI/i18n/source-map evidence through the "
+            "Replacement done and Clean now handlers to the official write contract, "
+            "while recovering the remaining H5 encryption/transport layer for the "
+            "already identified read-only Mowing Reports contracts."
         ),
+        "live_report_request_executed": False,
+        "report_transport_assessment": {
+            "status": "not_assumed",
+            "h5_observed_outer_shape": "body.data after native handleEncipherment",
+            "private_cloud_observed_outer_shape": "p:101 envelope fields d,h,k,p,t",
+            "reason": (
+                "The observable envelope shapes differ, so beta6 does not guess that "
+                "private-cloud p:101 is interchangeable with the H5 native bridge."
+            ),
+        },
         "pages": pages,
         "assets": assets,
         "contexts": contexts[:MAX_CONTEXTS],
         "maintenance_contexts": maintenance_contexts[:MAX_CONTEXTS],
+        "maintenance_ui_contexts": maintenance_ui_contexts[:MAX_CONTEXTS],
         "report_contexts": report_contexts[:MAX_CONTEXTS],
+        "report_transport_contexts": report_transport_contexts[:MAX_CONTEXTS],
         "request_shape_contexts": request_shape_contexts[:MAX_CONTEXTS],
+        "source_map_fetches": source_map_fetches,
+        "source_map_findings": source_map_findings,
         "bridge_call_contexts": bridge_call_contexts[:MAX_CONTEXTS],
         "report_wrapper_definitions": report_wrapper_definitions[:64],
         "report_callsite_contexts": report_callsite_contexts[:96],
@@ -985,20 +1289,24 @@ def probe_maintenance_h5(client: Any) -> dict[str, Any]:
         "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
         "bridge_candidates": bridge_candidates[:96],
         "js_discovery": {
-            "strategy": "semantic_hash_agnostic_priority+targeted_callsite_recovery",
+            "strategy": "semantic_hash_agnostic_priority+targeted_callsite_recovery+ui_source_map_recovery",
             "candidate_count": len(candidate_rows),
             "candidates": candidate_rows[:MAX_JS_CANDIDATES],
             "fetched_count": len(fetched),
             "successful_asset_count": successful_assets,
             "request_count": request_count,
-            "failed_request_count": request_count - successful_assets,
+            "failed_request_count": request_count - successful_assets - source_map_success,
             "targeted_fetch_count": len(targeted_fetches),
             "targeted_success_count": targeted_success,
+            "source_map_candidate_count": len(source_map_rows),
+            "source_map_fetch_count": len(source_map_fetches),
+            "source_map_success_count": source_map_success,
             "unfetched_candidates": unfetched,
         },
         "note": (
-            "0.4.3-beta5 performs targeted wrapper/call-site recovery on top of the "
-            "hash-agnostic crawl, with a reserved high-priority asset pass. It remains "
-            "read-only and executes no maintenance mutation or mower command."
+            "0.4.3-beta6 steps back to Parts maintenance UI/i18n/route/source-map "
+            "recovery, fixes default-argument handleH5MowerSet wrapper detection, and "
+            "keeps Mowing Reports focused on transport proof. It remains read-only and "
+            "executes no report API request, maintenance mutation or mower command."
         ),
     }
