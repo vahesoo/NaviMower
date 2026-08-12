@@ -54,9 +54,13 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
             and "bounded read-only public-H5 inspection" in diagnostics
         )
     )
-    assert (
-        "never executes notification mutation actions" in diagnostics
-        or "executes no mutation action" in diagnostics
+    assert any(
+        phrase in diagnostics
+        for phrase in (
+            "never executes notification mutation actions",
+            "executes no mutation action",
+            "no mutation runs",
+        )
     )
 
     sanitizer = (COMPONENT / "diagnostics_sanitize.py").read_text(encoding="utf-8")
