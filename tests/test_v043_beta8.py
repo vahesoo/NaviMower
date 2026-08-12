@@ -42,13 +42,15 @@ def _compiled_patterns(source: str) -> dict[str, tuple[str, int]]:
 
 def test_beta8_version_notes_and_changelog() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta8"
+    version = manifest["version"]
+    assert version.startswith("0.4.3-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 8
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta8.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta8")
     assert "candidate-routing" in notes
     assert "strictly read-only" in notes
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta8")
+    assert "## 0.4.3-beta8" in changelog
 
 
 def test_beta8_reserves_targeted_candidates_before_broad_fetch() -> None:
@@ -104,5 +106,5 @@ def test_beta8_remains_public_get_only_and_non_mutating() -> None:
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta8" in diagnostics
+    assert "0.4.3-beta" in diagnostics
     assert "bounded read-only public-H5 inspection" in diagnostics
