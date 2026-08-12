@@ -12,7 +12,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta2_version_and_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta2"
+    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta2.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta2")
     assert "Download diagnostics" in notes
@@ -51,7 +51,7 @@ def test_beta2_patterns_target_real_javascript_syntax() -> None:
     assert r're.sub(r"\s+"' in source
     assert r'<script\\b' not in source
     assert r'\\s*\\(' not in source
-    assert "NavimowerDiagnostics/0.4.3-beta2" in source
+    assert "NavimowerDiagnostics/0.4.3-beta" in source
 
 
 def test_beta2_diagnostics_keeps_read_only_maintenance_probe() -> None:
