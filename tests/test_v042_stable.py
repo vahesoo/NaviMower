@@ -51,7 +51,12 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
         "makes no extra vendor" in diagnostics
         or (
             "maintenance_h5_discovery" in diagnostics
-            and "bounded read-only public-H5 inspection" in diagnostics
+            and "public-H5 inspection" in diagnostics
+        )
+        or (
+            "error_h5_discovery" in diagnostics
+            and "public H5 probe" in diagnostics
+            and "read-only" in diagnostics
         )
     )
     assert (
@@ -62,6 +67,7 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
                 "never executes notification mutation actions",
                 "executes no mutation action",
                 "no mutation runs",
+                "executes no mower command",
             )
         )
     )
