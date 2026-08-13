@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.3-beta5 targeted H5 call-site recovery."""
+"""Cumulative regression contracts retained from Navimower 0.4.3-beta5."""
 from __future__ import annotations
 
 import ast
@@ -35,7 +35,7 @@ def _compiled_patterns(source: str) -> dict[str, str]:
     return rows
 
 
-def test_beta5_version_notes_and_changelog() -> None:
+def test_beta5_release_artifacts_remain_in_history() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta5.md").read_text(encoding="utf-8")
@@ -115,9 +115,4 @@ def test_beta5_remains_public_get_only_and_non_mutating() -> None:
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "bounded read-only public-H5 inspection" in diagnostics
-    assert (
-        "targeted" in diagnostics.lower()
-        or "compact" in diagnostics.lower()
-        or "call-site" in diagnostics.lower()
-    )
+    assert '"maintenance_h5_discovery"' in diagnostics
