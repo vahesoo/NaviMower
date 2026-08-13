@@ -67,18 +67,19 @@ def test_mow_command_trace_remains_internal_without_diagnostics_lookup() -> None
     assert "self.coordinator.begin_mow_command_trace(" in mower
     assert "command_status" not in diagnostics
     assert "last_mow_command" not in diagnostics
-    assert (
-        "makes no extra vendor or public-H5 requests" in diagnostics
-        or (
-            "maintenance_h5_discovery" in diagnostics
-            and "public-H5 inspection" in diagnostics
-        )
-        or (
-            "error_h5_discovery" in diagnostics
-            and "public H5 probe" in diagnostics
-            and "read-only" in diagnostics
-        )
-    )
+    if "error_h5_discovery" in diagnostics:
+        error_discovery = (COMPONENT / "error_h5_discovery.py").read_text()
+        assert "probe_error_h5" in diagnostics
+        assert 'method="GET"' in error_discovery
+        assert '"mutation_calls_executed": False' in error_discovery
+        assert '"live_command_call_executed": False' in error_discovery
+        assert "client.call(" not in error_discovery
+    elif "maintenance_h5_discovery" in diagnostics:
+        maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
+        assert 'method="GET"' in maintenance_discovery
+        assert '"mutation_calls_executed": False' in maintenance_discovery
+    else:
+        assert "makes no extra vendor" in diagnostics
 
 
 def test_command_number_extraction_handles_known_response_shapes() -> None:
@@ -112,6 +113,12 @@ def test_card_route_simplifier_uses_30_cm_and_keeps_endpoints() -> None:
     )
     module = ast.Module(body=[function], type_ignores=[])
     namespace = {
+        "Any": object,
+        "_SESSION_CLOCK_SKEW_MS": 30_000,
+        "_SESSION_MERGE_GAP_MS": 300_000,
+    }
+    namespace = {
+        "Any": object,
         "as_float": lambda value: float(value),
         "MAP_CARD_MIN_POINT_DISTANCE_M": 0.30,
     }
