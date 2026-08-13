@@ -300,6 +300,7 @@ def _refresh_notification_cache(coordinator: Any) -> None:
     # Keep only the newest ten normalized read-only vendor rows. Navimower-local
     # rows have a separate bounded persistent Store and are merged during snapshot
     # decoration instead of being inserted into the vendor cache.
+    coordinator._notification_raw_cache = deepcopy(response)  # noqa: SLF001
     normalized = _normalize_response(response)
     vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
     coordinator._notification_cache = {  # noqa: SLF001
