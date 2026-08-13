@@ -14,6 +14,7 @@ from .diagnostics_sanitize import sanitize
 from .private_cloud_region import private_cloud_region_diagnostics
 from .maintenance_h5_discovery import probe_maintenance_h5
 from .error_h5_discovery import probe_error_h5
+from .notification_actions import notification_detail_diagnostics
 from .state_semantics import error_transition_diagnostics
 from .resume import resume_command_diagnostics
 
@@ -30,8 +31,10 @@ async def async_get_config_entry_diagnostics(
     """Return a sanitized snapshot for Home Assistant Download diagnostics.
 
     Normal diagnostics use the config entry, coordinator state and caches.
-    0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses Download diagnostics on the active error,
-    MQTT-to-private arbitration evidence, raw vendor notification fields and public-H5 recovery of Clear and resume / Reboot Mower contracts.
+    0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and focuses
+    Download diagnostics on active error command recovery, including two-pass
+    public-H5 evidence and any notification-detail response already produced by
+    an explicit user Mark notification as read action.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -100,7 +103,7 @@ async def async_get_config_entry_diagnostics(
         "read_only": True,
         "beta_only": True,
         "paused": True,
-        "reason": "0.4.3-beta10 diagnostics focus only on active error action recovery",
+        "reason": "0.4.3-beta11 diagnostics focus only on active error action recovery",
         "mutation_calls_executed": False,
     }
     try:
@@ -273,6 +276,7 @@ async def async_get_config_entry_diagnostics(
                 "vendor_notification_normalized_cache": deepcopy(
                     getattr(coordinator, "_notification_cache", None)
                 ),
+                "last_notification_detail": notification_detail_diagnostics(coordinator),
                 "command_discovery": deepcopy(error_command_discovery),
             }
         ),
@@ -306,8 +310,9 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses the beta-only public H5 probe on Clear and resume / Reboot Mower evidence for the active error.",
+            "0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and uses two-pass public H5 selection for Clear and resume / Reboot Mower evidence.",
             "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",
+            "Notification detail evidence is retained only after an explicit user Mark notification as read action; downloading diagnostics never calls the detail endpoint.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
             "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
             "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
