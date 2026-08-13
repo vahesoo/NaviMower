@@ -40,6 +40,45 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
           python .github/scripts/remote_beta_builder.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("custom_components/navimower/error_h5_discovery.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(chr(92) * 2, chr(92))
+          path.write_text(source, encoding="utf-8")
+          PY
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import re
+
+          source = Path("custom_components/navimower/error_h5_discovery.py").read_text(encoding="utf-8")
+          tree = ast.parse(source)
+          patterns = {}
+          for node in tree.body:
+              if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                  continue
+              target = node.targets[0]
+              call = node.value
+              if not (
+                  isinstance(target, ast.Name)
+                  and isinstance(call, ast.Call)
+                  and isinstance(call.func, ast.Attribute)
+                  and isinstance(call.func.value, ast.Name)
+                  and call.func.value.id == "re"
+                  and call.func.attr == "compile"
+                  and call.args
+              ):
+                  continue
+              patterns[target.id] = ast.literal_eval(call.args[0])
+          assert re.compile(patterns["SCRIPT_RE"], re.I).search('<script src="app.js">')
+          assert re.compile(patterns["JS_RE"], re.I).search('"index-123.js"')
+          assert re.compile(patterns["ENDPOINT_RE"], re.I).search('"/vehicle/set/send"')
+          assert re.compile(patterns["HTTP_RE"], re.I).search('method:"POST"')
+          bridge = re.compile(patterns["BRIDGE_RE"], re.I).search('je.callNative("handleError",e)')
+          assert bridge is not None and bridge.group("method") == "handleError"
+          PY
           python -m compileall -q custom_components/navimower
           python -m pytest -q
           git diff --check
@@ -61,13 +100,13 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta10 remote build succeeded. Full test suite passed and branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta10 remote build succeeded. Full test suite and error-discovery regex smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
 
       - name: Comment failure
         if: steps.build.outcome != 'success'
         shell: bash
         run: |
-          tail -n 140 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
+          tail -n 160 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
             echo '0.4.3-beta10 remote build failed before publishing the release branch.'
             echo
