@@ -10,6 +10,14 @@ import urllib.request
 
 from .api.regions import canonical_region
 from .diagnostics_sanitize import sanitize
+from .maintenance_h5_discovery import (
+    MOWER_SET_ARROW_WRAPPER_RE,
+    MOWER_SET_WRAPPER_RE,
+    _exported_aliases,
+    _import_aliases_for_source,
+    _named_callsite_contexts,
+    _wrapper_definitions,
+)
 
 MAX_HTML = 256 * 1024
 MAX_ROOT_JS = 2 * 1024 * 1024
@@ -54,6 +62,7 @@ BASE_TARGET_TERMS = (
     "c:behavior",
     "cmdCode",
     "cmd_code",
+    "handleH5MowerSet",
     "sendEncryptionData",
     "callNative",
 )
@@ -68,6 +77,7 @@ COMMAND_NEEDLES = (
     "cmdCode",
     "c:behavior",
     "/vehicle/set/send",
+    "handleH5MowerSet",
     "callNative",
     "sendEncryptionData",
 )
@@ -84,6 +94,11 @@ PRIORITY_FILENAME_TOKENS = (
     "native-",
     "state",
 )
+
+# Temporary beta-only fallback for the multi-signal lazy chunk observed in the
+# beta10 diagnostics sample. Semantic scoring remains authoritative and this
+# hint is removed once the Clear and resume contract is integrated.
+OBSERVED_ERROR_COMMAND_ASSETS = ("index-594ad42d.js",)
 
 # Current public-app roots observed during the 0.4.3 beta line. They are only
 # fallback GET targets if the live HTML does not enumerate them; no identity is sent.
@@ -137,7 +152,7 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
         url,
         headers={
             "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta10",
+            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta11",
         },
         method="GET",
     )
@@ -190,6 +205,70 @@ def _priority(url: str, source_context: str = "") -> int:
     if "cloud-acc.navimow.com" in url:
         score += 25
     return score
+
+
+def _full_fetch_priority(
+    candidate: dict[str, Any],
+    hits: list[str],
+    keys: list[dict[str, str]],
+    known_key_hits: list[str],
+    command_hits: list[str],
+) -> tuple[int, list[str]]:
+    """Rank full-fetch candidates only after all prefix evidence is known."""
+    score = int(candidate.get("priority") or 0)
+    reasons: list[str] = []
+    lower_hits = {value.lower() for value in hits}
+    lower_commands = {value.lower() for value in command_hits}
+    basename = urllib.parse.urlsplit(str(candidate.get("url") or "")).path.rsplit("/", 1)[-1].lower()
+
+    if basename in OBSERVED_ERROR_COMMAND_ASSETS:
+        score += 1600
+        reasons.append("observed_beta10_multi_signal_asset")
+    if keys or known_key_hits:
+        score += 900 + 120 * (len(keys) + len(known_key_hits))
+        reasons.append("translation_key_evidence")
+    if any(label.lower() in lower_hits for label in UI_LABELS):
+        score += 1400
+        reasons.append("exact_error_action_label")
+    if "handleh5mowerset" in lower_commands or "handleh5mowerset" in lower_hits:
+        score += 1300
+        reasons.append("mower_set_native_bridge")
+    if any(value in lower_commands for value in ("cmdcode", "c:behavior", "/vehicle/set/send")):
+        score += 1200
+        reasons.append("private_command_shape")
+    if "clear" in lower_commands and "resume" in lower_commands:
+        score += 1500
+        reasons.append("clear_plus_resume_prefix")
+    if "clear" in lower_commands and ({"restart", "reboot"} & lower_commands):
+        score += 800
+        reasons.append("clear_plus_restart_prefix")
+    if {"fault", "error"} & lower_commands and {"resume", "restart", "reboot"} & lower_commands:
+        score += 500
+        reasons.append("fault_recovery_terms")
+
+    specific_hits = {
+        "clearandresume",
+        "clear_and_resume",
+        "clearresume",
+        "resumeaftererror",
+        "clearerror",
+        "reseterror",
+        "clearfault",
+        "resetfault",
+        "rebootmower",
+        "reboot_mower",
+        "restartmower",
+        "restart_mower",
+    }
+    if specific_hits & lower_hits:
+        score += 1200
+        reasons.append("specific_action_symbol")
+
+    score += min(500, len(hits) * 70)
+    score += min(350, len(command_hits) * 45)
+    if not reasons and (hits or command_hits or int(candidate.get("priority") or 0) >= 180):
+        reasons.append("generic_prefix_evidence")
+    return score, list(dict.fromkeys(reasons))
 
 
 def _contexts(text: str, source: str, terms: list[str]) -> list[dict[str, Any]]:
@@ -269,6 +348,46 @@ def _js_references(text: str, source: str, hosts: set[str]) -> list[dict[str, An
     return rows
 
 
+def _mower_set_findings(text: str, source: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    definitions = _wrapper_definitions(
+        text,
+        source,
+        (("function", MOWER_SET_WRAPPER_RE), ("arrow", MOWER_SET_ARROW_WRAPPER_RE)),
+        "error_mower_set_wrapper_definition",
+    )
+    callsites = _named_callsite_contexts(
+        text,
+        source,
+        definitions,
+        "error_mower_set_direct_callsite",
+    )
+    exports: list[dict[str, Any]] = []
+    for definition in definitions:
+        local_name = str(definition.get("name") or "")
+        for exported_name in _exported_aliases(text, local_name):
+            row = {
+                "source": _safe_url(source),
+                "local_name": local_name,
+                "exported_name": exported_name,
+            }
+            if row not in exports:
+                exports.append(row)
+    return definitions, exports, callsites
+
+
+def _error_terms_nearby(context: str) -> list[str]:
+    lower = str(context or "").lower()
+    return [term for term in (*UI_LABELS, *COMMAND_NEEDLES) if term.lower() in lower]
+
+
+def _append_unique(rows: list[dict[str, Any]], additions: list[dict[str, Any]], limit: int) -> None:
+    for row in additions:
+        if row not in rows:
+            rows.append(row)
+        if len(rows) >= limit:
+            break
+
+
 def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
     """Inspect only public H5 assets for error-dialog command evidence."""
     host = _host(client)
@@ -307,6 +426,11 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     command_contexts: list[dict[str, Any]] = []
     translation_keys: list[dict[str, str]] = []
     matched_terms: set[str] = set()
+    fetched_texts: dict[str, str] = {}
+    mower_set_wrapper_definitions: list[dict[str, Any]] = []
+    mower_set_export_aliases: list[dict[str, Any]] = []
+    mower_set_import_aliases: list[dict[str, Any]] = []
+    mower_set_callsite_contexts: list[dict[str, Any]] = []
 
     for url in root_urls[:10]:
         row = _fetch(url, MAX_ROOT_JS)
@@ -316,6 +440,7 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         root_rows.append({**_public(row), "matched_terms": hits[:40]})
         if not row.get("ok") or not text:
             continue
+        fetched_texts[_safe_url(url)] = text
         for item in _contexts(text, url, hits):
             if item not in ui_contexts:
                 ui_contexts.append(item)
@@ -325,6 +450,10 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         for item in _translation_keys(text):
             if item not in translation_keys:
                 translation_keys.append(item)
+        definitions, exports, callsites = _mower_set_findings(text, url)
+        _append_unique(mower_set_wrapper_definitions, definitions, 32)
+        _append_unique(mower_set_export_aliases, exports, 32)
+        _append_unique(mower_set_callsite_contexts, callsites, 64)
         for candidate in _js_references(text, url, allowed_hosts):
             existing = candidate_map.get(candidate["url"])
             if existing is None or candidate["priority"] > existing["priority"]:
@@ -350,11 +479,13 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     prefix_successes = 0
     full_requests = 0
     full_successes = 0
-    matched_assets: list[dict[str, Any]] = []
     scanned: set[str] = set()
-    full_fetched: set[str] = set()
+    prefix_evidence: list[dict[str, Any]] = []
     index = 0
 
+    # Pass 1: collect bounded prefix evidence from the whole candidate queue. Do
+    # not spend any full-fetch slots yet; beta10 could exhaust the 18-slot quota
+    # before later, stronger multi-signal candidates were reached.
     while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS:
         candidate = queue[index]
         index += 1
@@ -379,11 +510,14 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         for item in keys:
             if item not in translation_keys:
                 translation_keys.append(item)
+        full_score, full_reasons = _full_fetch_priority(
+            candidate, hits, keys, known_key_hits, command_hits
+        )
         should_full = bool(
             hits
             or keys
             or known_key_hits
-            or (command_hits and int(candidate.get("priority") or 0) >= 55)
+            or command_hits
             or int(candidate.get("priority") or 0) >= 180
         )
         asset_row = {
@@ -397,49 +531,139 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
             "translation_keys": keys[:20],
             "known_translation_key_hits": known_key_hits[:20],
             "command_terms": command_hits[:30],
+            "full_fetch_score": full_score,
+            "full_fetch_reasons": full_reasons,
+            "full_fetch_eligible": should_full,
             "full_fetched": False,
         }
+        prefix_evidence.append(asset_row)
 
-        if should_full and full_requests < MAX_FULL_MATCHES:
-            full = _fetch(url, MAX_FULL_JS)
-            full_requests += 1
-            full_fetched.add(url)
-            full_text = str(full.get("_text") or "")
-            if full.get("ok"):
-                full_successes += 1
-            full_hits = [term for term in target_terms if term.lower() in full_text.lower()]
-            full_keys = _translation_keys(full_text) if full_text else []
-            for item in full_keys:
-                if item not in translation_keys:
-                    translation_keys.append(item)
-            key_terms = [item["key"] for item in translation_keys if item.get("key")]
-            context_terms = list(dict.fromkeys([*full_hits, *key_terms, *COMMAND_NEEDLES]))
-            contexts = _contexts(full_text, url, [term for term in context_terms if term.lower() in full_text.lower()])
-            for context in contexts:
-                if context["term"] in COMMAND_NEEDLES or any(
-                    marker.lower() in context["context"].lower()
-                    for marker in ("cmdcode", "/vehicle/set/send", "callnative", "sendencryptiondata", "reboot", "clear")
-                ):
-                    if context not in command_contexts and len(command_contexts) < MAX_CONTEXTS:
-                        command_contexts.append(context)
-                elif context not in ui_contexts and len(ui_contexts) < MAX_CONTEXTS:
-                    ui_contexts.append(context)
-            for child in _js_references(full_text, url, allowed_hosts):
-                if child["url"] not in candidate_map:
-                    candidate_map[child["url"]] = child
-                    queue.append(child)
-            asset_row.update(
-                {
-                    "full_fetched": True,
-                    "full_http_status": full.get("http_status"),
-                    "full_length": full.get("body_length_read"),
-                    "full_sha256": full.get("body_sha256"),
-                    "full_matched_terms": full_hits[:50],
-                    "full_translation_keys": full_keys[:20],
-                }
+        if text:
+            for child in _js_references(text, url, allowed_hosts):
+                if child["url"] in candidate_map:
+                    continue
+                candidate_map[child["url"]] = child
+                queue.append(child)
+
+    full_plan = sorted(
+        [row for row in prefix_evidence if row.get("full_fetch_eligible")],
+        key=lambda row: (
+            -int(row.get("full_fetch_score") or 0),
+            -int(row.get("priority") or 0),
+            str(row.get("url") or ""),
+        ),
+    )
+    asset_by_url = {str(row.get("url") or ""): row for row in prefix_evidence}
+
+    # Pass 2: spend the full-fetch budget only on the strongest prefix evidence.
+    for rank, planned in enumerate(full_plan[:MAX_FULL_MATCHES], start=1):
+        url = str(planned.get("url") or "")
+        if not url:
+            continue
+        full = _fetch(url, MAX_FULL_JS)
+        full_requests += 1
+        full_text = str(full.get("_text") or "")
+        if full.get("ok"):
+            full_successes += 1
+            fetched_texts[_safe_url(url)] = full_text
+        full_hits = [term for term in target_terms if term.lower() in full_text.lower()]
+        full_keys = _translation_keys(full_text) if full_text else []
+        for item in full_keys:
+            if item not in translation_keys:
+                translation_keys.append(item)
+        key_terms = [item["key"] for item in translation_keys if item.get("key")]
+        context_terms = list(dict.fromkeys([*full_hits, *key_terms, *COMMAND_NEEDLES]))
+        contexts = _contexts(
+            full_text,
+            url,
+            [term for term in context_terms if term.lower() in full_text.lower()],
+        )
+        for context in contexts:
+            if context["term"] in COMMAND_NEEDLES or any(
+                marker.lower() in context["context"].lower()
+                for marker in (
+                    "cmdcode",
+                    "/vehicle/set/send",
+                    "handleh5mowerset",
+                    "callnative",
+                    "sendencryptiondata",
+                    "reboot",
+                    "clear",
+                )
+            ):
+                if context not in command_contexts and len(command_contexts) < MAX_CONTEXTS:
+                    command_contexts.append(context)
+            elif context not in ui_contexts and len(ui_contexts) < MAX_CONTEXTS:
+                ui_contexts.append(context)
+
+        definitions, exports, callsites = _mower_set_findings(full_text, url)
+        _append_unique(mower_set_wrapper_definitions, definitions, 32)
+        _append_unique(mower_set_export_aliases, exports, 32)
+        _append_unique(mower_set_callsite_contexts, callsites, 64)
+
+        asset_row = asset_by_url[url]
+        asset_row.update(
+            {
+                "full_fetch_rank": rank,
+                "full_fetched": True,
+                "full_http_status": full.get("http_status"),
+                "full_length": full.get("body_length_read"),
+                "full_sha256": full.get("body_sha256"),
+                "full_matched_terms": full_hits[:50],
+                "full_translation_keys": full_keys[:20],
+            }
+        )
+
+    # Recover the beta9-proven handleH5MowerSet wrapper across ES-module
+    # export/import aliases and capture the actual imported call arguments.
+    for export_row in list(mower_set_export_aliases):
+        source_url = str(export_row.get("source") or "")
+        exported_name = str(export_row.get("exported_name") or "")
+        if not source_url or not exported_name:
+            continue
+        for consumer_url, consumer_text in fetched_texts.items():
+            if consumer_url == source_url:
+                continue
+            imports = _import_aliases_for_source(
+                consumer_text,
+                consumer_url,
+                source_url,
+                [exported_name],
             )
-        if hits or keys or known_key_hits or command_hits or asset_row["full_fetched"]:
-            matched_assets.append(asset_row)
+            for import_row in imports:
+                enriched_import = {"source": consumer_url, **import_row}
+                _append_unique(mower_set_import_aliases, [enriched_import], 48)
+                local_name = str(import_row.get("local_name") or "")
+                if not local_name:
+                    continue
+                synthetic_definition = {
+                    "name": local_name,
+                    "endpoint": None,
+                    "definition_offset": -10_000,
+                }
+                imported_calls = _named_callsite_contexts(
+                    consumer_text,
+                    consumer_url,
+                    [synthetic_definition],
+                    "error_mower_set_imported_callsite",
+                )
+                for callsite in imported_calls:
+                    callsite["exported_name"] = exported_name
+                    callsite["imported_from"] = source_url
+                    callsite["error_terms_nearby"] = _error_terms_nearby(
+                        str(callsite.get("context") or "")
+                    )
+                _append_unique(mower_set_callsite_contexts, imported_calls, 64)
+
+    matched_assets = [
+        row
+        for row in prefix_evidence
+        if row.get("matched_terms")
+        or row.get("translation_keys")
+        or row.get("known_translation_key_hits")
+        or row.get("command_terms")
+        or row.get("full_fetched")
+    ]
 
     return {
         "ok": True,
@@ -459,6 +683,20 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
             "max_full_matches": MAX_FULL_MATCHES,
             "max_full_js": MAX_FULL_JS,
         },
+        "selection": {
+            "mode": "two_pass_prefix_score_then_full",
+            "full_fetch_candidate_count": len(full_plan),
+            "full_fetch_plan": [
+                {
+                    "url": row.get("url"),
+                    "score": row.get("full_fetch_score"),
+                    "reasons": row.get("full_fetch_reasons"),
+                    "command_terms": row.get("command_terms"),
+                    "matched_terms": row.get("matched_terms"),
+                }
+                for row in full_plan[: min(30, len(full_plan))]
+            ],
+        },
         "pages": pages,
         "root_scripts": root_rows,
         "candidate_count": len(candidate_map),
@@ -468,13 +706,17 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         "full_success_count": full_successes,
         "matched_terms": sorted(matched_terms),
         "translation_keys": translation_keys[:40],
-        "matched_assets": matched_assets[:60],
+        "matched_assets": matched_assets[:80],
         "ui_contexts": ui_contexts[:MAX_CONTEXTS],
         "command_contexts": command_contexts[:MAX_CONTEXTS],
+        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:32],
+        "mower_set_export_aliases": mower_set_export_aliases[:32],
+        "mower_set_import_aliases": mower_set_import_aliases[:48],
+        "mower_set_callsite_contexts": mower_set_callsite_contexts[:64],
         "note": (
-            "Public GET-only discovery searches the current error code/title plus the exact "
-            "Clear and resume and Reboot Mower UI labels, their translation keys, command "
-            "wrappers and nearby request shapes. It never calls the private mower command "
-            "endpoint or the notification detail/read endpoint."
+            "Public GET-only discovery now scores all bounded prefix evidence before using "
+            "full-fetch slots, then follows the beta9-proven handleH5MowerSet wrapper through "
+            "ES-module aliases to bounded call arguments. It never calls the private mower "
+            "command endpoint or the notification detail/read endpoint."
         ),
     }
