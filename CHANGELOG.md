@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.3-beta10
+
+Focused active-error arbitration and command-contract diagnostics.
+
+### Changed
+
+- Keep the Error sensor canonical to private-cloud `index2.error_data`; MQTT named Error is now a transition trigger instead of a temporary display source.
+- Deduplicate repeated identical MQTT Error states so only state edges request an error-driven private refresh.
+- Display `No errors` when no active cloud fault exists.
+- Pause Maintenance/Mowing Reports H5 discovery while this beta concentrates on active error commands.
+
+### Added
+
+- Preserve sanitized raw vendor notification-feed evidence for Download diagnostics.
+- Add a bounded public-H5 probe for `Clear and resume`, `Reboot Mower`, their translation keys, request shapes, endpoints and native bridge contexts.
+- Add focused error-transition, raw `index2.error_data`, raw/normalized notification and command-discovery evidence to diagnostics.
+
+### Safety
+
+- Diagnostics executes no mower mutation and no notification-detail/read action; the H5 probe is public GET-only.
+
 ## 0.4.3-beta9
 
 Compact contract recovery for Mowing Reports transport and Parts maintenance call sites.

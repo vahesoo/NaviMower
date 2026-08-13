@@ -13,6 +13,8 @@ from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
 from .private_cloud_region import private_cloud_region_diagnostics
 from .maintenance_h5_discovery import probe_maintenance_h5
+from .error_h5_discovery import probe_error_h5
+from .state_semantics import error_transition_diagnostics
 from .resume import resume_command_diagnostics
 
 
@@ -28,8 +30,8 @@ async def async_get_config_entry_diagnostics(
     """Return a sanitized snapshot for Home Assistant Download diagnostics.
 
     Normal diagnostics use the config entry, coordinator state and caches.
-    0.4.3-beta9 performs compact Mowing Reports transport recovery plus cross-file Parts maintenance alias/call-site tracing
-    within the bounded read-only public-H5 inspection; crawler budgets and output are reduced, and no mutation or report API request runs.
+    0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses Download diagnostics on the active error,
+    MQTT-to-private arbitration evidence, raw vendor notification fields and public-H5 recovery of Clear and resume / Reboot Mower contracts.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -93,15 +95,31 @@ async def async_get_config_entry_diagnostics(
         else None
     )
 
+    maintenance_h5_discovery = {
+        "ok": True,
+        "read_only": True,
+        "beta_only": True,
+        "paused": True,
+        "reason": "0.4.3-beta10 diagnostics focus only on active error action recovery",
+        "mutation_calls_executed": False,
+    }
     try:
-        maintenance_h5_discovery = await hass.async_add_executor_job(
-            probe_maintenance_h5, coordinator.client
+        error_command_discovery = await hass.async_add_executor_job(
+            probe_error_h5,
+            coordinator.client,
+            str(data.get("error_code") or ""),
+            str(data.get("error_title") or data.get("error_text") or ""),
         )
     except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
-        maintenance_h5_discovery = {
-            "ok": False, "read_only": True, "beta_only": True,
+        error_command_discovery = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
             "mutation_calls_executed": False,
-            "error_type": type(err).__name__, "error": sanitize(str(err)),
+            "live_command_call_executed": False,
+            "notification_detail_call_executed": False,
+            "error_type": type(err).__name__,
+            "error": sanitize(str(err)),
         }
 
     return {
@@ -242,6 +260,22 @@ async def async_get_config_entry_diagnostics(
             }
         ),
         "problem_history": sanitize(deepcopy(problem_history)),
+        "error_investigation": sanitize(
+            {
+                "policy": "private_cloud_canonical_mqtt_transition_trigger",
+                "transition": error_transition_diagnostics(coordinator),
+                "raw_index2_vehicle_state": (raw.get("index2") or {}).get("vehicle_state"),
+                "raw_auth_vehicle_state": (raw.get("auth_item") or {}).get("vehicle_state"),
+                "raw_index2_error_data": deepcopy((raw.get("index2") or {}).get("error_data") or []),
+                "vendor_notification_raw_cache": deepcopy(
+                    getattr(coordinator, "_notification_raw_cache", None)
+                ),
+                "vendor_notification_normalized_cache": deepcopy(
+                    getattr(coordinator, "_notification_cache", None)
+                ),
+                "command_discovery": deepcopy(error_command_discovery),
+            }
+        ),
         "latest_notification": sanitize(
             {
                 "title": data.get("notification_title"),
@@ -251,6 +285,7 @@ async def async_get_config_entry_diagnostics(
                 "level": data.get("notification_level"),
                 "type": data.get("notification_type"),
                 "style": data.get("notification_style"),
+                "variable": deepcopy(data.get("notification_variable")),
                 "notification_code": data.get("notification_code"),
                 "origin": data.get("notification_origin"),
                 "kind": data.get("notification_kind"),
@@ -271,8 +306,8 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta9 keeps the H5 probe compact and focused on report transport plus handleH5MowerSet export/import call-site evidence.",
-            "The beta H5 inspection sends no account or mower identity and executes no maintenance mutation or mower command.",
+            "0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses the beta-only public H5 probe on Clear and resume / Reboot Mower evidence for the active error.",
+            "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
             "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
             "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",

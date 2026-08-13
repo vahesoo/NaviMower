@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from . import const as _const
@@ -111,11 +112,29 @@ def _install_error_sensor_attributes() -> None:
         }
 
     sensor_platform.SENSORS = tuple(
-        replace(description, attrs_fn=attrs)
+        replace(
+            description,
+            value_fn=lambda data: data.get("error_text") or "No errors",
+            attrs_fn=attrs,
+        )
         if description.key == "error_text"
         else description
         for description in sensor_platform.SENSORS
     )
+
+
+def error_transition_diagnostics(coordinator: Any) -> dict[str, Any]:
+    """Return MQTT-to-private error arbitration evidence without changing state."""
+    last_update = getattr(coordinator, "_mqtt_named_state_last_update", None)
+    age = coordinator._age_since(last_update) if last_update is not None else None  # noqa: SLF001
+    return {
+        "policy": "private_cloud_canonical_mqtt_transition_trigger",
+        "mqtt_named_state": getattr(coordinator, "_mqtt_named_state", None),
+        "mqtt_named_state_age": age,
+        "last_error_transition": deepcopy(
+            getattr(coordinator, "_error_transition_trace", None)
+        ),
+    }
 
 
 def install_state_semantics() -> None:
@@ -193,60 +212,39 @@ def install_state_semantics() -> None:
     def ingest_mqtt_state(self: Any, state: dict[str, Any]) -> None:
         if not isinstance(state, dict):
             return original_ingest_state(self, state)
+
         state_name = str(state.get("state") or "").strip()
         previous_named = self._fresh_mqtt_named_state()  # noqa: SLF001
-        important = bool(
-            state_name in {"Error", "Self-Checking", "isLifted"}
-            or previous_named in {"Error", "isLifted"}
+        transition = bool(state_name and state_name != previous_named)
+        error_transition = bool(
+            transition
+            and (state_name in {"Error", "Self-Checking"} or previous_named == "Error")
         )
-        if important:
+
+        # A repeated MQTT Error is not a new source value and must not cause a
+        # poll storm. Only a named-state edge invalidates the canonical private
+        # status endpoints; the normal coordinator still performs the reads.
+        if error_transition:
             _mark_endpoints_due(self, "index2", "auth_list")
 
         result = original_ingest_state(self, state)
 
-        if state_name == "Error":
-            self._set_problem_latch(  # noqa: SLF001
-                True,
-                source="mqtt_state",
-                state="Problem",
-                state_code=(
-                    _STATE_FAULT
-                    if str((self.data or {}).get("state_code") or "") == _STATE_FAULT
-                    else ""
-                ),
-                error_text="Error",
-            )
-            if isinstance(self._last_problem, dict):  # noqa: SLF001
-                self._last_problem.update(  # noqa: SLF001
-                    {
-                        "error_code": None,
-                        "error_title": "Error",
-                        "error_content": None,
-                        "error_kind": "fault",
-                    }
-                )
-            snapshot = dict(self.data or self._bootstrap_snapshot())  # noqa: SLF001
-            snapshot["state"] = "Error"
-            snapshot["activity"] = _const.ACTIVITY_ERROR
-            snapshot["error"] = True
-            snapshot["error_text"] = "Error"
-            snapshot["error_code"] = None
-            snapshot["error_title"] = "Error"
-            snapshot["error_content"] = None
-            snapshot["error_kind"] = "fault"
-            snapshot["docked"] = False
-            snapshot["docked_source"] = "mqtt_error_state"
-            snapshot["last_problem"] = deepcopy(self._last_problem)  # noqa: SLF001
-            self.async_set_updated_data(snapshot)
-            self.request_fast_refresh("MQTT state changed to Error")
-        elif state_name == "Self-Checking":
-            self.request_fast_refresh("MQTT entered Self-Checking")
-        elif previous_named == "Error" and state_name and state_name != "Error":
-            self.request_fast_refresh("MQTT state changed away from Error")
-        elif previous_named == "isLifted" and state_name and state_name != "isLifted":
-            # the existing coordinator code already asks for a refresh; this call is
-            # throttled, but the forced endpoint due flag remains in place.
-            self.request_fast_refresh("MQTT state changed away from isLifted")
+        if error_transition:
+            if state_name == "Error":
+                reason = "MQTT state changed to Error"
+            elif previous_named == "Error":
+                reason = f"MQTT state changed away from Error to {state_name}"
+            else:
+                reason = f"MQTT error-related state changed to {state_name}"
+            self._error_transition_trace = {  # noqa: SLF001
+                "previous_mqtt_state": previous_named,
+                "new_mqtt_state": state_name,
+                "observed_utc": datetime.now(UTC).isoformat(),
+                "private_endpoints_marked_due": ["index2", "auth_list"],
+                "fast_refresh_requested": True,
+                "reason": reason,
+            }
+            self.request_fast_refresh(reason)
         return result
 
     cls._parse = parse
