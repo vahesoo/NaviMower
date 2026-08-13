@@ -7,6 +7,8 @@ persistent notification Store; they are never sent to a vendor message route.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 from .notification_center import LOCAL_NOTIFICATION_PREFIX
@@ -19,6 +21,12 @@ _DEVICE_MESSAGE_DETAIL_TYPE = 2
 def _invalidate_notification_poll(coordinator: Any) -> None:
     """Make the next Device-feed refresh bypass the normal 60-second TTL."""
     coordinator._notification_last_attempt_mono = None  # noqa: SLF001
+
+
+def notification_detail_diagnostics(coordinator: Any) -> dict[str, Any] | None:
+    """Return the last explicit vendor notification-detail trace, if any."""
+    trace = getattr(coordinator, "_last_notification_detail_trace", None)
+    return deepcopy(trace) if isinstance(trace, dict) else None
 
 
 async def _async_vendor_call_and_refresh(
@@ -60,17 +68,35 @@ async def async_mark_notification_read(
             raise ValueError("Navimower local notification is no longer retained")
         return {"origin": "navimower", "message_id": message_id, "read": True}
 
-    # Vendor message IDs continue through the app's encrypted detail route. The
-    # following Device-feed refresh remains authoritative for vendor read state.
-    return await _async_vendor_call_and_refresh(
-        coordinator,
-        _NOTIFICATION_DETAIL_PATH,
-        {
-            "message_id": message_id,
-            "type": _DEVICE_MESSAGE_DETAIL_TYPE,
-            "vehicle_sn": str(coordinator.sn),
-        },
-    )
+    # Vendor message IDs continue through the app's encrypted detail route. Beta11
+    # records the response from this already-explicit user action in memory so a
+    # later Download diagnostics can inspect the real detail contract without
+    # issuing a hidden read/detail request itself.
+    trace: dict[str, Any] = {
+        "requested_at": datetime.now(UTC).isoformat(),
+        "path": _NOTIFICATION_DETAIL_PATH,
+        "message_id": message_id,
+        "type": _DEVICE_MESSAGE_DETAIL_TYPE,
+        "explicit_user_action": True,
+        "request_succeeded": False,
+    }
+    coordinator._last_notification_detail_trace = trace  # noqa: SLF001
+    try:
+        result = await _async_vendor_call_and_refresh(
+            coordinator,
+            _NOTIFICATION_DETAIL_PATH,
+            {
+                "message_id": message_id,
+                "type": _DEVICE_MESSAGE_DETAIL_TYPE,
+                "vehicle_sn": str(coordinator.sn),
+            },
+        )
+    except Exception as err:
+        trace["error"] = f"{type(err).__name__}: {err}"
+        raise
+    trace["request_succeeded"] = True
+    trace["response"] = deepcopy(result)
+    return result
 
 
 async def async_mark_all_notifications_read(coordinator: Any) -> Any:
