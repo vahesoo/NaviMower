@@ -223,7 +223,7 @@ def _full_fetch_priority(
 
     if basename in OBSERVED_ERROR_COMMAND_ASSETS:
         score += 1600
-        reasons.append("observed_beta10_multi_signal_asset")
+        reasons.append("observed_prior_multi_signal_asset")
     if keys or known_key_hits:
         score += 900 + 120 * (len(keys) + len(known_key_hits))
         reasons.append("translation_key_evidence")
