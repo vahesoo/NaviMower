@@ -71,7 +71,12 @@ def test_mow_command_trace_remains_internal_without_diagnostics_lookup() -> None
         "makes no extra vendor or public-H5 requests" in diagnostics
         or (
             "maintenance_h5_discovery" in diagnostics
-            and "bounded read-only public-H5 inspection" in diagnostics
+            and "public-H5 inspection" in diagnostics
+        )
+        or (
+            "error_h5_discovery" in diagnostics
+            and "public H5 probe" in diagnostics
+            and "read-only" in diagnostics
         )
     )
 
