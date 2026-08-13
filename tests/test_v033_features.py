@@ -114,11 +114,6 @@ def test_card_route_simplifier_uses_30_cm_and_keeps_endpoints() -> None:
     module = ast.Module(body=[function], type_ignores=[])
     namespace = {
         "Any": object,
-        "_SESSION_CLOCK_SKEW_MS": 30_000,
-        "_SESSION_MERGE_GAP_MS": 300_000,
-    }
-    namespace = {
-        "Any": object,
         "as_float": lambda value: float(value),
         "MAP_CARD_MIN_POINT_DISTANCE_M": 0.30,
     }
