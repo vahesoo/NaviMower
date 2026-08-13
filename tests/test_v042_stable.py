@@ -47,30 +47,23 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
     assert "sanitize(deepcopy(raw))" in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
-    assert (
-        "makes no extra vendor" in diagnostics
-        or (
-            "maintenance_h5_discovery" in diagnostics
-            and "public-H5 inspection" in diagnostics
-        )
-        or (
-            "error_h5_discovery" in diagnostics
-            and "public H5 probe" in diagnostics
-            and "read-only" in diagnostics
-        )
-    )
-    assert (
-        '"mutation_calls_executed": False' in diagnostics
-        or any(
-            phrase in diagnostics
-            for phrase in (
-                "never executes notification mutation actions",
-                "executes no mutation action",
-                "no mutation runs",
-                "executes no mower command",
-            )
-        )
-    )
+
+    if "error_h5_discovery" in diagnostics:
+        error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+        assert "probe_error_h5" in diagnostics
+        assert 'method="GET"' in error_discovery
+        assert '"mutation_calls_executed": False' in error_discovery
+        assert '"live_command_call_executed": False' in error_discovery
+        assert '"notification_detail_call_executed": False' in error_discovery
+        assert "client.call(" not in error_discovery
+        assert "Authorization" not in error_discovery
+        assert "Cookie" not in error_discovery
+    elif "maintenance_h5_discovery" in diagnostics:
+        maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
+        assert 'method="GET"' in maintenance_discovery
+        assert '"mutation_calls_executed": False' in maintenance_discovery
+    else:
+        assert "makes no extra vendor" in diagnostics
 
     sanitizer = (COMPONENT / "diagnostics_sanitize.py").read_text(encoding="utf-8")
     for secret in (
