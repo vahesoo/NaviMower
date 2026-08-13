@@ -14,654 +14,684 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def replace_count(text: str, old: str, new: str, count: int, label: str) -> str:
-    found = text.count(old)
-    if found != count:
-        raise SystemExit(f"{label}: expected {count} markers, found {found}")
-    return text.replace(old, new)
-
-
 manifest_path = COMPONENT / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("version") != "0.4.3-beta8":
-    raise SystemExit(f"Expected 0.4.3-beta8 base, got {manifest.get('version')!r}")
-manifest["version"] = "0.4.3-beta9"
+if manifest.get("version") != "0.4.3-beta9":
+    raise SystemExit(f"Expected 0.4.3-beta9 base, got {manifest.get('version')!r}")
+manifest["version"] = "0.4.3-beta10"
 manifest_path.write_text(
     json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
     encoding="utf-8",
 )
 
 
-discovery_path = COMPONENT / "maintenance_h5_discovery.py"
-source = discovery_path.read_text(encoding="utf-8")
-source = replace_once(
-    source,
-    '"User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta8",',
-    '"User-Agent": "Mozilla/5.0 NavimowerDiagnostics/0.4.3-beta9",',
-    "discovery user agent",
+# Error sensor: private cloud is canonical; MQTT named Error is only an edge trigger.
+state_path = COMPONENT / "state_semantics.py"
+state = state_path.read_text(encoding="utf-8")
+state = replace_once(
+    state,
+    "from copy import deepcopy\nfrom dataclasses import replace\nfrom typing import Any\n",
+    "from copy import deepcopy\nfrom dataclasses import replace\nfrom datetime import UTC, datetime\nfrom typing import Any\n",
+    "state diagnostics imports",
 )
+state = replace_once(
+    state,
+    '''        replace(description, attrs_fn=attrs)\n        if description.key == "error_text"\n''',
+    '''        replace(\n            description,\n            value_fn=lambda data: data.get("error_text") or "No errors",\n            attrs_fn=attrs,\n        )\n        if description.key == "error_text"\n''',
+    "clean error sensor state",
+)
+insert_marker = "\n\ndef install_state_semantics() -> None:\n"
+if insert_marker not in state:
+    raise SystemExit("state diagnostics insertion marker missing")
+state = state.replace(
+    insert_marker,
+    '''\n\ndef error_transition_diagnostics(coordinator: Any) -> dict[str, Any]:\n    """Return MQTT-to-private error arbitration evidence without changing state."""\n    last_update = getattr(coordinator, "_mqtt_named_state_last_update", None)\n    age = coordinator._age_since(last_update) if last_update is not None else None  # noqa: SLF001\n    return {\n        "policy": "private_cloud_canonical_mqtt_transition_trigger",\n        "mqtt_named_state": getattr(coordinator, "_mqtt_named_state", None),\n        "mqtt_named_state_age": age,\n        "last_error_transition": deepcopy(\n            getattr(coordinator, "_error_transition_trace", None)\n        ),\n    }\n\n\ndef install_state_semantics() -> None:\n''',
+    1,
+)
+start_marker = "    def ingest_mqtt_state(self: Any, state: dict[str, Any]) -> None:\n"
+end_marker = "\n    cls._parse = parse\n"
+start = state.find(start_marker)
+end = state.find(end_marker, start)
+if start < 0 or end < 0:
+    raise SystemExit("ingest_mqtt_state replacement markers missing")
+new_ingest = '''    def ingest_mqtt_state(self: Any, state: dict[str, Any]) -> None:\n        if not isinstance(state, dict):\n            return original_ingest_state(self, state)\n\n        state_name = str(state.get("state") or "").strip()\n        previous_named = self._fresh_mqtt_named_state()  # noqa: SLF001\n        transition = bool(state_name and state_name != previous_named)\n        error_transition = bool(\n            transition\n            and (state_name in {"Error", "Self-Checking"} or previous_named == "Error")\n        )\n\n        # A repeated MQTT Error is not a new source value and must not cause a\n        # poll storm. Only a named-state edge invalidates the canonical private\n        # status endpoints; the normal coordinator still performs the reads.\n        if error_transition:\n            _mark_endpoints_due(self, "index2", "auth_list")\n\n        result = original_ingest_state(self, state)\n\n        if error_transition:\n            if state_name == "Error":\n                reason = "MQTT state changed to Error"\n            elif previous_named == "Error":\n                reason = f"MQTT state changed away from Error to {state_name}"\n            else:\n                reason = f"MQTT error-related state changed to {state_name}"\n            self._error_transition_trace = {  # noqa: SLF001\n                "previous_mqtt_state": previous_named,\n                "new_mqtt_state": state_name,\n                "observed_utc": datetime.now(UTC).isoformat(),\n                "private_endpoints_marked_due": ["index2", "auth_list"],\n                "fast_refresh_requested": True,\n                "reason": reason,\n            }\n            self.request_fast_refresh(reason)\n        return result\n'''
+state = state[:start] + new_ingest + state[end:]
+state_path.write_text(state, encoding="utf-8")
 
-for old, new, label in (
-    ("MAX_ASSETS = 48", "MAX_ASSETS = 12", "broad asset budget"),
-    ("MAX_TARGETED_ASSETS = 24", "MAX_TARGETED_ASSETS = 16", "targeted asset budget"),
-    ("MAX_BROAD_REQUESTS = 104", "MAX_BROAD_REQUESTS = 28", "broad request budget"),
-    ("MAX_TARGETED_REQUESTS = 56", "MAX_TARGETED_REQUESTS = 28", "targeted request budget"),
-    ("MAX_TOTAL_REQUESTS = 168", "MAX_TOTAL_REQUESTS = 64", "total request budget"),
-    ("MAX_CONTEXTS = 112", "MAX_CONTEXTS = 48", "context budget"),
-    ("MAX_REQUEST_CANDIDATES = 180", "MAX_REQUEST_CANDIDATES = 56", "request candidate budget"),
-    ("MAX_JS_CANDIDATES = 220", "MAX_JS_CANDIDATES = 72", "candidate output budget"),
-    ("MAX_UNFETCHED_CANDIDATES = 120", "MAX_UNFETCHED_CANDIDATES = 24", "unfetched output budget"),
-    ("CONTEXT_RADIUS = 2200", "CONTEXT_RADIUS = 1500", "context radius"),
-    ("CANDIDATE_RADIUS = 1500", "CANDIDATE_RADIUS = 700", "candidate radius"),
-    ("CALLSITE_RADIUS = 2600", "CALLSITE_RADIUS = 2200", "callsite radius"),
-):
-    source = replace_once(source, old, new, label)
 
-source = replace_once(
-    source,
-    '''MOWER_SET_ARROW_WRAPPER_RE = re.compile(
-    r"(?P<name>[A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(?\\s*(?P<param>[A-Za-z_$][\\w$]*)"
-    r"(?:\\s*=\\s*\\{\\})?\\s*\\)?\\s*=>\\s*"
-    r"(?:(?:[A-Za-z_$][\\w$]*)\\.)*(?:callNative|sendMessageToNative)"
-    r"\\s*\\(\\s*[\\\"']handleH5MowerSet[\\\"']",
+# Retain the un-normalized Device feed in memory so diagnostics can show fields
+# that the public sensor intentionally does not expose.
+notification_path = COMPONENT / "notification_feed.py"
+notification = notification_path.read_text(encoding="utf-8")
+notification = replace_once(
+    notification,
+    '''    normalized = _normalize_response(response)\n    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]\n''',
+    '''    coordinator._notification_raw_cache = deepcopy(response)  # noqa: SLF001\n    normalized = _normalize_response(response)\n    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]\n''',
+    "raw notification cache",
+)
+notification_path.write_text(notification, encoding="utf-8")
+
+
+error_discovery = r'''"""Focused read-only public H5 discovery for active error actions."""
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from .api.regions import canonical_region
+from .diagnostics_sanitize import sanitize
+
+MAX_HTML = 256 * 1024
+MAX_ROOT_JS = 2 * 1024 * 1024
+PREFIX_BYTES = 64 * 1024
+MAX_PREFIX_REQUESTS = 180
+MAX_FULL_MATCHES = 18
+MAX_FULL_JS = 2 * 1024 * 1024
+MAX_CONTEXTS = 80
+CONTEXT_RADIUS = 1800
+TIMEOUT = 5
+
+SCRIPT_RE = re.compile(r"<script\\b[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", re.I)
+JS_RE = re.compile(r"[\"']([^\"'\\r\\n]{1,420}\\.js(?:\\?[^\"'\\r\\n]{0,120})?)[\"']", re.I)
+ENDPOINT_RE = re.compile(
+    r"[\"']((?:https?://[^\"'\\s]+)?/?(?:mowerbot|vehicle|setting|robot|api)/[^\"'\\r\\n]{1,320})[\"']",
     re.I,
 )
-''',
-    '''MOWER_SET_ARROW_WRAPPER_RE = re.compile(
-    r"(?P<name>[A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(?\\s*(?P<param>[A-Za-z_$][\\w$]*)"
-    r"(?:\\s*=\\s*\\{\\})?\\s*\\)?\\s*=>\\s*"
-    r"(?:(?:[A-Za-z_$][\\w$]*)\\.)*(?:callNative|sendMessageToNative)"
-    r"\\s*\\(\\s*[\\\"']handleH5MowerSet[\\\"']",
+HTTP_RE = re.compile(r"method\\s*:\\s*[\"']?(GET|POST|PUT|DELETE|PATCH)[\"']?", re.I)
+BRIDGE_RE = re.compile(
+    r"(?P<callee>(?:[A-Za-z_$][\\w$]*\\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
+    r"\\s*\\(\\s*[\"'](?P<method>[^\"']{1,160})[\"']",
     re.I,
 )
-REPORT_TRANSPORT_ARROW_RE = re.compile(
-    r"(?P<name>[A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(?\\s*(?P<param>[A-Za-z_$][\\w$]*)\\s*\\)?"
-    r"\\s*=>[^;]{0,1000}?(?:sendEncryptionData)\\s*\\(\\s*[\\\"']"
-    r"(?P<method>handleEncipherment|handleDecrypt)[\\\"']",
-    re.I | re.S,
+
+BASE_TARGET_TERMS = (
+    "Clear and resume",
+    "Reboot Mower",
+    "Got it",
+    "clearAndResume",
+    "clear_and_resume",
+    "clearResume",
+    "resumeAfterError",
+    "clearError",
+    "resetError",
+    "clearFault",
+    "resetFault",
+    "rebootMower",
+    "reboot_mower",
+    "restartMower",
+    "restart_mower",
+    "/vehicle/set/send",
+    "c:behavior",
+    "cmdCode",
+    "cmd_code",
+    "sendEncryptionData",
+    "callNative",
 )
-EXPORT_BLOCK_RE = re.compile(
-    r"export\\s*\\{(?P<bindings>[^}]{1,12000})\\}",
-    re.I,
+UI_LABELS = ("Clear and resume", "Reboot Mower", "Got it")
+COMMAND_NEEDLES = (
+    "clear",
+    "resume",
+    "reboot",
+    "restart",
+    "fault",
+    "error",
+    "cmdCode",
+    "c:behavior",
+    "/vehicle/set/send",
+    "callNative",
+    "sendEncryptionData",
 )
-IMPORT_BLOCK_RE = re.compile(
-    r"import\\s*\\{(?P<bindings>[^}]{1,12000})\\}\\s*from\\s*[\\\"'](?P<source>[^\\\"']+)[\\\"']",
-    re.I,
-)
-''',
-    "beta9 transport and module alias regexes",
-)
-
-source = replace_once(
-    source,
-    '''def _public(result: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in result.items() if key != "_text"}
-
-
-def _small_json''',
-    '''def _public(result: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in result.items() if key != "_text"}
-
-
-def _compact_asset_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
-    interesting_methods = {"handleH5MowerSet", "handleEncipherment", "handleDecrypt"}
-    bridge_calls = [
-        item for item in row.get("bridge_calls") or []
-        if str(item.get("method") or "") in interesting_methods
-    ]
-    endpoint_paths = [
-        path for path in row.get("endpoint_paths") or []
-        if path in REPORT_ENDPOINTS or "maintenance" in str(path).lower()
-    ]
-    matched_terms = list(row.get("matched_terms") or [])
-    markers = list(row.get("request_shape_markers") or [])
-    basename = urllib.parse.urlsplit(str(row.get("url") or "")).path.rsplit("/", 1)[-1].lower()
-    if not (
-        matched_terms
-        or endpoint_paths
-        or markers
-        or bridge_calls
-        or basename in OBSERVED_REPORT_ASSET_BASENAMES
-    ):
-        return None
-    return {
-        "url": row.get("url"),
-        "http_status": row.get("http_status"),
-        "body_length_read": row.get("body_length_read"),
-        "body_sha256": row.get("body_sha256"),
-        "truncated": row.get("truncated"),
-        "discovery_reason": row.get("discovery_reason"),
-        "candidate_score": row.get("candidate_score"),
-        "matched_terms": matched_terms[:28],
-        "endpoint_paths": endpoint_paths[:24],
-        "request_shape_markers": markers[:12],
-        "bridge_calls": bridge_calls[:12],
-        "js_reference_count": row.get("js_reference_count", 0),
-    }
-
-
-def _compact_candidate(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "url": row.get("url"),
-        "source": row.get("source"),
-        "basename": row.get("basename"),
-        "score": row.get("score"),
-        "theme_terms": list(row.get("theme_terms") or [])[:16],
-        "targeted_reason": list(row.get("targeted_reason") or [])[:12],
-        "source_context": str(row.get("source_context") or "")[:700],
-    }
-
-
-def _small_json''',
-    "compact discovery evidence helpers",
+PRIORITY_FILENAME_TOKENS = (
+    "error",
+    "fault",
+    "alarm",
+    "dialog",
+    "popup",
+    "home",
+    "mower",
+    "service-",
+    "request-",
+    "native-",
+    "state",
 )
 
-source = replace_once(
-    source,
-    '''def _targeted_reasons(candidate: dict[str, Any]) -> list[str]:
-    url = str(candidate.get("url") or "")
-    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
-    theme_terms = {str(value).lower() for value in candidate.get("theme_terms") or []}
-    reasons: list[str] = []
-    if basename in OBSERVED_REPORT_ASSET_BASENAMES:
-        reasons.append("observed_report_asset")
-    for term in TARGETED_THEME_TERMS:
-        if term in theme_terms:
-            reasons.append(f"theme:{term}")
-    filename_bonus = _filename_bonus(url)
-    if filename_bonus >= 130:
-        reasons.append("semantic_filename")
-    if int(candidate.get("score") or 0) >= 180:
-        reasons.append("high_context_score")
-    return list(dict.fromkeys(reasons))
-''',
-    '''def _targeted_reasons(candidate: dict[str, Any]) -> list[str]:
-    url = str(candidate.get("url") or "")
-    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
-    theme_terms = {str(value).lower() for value in candidate.get("theme_terms") or []}
-    source_context = str(candidate.get("source_context") or "").lower()
-    reasons: list[str] = []
-    observed_report = basename in OBSERVED_REPORT_ASSET_BASENAMES
-    direct_theme = any(
-        term in theme_terms for term in TARGETED_THEME_TERMS if term != "mowing"
+# Current public-app roots observed during the 0.4.3 beta line. They are only
+# fallback GET targets if the live HTML does not enumerate them; no identity is sent.
+OBSERVED_PUBLIC_ROOT_SCRIPTS = (
+    "https://cloud-acc.navimow.com/navimow/static/js/app-entry-afe8631d.js",
+    "https://cloud-acc.navimow.com/navimow/static/js/app-entry-legacy-83eb5a47.js",
+)
+OBSERVED_PUBLIC_SUPPORT_SCRIPTS = (
+    "https://cloud-acc.navimow.com/navimow/static/js/native-d66fe239.js",
+    "https://cloud-acc.navimow.com/navimow/static/js/request-e9a0ef42.js",
+)
+
+
+def _host(client: Any) -> str:
+    region = canonical_region(getattr(client, "region", "fra"))
+    return f"https://navimow-h5-{region}.willand.com"
+
+
+def _safe_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(str(url or ""))
+    path = parsed.path
+    while "/static/js/static/js/" in path:
+        path = path.replace("/static/js/static/js/", "/static/js/")
+    while "/assets/assets/" in path:
+        path = path.replace("/assets/assets/", "/assets/")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _resolve(base_url: str, value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed_ref = urllib.parse.urlsplit(raw)
+    if parsed_ref.scheme and parsed_ref.netloc:
+        return _safe_url(raw)
+    base = urllib.parse.urlsplit(base_url)
+    clean = raw.lstrip("./")
+    for marker in ("static/js/", "assets/"):
+        if clean.startswith(marker):
+            idx = base.path.find("/" + marker)
+            if idx >= 0:
+                prefix = base.path[: idx + 1]
+                return _safe_url(
+                    urllib.parse.urlunsplit((base.scheme, base.netloc, prefix + clean, "", ""))
+                )
+    return _safe_url(urllib.parse.urljoin(base_url, raw))
+
+
+def _fetch(url: str, limit: int) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta10",
+        },
+        method="GET",
     )
-    in_mowing_route = "mowing_records" in source_context or "mowingrecords" in source_context
-    filename_bonus = _filename_bonus(url)
-    if observed_report:
-        reasons.append("observed_report_asset")
-    for term in TARGETED_THEME_TERMS:
-        if term not in theme_terms:
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            raw = response.read(limit + 1)
+            status = int(getattr(response, "status", 200))
+            content_type = str(response.headers.get("Content-Type", ""))
+    except urllib.error.HTTPError as err:
+        raw = err.read(limit + 1)
+        status = int(err.code)
+        content_type = str(err.headers.get("Content-Type", ""))
+    except urllib.error.URLError as err:
+        return {"ok": False, "url": _safe_url(url), "transport_error": sanitize(str(err.reason))}
+    except Exception as err:  # noqa: BLE001 - optional diagnostics probe
+        return {
+            "ok": False,
+            "url": _safe_url(url),
+            "transport_error": sanitize(f"{type(err).__name__}: {err}"),
+        }
+    truncated = len(raw) > limit
+    raw = raw[:limit]
+    return {
+        "ok": 200 <= status < 400,
+        "url": _safe_url(url),
+        "http_status": status,
+        "content_type": content_type,
+        "body_length_read": len(raw),
+        "body_sha256": hashlib.sha256(raw).hexdigest(),
+        "truncated": truncated,
+        "_text": raw.decode("utf-8", errors="replace"),
+    }
+
+
+def _public(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key != "_text"}
+
+
+def _allowed(url: str, hosts: set[str]) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    return parsed.scheme == "https" and parsed.netloc in hosts and parsed.path.lower().endswith(".js")
+
+
+def _priority(url: str, source_context: str = "") -> int:
+    text = (urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1] + " " + source_context).lower()
+    score = 0
+    for token in PRIORITY_FILENAME_TOKENS:
+        if token in text:
+            score += 120 if token in {"error", "fault", "native-", "request-"} else 55
+    if "cloud-acc.navimow.com" in url:
+        score += 25
+    return score
+
+
+def _contexts(text: str, source: str, terms: list[str]) -> list[dict[str, Any]]:
+    lower = text.lower()
+    rows: list[dict[str, Any]] = []
+    for term in terms:
+        needle = str(term or "").strip()
+        if not needle:
             continue
-        if term == "mowing" and not (
-            in_mowing_route and (observed_report or filename_bonus >= 130)
-        ):
-            continue
-        reasons.append(f"theme:{term}")
-    if filename_bonus >= 130 and (
-        direct_theme
-        or in_mowing_route
-        or any(endpoint.lower() in source_context for endpoint in REPORT_ENDPOINTS)
-        or "handleh5mowerset" in source_context
-    ):
-        reasons.append("semantic_filename")
-    if int(candidate.get("score") or 0) >= 180 and (
-        observed_report or direct_theme or "semantic_filename" in reasons
-    ):
-        reasons.append("high_context_score")
-    return list(dict.fromkeys(reasons))
-''',
-    "tight targeted reasons",
-)
-
-source = replace_once(
-    source,
-    '''        context_lo = max(0, match.start() - 900)
-        context_hi = min(len(text), match.end() + 900)
-''',
-    '''        context_lo = max(0, match.start() - 500)
-        context_hi = min(len(text), match.end() + 500)
-''',
-    "compact candidate source context",
-)
-
-source = replace_once(
-    source,
-    '''def _wrapper_definitions(
-''',
-    '''def _exported_aliases(text: str, local_name: str) -> list[str]:
-    aliases: list[str] = []
-    for match in EXPORT_BLOCK_RE.finditer(text):
-        for binding in match.group("bindings").split(","):
-            parts = re.split(r"\\s+as\\s+", binding.strip(), maxsplit=1, flags=re.I)
-            if not parts or parts[0].strip() != local_name:
-                continue
-            exported = parts[1].strip() if len(parts) > 1 else local_name
-            if re.fullmatch(r"[A-Za-z_$][\\w$]*", exported) and exported not in aliases:
-                aliases.append(exported)
-    return aliases
+        start = 0
+        found = 0
+        while found < 2 and len(rows) < MAX_CONTEXTS:
+            index = lower.find(needle.lower(), start)
+            if index < 0:
+                break
+            lo = max(0, index - CONTEXT_RADIUS)
+            hi = min(len(text), index + len(needle) + CONTEXT_RADIUS)
+            nearby = re.sub(r"\\s+", " ", text[lo:hi]).strip()
+            endpoints = sorted(set(ENDPOINT_RE.findall(nearby)))[:20]
+            methods = sorted(set(value.upper() for value in HTTP_RE.findall(nearby)))
+            bridges = [
+                {"callee": match.group("callee"), "method": match.group("method")}
+                for match in BRIDGE_RE.finditer(nearby)
+            ][:20]
+            rows.append(
+                {
+                    "term": needle,
+                    "source": _safe_url(source),
+                    "offset": index,
+                    "endpoint_paths": endpoints,
+                    "http_methods": methods,
+                    "bridge_calls": bridges,
+                    "context": nearby,
+                }
+            )
+            start = index + len(needle)
+            found += 1
+    return rows
 
 
-def _import_aliases_for_source(
-    text: str,
-    base_url: str,
-    source_url: str,
-    exported_names: list[str],
-) -> list[dict[str, str]]:
+def _translation_keys(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    wanted = set(exported_names)
-    for match in IMPORT_BLOCK_RE.finditer(text):
-        resolved_source = _resolve_js_url(base_url, match.group("source"))
-        if _safe_url(resolved_source) != _safe_url(source_url):
-            continue
-        for binding in match.group("bindings").split(","):
-            parts = re.split(r"\\s+as\\s+", binding.strip(), maxsplit=1, flags=re.I)
-            if not parts:
-                continue
-            exported = parts[0].strip()
-            if exported not in wanted:
-                continue
-            local = parts[1].strip() if len(parts) > 1 else exported
-            if not re.fullmatch(r"[A-Za-z_$][\\w$]*", local):
-                continue
-            row = {
-                "exported_name": exported,
-                "local_name": local,
-                "imported_from": _safe_url(source_url),
-            }
+    for label in UI_LABELS:
+        pattern = re.compile(
+            r"[\"'](?P<key>[A-Za-z0-9_.-]{2,100})[\"']\\s*:\\s*[\"']"
+            + re.escape(label)
+            + r"[\"']",
+            re.I,
+        )
+        for match in pattern.finditer(text):
+            row = {"label": label, "key": match.group("key")}
             if row not in rows:
                 rows.append(row)
     return rows
 
 
-def _wrapper_definitions(
-''',
-    "module alias helpers",
-)
-
-source = replace_once(
-    source,
-    '''def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]]:
-''',
-    '''def _report_transport_wrapper_definitions(text: str, source: str) -> list[dict[str, Any]]:
+def _js_references(text: str, source: str, hosts: set[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for match in REPORT_TRANSPORT_ARROW_RE.finditer(text):
-        nearby = text[max(0, match.start() - 220):min(len(text), match.end() + 900)]
-        row = {
-            "focus": "report_transport_wrapper_definition",
-            "name": match.group("name"),
-            "param": match.group("param"),
-            "method": match.group("method"),
-            "source": _safe_url(source),
-            "definition_offset": match.start(),
-            "context": re.sub(r"\\s+", " ", nearby).strip(),
-        }
-        if not any(
-            item["name"] == row["name"]
-            and item["method"] == row["method"]
-            and item["source"] == row["source"]
-            for item in rows
-        ):
-            rows.append(row)
-        if len(rows) >= 16:
-            break
+    seen: set[str] = set()
+    for order, match in enumerate(JS_RE.finditer(text)):
+        url = _resolve(source, match.group(1))
+        if not _allowed(url, hosts) or url in seen:
+            continue
+        seen.add(url)
+        lo = max(0, match.start() - 650)
+        hi = min(len(text), match.end() + 650)
+        context = re.sub(r"\\s+", " ", text[lo:hi]).strip()
+        rows.append(
+            {
+                "url": url,
+                "source": _safe_url(source),
+                "order": order,
+                "source_context": context,
+                "priority": _priority(url, context),
+            }
+        )
     return rows
 
 
-def _callsite_findings(text: str, source: str) -> dict[str, list[dict[str, Any]]]:
-''',
-    "report transport wrapper helper",
-)
-
-source = replace_once(
-    source,
-    '''    mower_set_definitions = _wrapper_definitions(
-        text,
-        source,
-        (("function", MOWER_SET_WRAPPER_RE), ("arrow", MOWER_SET_ARROW_WRAPPER_RE)),
-        "mower_set_wrapper_definition",
+def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
+    """Inspect only public H5 assets for error-dialog command evidence."""
+    host = _host(client)
+    allowed_hosts = {urllib.parse.urlsplit(host).netloc, "cloud-acc.navimow.com"}
+    entry_urls = (
+        f"{host}/old/",
+        f"{host}/maintenance/",
+        "https://cloud-acc.navimow.com/navimow/",
     )
-    return {
-        "report_wrapper_definitions": report_definitions,
-''',
-    '''    mower_set_definitions = _wrapper_definitions(
-        text,
-        source,
-        (("function", MOWER_SET_WRAPPER_RE), ("arrow", MOWER_SET_ARROW_WRAPPER_RE)),
-        "mower_set_wrapper_definition",
-    )
-    report_transport_definitions = _report_transport_wrapper_definitions(text, source)
-    return {
-        "report_transport_wrapper_definitions": report_transport_definitions,
-        "report_wrapper_definitions": report_definitions,
-''',
-    "transport findings in callsite bundle",
-)
+    dynamic_terms = [term for term in (str(error_code or ""), str(error_title or "")) if term]
+    target_terms = list(dict.fromkeys([*BASE_TARGET_TERMS, *dynamic_terms]))
 
-source = replace_once(
-    source,
-    '''    js_candidates: dict[str, dict[str, Any]] = {}
-    targeted_candidates: dict[str, dict[str, Any]] = {}
-    fetched: set[str] = set()
-''',
-    '''    js_candidates: dict[str, dict[str, Any]] = {}
-    targeted_candidates: dict[str, dict[str, Any]] = {}
-    asset_texts: dict[str, str] = {}
-    fetched: set[str] = set()
-''',
-    "asset text registry",
-)
+    pages: list[dict[str, Any]] = []
+    root_urls: list[str] = []
+    for url in entry_urls:
+        row = _fetch(url, MAX_HTML)
+        text = str(row.get("_text") or "")
+        scripts: list[str] = []
+        if text:
+            for value in SCRIPT_RE.findall(text):
+                resolved = _resolve(url, value)
+                if _allowed(resolved, allowed_hosts) and resolved not in scripts:
+                    scripts.append(resolved)
+        pages.append({**_public(row), "script_urls": scripts})
+        for script in scripts:
+            if script not in root_urls:
+                root_urls.append(script)
 
-source = replace_once(
-    source,
-    '''    report_wrapper_definitions: list[dict[str, Any]] = []
-    report_callsite_contexts: list[dict[str, Any]] = []
-''',
-    '''    report_transport_wrapper_definitions: list[dict[str, Any]] = []
-    report_wrapper_definitions: list[dict[str, Any]] = []
-    report_callsite_contexts: list[dict[str, Any]] = []
-''',
-    "transport definition accumulator",
-)
+    for fallback in OBSERVED_PUBLIC_ROOT_SCRIPTS:
+        if fallback not in root_urls:
+            root_urls.append(fallback)
 
-source = replace_once(
-    source,
-    '''    mower_set_wrapper_definitions: list[dict[str, Any]] = []
-    mower_set_callsite_contexts: list[dict[str, Any]] = []
-''',
-    '''    mower_set_wrapper_definitions: list[dict[str, Any]] = []
-    mower_set_callsite_contexts: list[dict[str, Any]] = []
-    mower_set_export_aliases: list[dict[str, Any]] = []
-    mower_set_import_aliases: list[dict[str, Any]] = []
-''',
-    "mower-set alias accumulators",
-)
+    root_rows: list[dict[str, Any]] = []
+    candidate_map: dict[str, dict[str, Any]] = {}
+    ui_contexts: list[dict[str, Any]] = []
+    command_contexts: list[dict[str, Any]] = []
+    translation_keys: list[dict[str, str]] = []
+    matched_terms: set[str] = set()
 
-source = replace_count(
-    source,
-    '''        structure = _structure(text)
-''',
-    '''        asset_texts[_safe_url(url)] = text
-        structure = _structure(text)
-''',
-    2,
-    "remember fetched asset text",
-)
-
-source = replace_count(
-    source,
-    '''        callsite_findings = _callsite_findings(text, url)
-        report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
-''',
-    '''        callsite_findings = _callsite_findings(text, url)
-        report_transport_wrapper_definitions.extend(
-            callsite_findings["report_transport_wrapper_definitions"]
-        )
-        report_wrapper_definitions.extend(callsite_findings["report_wrapper_definitions"])
-''',
-    2,
-    "collect transport wrapper definitions",
-)
-
-source = replace_once(
-    source,
-    '''    candidate_rows = sorted(
-''',
-    '''    alias_callsite_markers: set[tuple[str, str, int]] = set()
-    for definition in mower_set_wrapper_definitions:
-        definition_source = _safe_url(str(definition.get("source") or ""))
-        local_name = str(definition.get("name") or "")
-        definition_text = asset_texts.get(definition_source, "")
-        if not definition_source or not local_name or not definition_text:
+    for url in root_urls[:10]:
+        row = _fetch(url, MAX_ROOT_JS)
+        text = str(row.get("_text") or "")
+        hits = [term for term in target_terms if term.lower() in text.lower()]
+        matched_terms.update(hits)
+        root_rows.append({**_public(row), "matched_terms": hits[:40]})
+        if not row.get("ok") or not text:
             continue
-        exported_names = _exported_aliases(definition_text, local_name)
-        if not exported_names:
-            exported_names = [local_name]
-        for exported_name in exported_names:
-            export_row = {
-                "source": definition_source,
-                "local_name": local_name,
-                "exported_name": exported_name,
-            }
-            if export_row not in mower_set_export_aliases:
-                mower_set_export_aliases.append(export_row)
-        for asset_url, asset_text in asset_texts.items():
-            if asset_url == definition_source:
-                continue
-            imports = _import_aliases_for_source(
-                asset_text,
-                asset_url,
-                definition_source,
-                exported_names,
-            )
-            for import_row in imports:
-                full_import_row = {"source": asset_url, **import_row}
-                if full_import_row not in mower_set_import_aliases:
-                    mower_set_import_aliases.append(full_import_row)
-                synthetic_definition = {
-                    "name": import_row["local_name"],
-                    "endpoint": None,
-                    "definition_offset": -10000,
-                }
-                for callsite in _named_callsite_contexts(
-                    asset_text,
-                    asset_url,
-                    [synthetic_definition],
-                    "maintenance_mower_set_import_callsite",
+        for item in _contexts(text, url, hits):
+            if item not in ui_contexts:
+                ui_contexts.append(item)
+        for item in _contexts(text, url, [term for term in COMMAND_NEEDLES if term.lower() in text.lower()]):
+            if item not in command_contexts:
+                command_contexts.append(item)
+        for item in _translation_keys(text):
+            if item not in translation_keys:
+                translation_keys.append(item)
+        for candidate in _js_references(text, url, allowed_hosts):
+            existing = candidate_map.get(candidate["url"])
+            if existing is None or candidate["priority"] > existing["priority"]:
+                candidate_map[candidate["url"]] = candidate
+
+    for url in OBSERVED_PUBLIC_SUPPORT_SCRIPTS:
+        candidate_map.setdefault(
+            url,
+            {
+                "url": url,
+                "source": "observed_public_support_script",
+                "order": -1,
+                "source_context": "temporary observed beta fallback",
+                "priority": _priority(url) + 200,
+            },
+        )
+
+    queue = sorted(
+        candidate_map.values(),
+        key=lambda item: (-int(item.get("priority") or 0), int(item.get("order") or 0), str(item["url"])),
+    )
+    prefix_requests = 0
+    prefix_successes = 0
+    full_requests = 0
+    full_successes = 0
+    matched_assets: list[dict[str, Any]] = []
+    scanned: set[str] = set()
+    full_fetched: set[str] = set()
+    index = 0
+
+    while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS:
+        candidate = queue[index]
+        index += 1
+        url = str(candidate["url"])
+        if url in scanned or not _allowed(url, allowed_hosts):
+            continue
+        scanned.add(url)
+        prefix = _fetch(url, PREFIX_BYTES)
+        prefix_requests += 1
+        text = str(prefix.get("_text") or "")
+        if prefix.get("ok"):
+            prefix_successes += 1
+        hits = [term for term in target_terms if term.lower() in text.lower()]
+        keys = _translation_keys(text) if text else []
+        known_key_hits = [
+            item["key"]
+            for item in translation_keys
+            if item.get("key") and item["key"].lower() in text.lower()
+        ] if text else []
+        command_hits = [term for term in COMMAND_NEEDLES if term.lower() in text.lower()] if text else []
+        matched_terms.update(hits)
+        for item in keys:
+            if item not in translation_keys:
+                translation_keys.append(item)
+        should_full = bool(
+            hits
+            or keys
+            or known_key_hits
+            or (command_hits and int(candidate.get("priority") or 0) >= 55)
+            or int(candidate.get("priority") or 0) >= 180
+        )
+        asset_row = {
+            "url": url,
+            "source": candidate.get("source"),
+            "priority": candidate.get("priority"),
+            "prefix_http_status": prefix.get("http_status"),
+            "prefix_length": prefix.get("body_length_read"),
+            "prefix_sha256": prefix.get("body_sha256"),
+            "matched_terms": hits[:40],
+            "translation_keys": keys[:20],
+            "known_translation_key_hits": known_key_hits[:20],
+            "command_terms": command_hits[:30],
+            "full_fetched": False,
+        }
+
+        if should_full and full_requests < MAX_FULL_MATCHES:
+            full = _fetch(url, MAX_FULL_JS)
+            full_requests += 1
+            full_fetched.add(url)
+            full_text = str(full.get("_text") or "")
+            if full.get("ok"):
+                full_successes += 1
+            full_hits = [term for term in target_terms if term.lower() in full_text.lower()]
+            full_keys = _translation_keys(full_text) if full_text else []
+            for item in full_keys:
+                if item not in translation_keys:
+                    translation_keys.append(item)
+            key_terms = [item["key"] for item in translation_keys if item.get("key")]
+            context_terms = list(dict.fromkeys([*full_hits, *key_terms, *COMMAND_NEEDLES]))
+            contexts = _contexts(full_text, url, [term for term in context_terms if term.lower() in full_text.lower()])
+            for context in contexts:
+                if context["term"] in COMMAND_NEEDLES or any(
+                    marker.lower() in context["context"].lower()
+                    for marker in ("cmdcode", "/vehicle/set/send", "callnative", "sendencryptiondata", "reboot", "clear")
                 ):
-                    marker = (
-                        str(callsite.get("source") or ""),
-                        str(callsite.get("wrapper_name") or ""),
-                        int(callsite.get("call_offset") or -1),
-                    )
-                    if marker in alias_callsite_markers:
-                        continue
-                    alias_callsite_markers.add(marker)
-                    callsite["exported_name"] = import_row["exported_name"]
-                    callsite["imported_from"] = import_row["imported_from"]
-                    mower_set_callsite_contexts.append(callsite)
+                    if context not in command_contexts and len(command_contexts) < MAX_CONTEXTS:
+                        command_contexts.append(context)
+                elif context not in ui_contexts and len(ui_contexts) < MAX_CONTEXTS:
+                    ui_contexts.append(context)
+            for child in _js_references(full_text, url, allowed_hosts):
+                if child["url"] not in candidate_map:
+                    candidate_map[child["url"]] = child
+                    queue.append(child)
+            asset_row.update(
+                {
+                    "full_fetched": True,
+                    "full_http_status": full.get("http_status"),
+                    "full_length": full.get("body_length_read"),
+                    "full_sha256": full.get("body_sha256"),
+                    "full_matched_terms": full_hits[:50],
+                    "full_translation_keys": full_keys[:20],
+                }
+            )
+        if hits or keys or known_key_hits or command_hits or asset_row["full_fetched"]:
+            matched_assets.append(asset_row)
 
-    candidate_rows = sorted(
-''',
-    "cross-file mower-set alias tracing",
-)
-
-source = replace_once(
-    source,
-    '''    unfetched = [
-        row for row in candidate_rows if str(row["url"]) not in fetched
-    ][:MAX_UNFETCHED_CANDIDATES]
-''',
-    '''    unfetched = [
-        _compact_candidate(row)
-        for row in candidate_rows
-        if str(row["url"]) not in fetched and _is_targeted_candidate(row)
-    ][:MAX_UNFETCHED_CANDIDATES]
-''',
-    "compact unfetched evidence",
-)
-
-source = replace_once(
-    source,
-    '''                "The observable envelope shapes differ, so beta8 does not guess that "
-                "private-cloud p:101 is interchangeable with the H5 native bridge."
-''',
-    '''                "The observable envelope shapes differ, so beta9 does not guess that "
-                "private-cloud p:101 is interchangeable with the H5 native bridge."
-''',
-    "report assessment version",
-)
-
-source = replace_once(
-    source,
-    '''        "assets": assets,
-        "contexts": contexts[:MAX_CONTEXTS],
-''',
-    '''        "asset_evidence": [
-            evidence
-            for row in assets
-            if (evidence := _compact_asset_evidence(row)) is not None
-        ],
-        "contexts": contexts[:12],
-''',
-    "compact asset output",
-)
-
-source = replace_once(
-    source,
-    '''        "report_wrapper_definitions": report_wrapper_definitions[:64],
-''',
-    '''        "report_transport_wrapper_definitions": report_transport_wrapper_definitions[:24],
-        "report_wrapper_definitions": report_wrapper_definitions[:48],
-''',
-    "transport wrapper output",
-)
-
-source = replace_once(
-    source,
-    '''        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:64],
-        "mower_set_callsite_contexts": mower_set_callsite_contexts[:96],
-''',
-    '''        "mower_set_wrapper_definitions": mower_set_wrapper_definitions[:32],
-        "mower_set_export_aliases": mower_set_export_aliases[:24],
-        "mower_set_import_aliases": mower_set_import_aliases[:48],
-        "mower_set_callsite_contexts": mower_set_callsite_contexts[:64],
-''',
-    "mower-set alias output",
-)
-
-source = replace_once(
-    source,
-    '''        "request_candidates": request_candidates[:MAX_REQUEST_CANDIDATES],
-        "bridge_candidates": bridge_candidates[:96],
-''',
-    '''        "request_candidates": [
-            row for row in request_candidates if row.get("focus") != "supporting"
-        ][:MAX_REQUEST_CANDIDATES],
-        "bridge_candidates": [
-            row for row in bridge_candidates
-            if row.get("method") in ("handleH5MowerSet", "handleEncipherment", "handleDecrypt")
-        ][:24],
-''',
-    "filter supporting output noise",
-)
-
-source = replace_once(
-    source,
-    '''            "strategy": "semantic_source_context_routing+reserved_targeted_queue+precise_mower_set_wrapper",
-            "candidate_count": len(candidate_rows),
-            "candidates": candidate_rows[:MAX_JS_CANDIDATES],
-''',
-    '''            "strategy": "compact_contract_recovery+reserved_targeted_queue+cross_file_alias_trace",
-            "candidate_count": len(candidate_rows),
-            "candidates": [
-                _compact_candidate(row)
-                for row in candidate_rows
-                if _is_targeted_candidate(row)
-            ][:MAX_JS_CANDIDATES],
-''',
-    "compact candidate output",
-)
-
-source = replace_once(
-    source,
-    '''            "0.4.3-beta8 fixes targeted candidate routing at discovery time, reserves "
-            "report/maintenance chunks before broad fetching, and anchors handleH5MowerSet "
-            "wrapper recovery to the actual native call expression. Public source-map "
-            "probing is disabled after repeated 404s. It remains read-only and executes no "
-            "report API request, maintenance mutation or mower command."
-''',
-    '''            "0.4.3-beta9 narrows public-H5 fetching and diagnostics output to proven "
-            "Mowing Reports transport evidence and Parts maintenance call-site recovery, "
-            "including cross-file handleH5MowerSet export/import alias tracing. It remains "
-            "read-only and executes no report API request, maintenance mutation or mower command."
-''',
-    "beta9 note",
-)
-
-discovery_path.write_text(source, encoding="utf-8")
+    return {
+        "ok": True,
+        "beta_only": True,
+        "focus": "active_error_clear_resume_reboot_contract_recovery",
+        "read_only": True,
+        "public_unauthenticated_h5_only": True,
+        "mutation_calls_executed": False,
+        "live_command_call_executed": False,
+        "notification_detail_call_executed": False,
+        "current_error_code_used_as_search_term": str(error_code or "") or None,
+        "current_error_title_used_as_search_term": str(error_title or "") or None,
+        "allowed_hosts": sorted(allowed_hosts),
+        "limits": {
+            "prefix_bytes": PREFIX_BYTES,
+            "max_prefix_requests": MAX_PREFIX_REQUESTS,
+            "max_full_matches": MAX_FULL_MATCHES,
+            "max_full_js": MAX_FULL_JS,
+        },
+        "pages": pages,
+        "root_scripts": root_rows,
+        "candidate_count": len(candidate_map),
+        "prefix_request_count": prefix_requests,
+        "prefix_success_count": prefix_successes,
+        "full_request_count": full_requests,
+        "full_success_count": full_successes,
+        "matched_terms": sorted(matched_terms),
+        "translation_keys": translation_keys[:40],
+        "matched_assets": matched_assets[:60],
+        "ui_contexts": ui_contexts[:MAX_CONTEXTS],
+        "command_contexts": command_contexts[:MAX_CONTEXTS],
+        "note": (
+            "Public GET-only discovery searches the current error code/title plus the exact "
+            "Clear and resume and Reboot Mower UI labels, their translation keys, command "
+            "wrappers and nearby request shapes. It never calls the private mower command "
+            "endpoint or the notification detail/read endpoint."
+        ),
+    }
+'''
+(COMPONENT / "error_h5_discovery.py").write_text(error_discovery, encoding="utf-8")
 
 
+# Diagnostics: stop running Maintenance/Reports discovery and devote the beta probe
+# to the active error and its action contracts.
 diagnostics_path = COMPONENT / "diagnostics.py"
 diagnostics = diagnostics_path.read_text(encoding="utf-8")
 diagnostics = replace_once(
     diagnostics,
-    "0.4.3-beta8 performs source-context candidate routing plus precise Parts maintenance and Mowing Reports call-site recovery\n    within the bounded read-only public-H5 inspection; targeted candidates are reserved before broad fetching, and no mutation or report API request runs.",
-    "0.4.3-beta9 performs compact Mowing Reports transport recovery plus cross-file Parts maintenance alias/call-site tracing\n    within the bounded read-only public-H5 inspection; crawler budgets and output are reduced, and no mutation or report API request runs.",
-    "diagnostics docstring",
+    "from .maintenance_h5_discovery import probe_maintenance_h5\n",
+    "from .maintenance_h5_discovery import probe_maintenance_h5\nfrom .error_h5_discovery import probe_error_h5\nfrom .state_semantics import error_transition_diagnostics\n",
+    "error diagnostics imports",
 )
 diagnostics = replace_once(
     diagnostics,
-    '"Normal diagnostics use current coordinator state and caches; 0.4.3-beta8 routes high-value H5 candidates into the targeted queue at discovery time and records the source context/reason for that routing.",',
-    '"Normal diagnostics use current coordinator state and caches; 0.4.3-beta9 keeps the H5 probe compact and focused on report transport plus handleH5MowerSet export/import call-site evidence.",',
-    "diagnostics note",
+    '''    0.4.3-beta9 performs compact Mowing Reports transport recovery plus cross-file Parts maintenance alias/call-site tracing\n    within the bounded read-only public-H5 inspection; crawler budgets and output are reduced, and no mutation or report API request runs.\n''',
+    '''    0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses Download diagnostics on the active error,\n    MQTT-to-private arbitration evidence, raw vendor notification fields and public-H5 recovery of Clear and resume / Reboot Mower contracts.\n''',
+    "diagnostics beta focus",
+)
+old_probe = '''    try:\n        maintenance_h5_discovery = await hass.async_add_executor_job(\n            probe_maintenance_h5, coordinator.client\n        )\n    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery\n        maintenance_h5_discovery = {\n            "ok": False, "read_only": True, "beta_only": True,\n            "mutation_calls_executed": False,\n            "error_type": type(err).__name__, "error": sanitize(str(err)),\n        }\n\n'''
+new_probe = '''    maintenance_h5_discovery = {\n        "ok": True,\n        "read_only": True,\n        "beta_only": True,\n        "paused": True,\n        "reason": "0.4.3-beta10 diagnostics focus only on active error action recovery",\n        "mutation_calls_executed": False,\n    }\n    try:\n        error_command_discovery = await hass.async_add_executor_job(\n            probe_error_h5,\n            coordinator.client,\n            str(data.get("error_code") or ""),\n            str(data.get("error_title") or data.get("error_text") or ""),\n        )\n    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery\n        error_command_discovery = {\n            "ok": False,\n            "read_only": True,\n            "beta_only": True,\n            "mutation_calls_executed": False,\n            "live_command_call_executed": False,\n            "notification_detail_call_executed": False,\n            "error_type": type(err).__name__,\n            "error": sanitize(str(err)),\n        }\n\n'''
+diagnostics = replace_once(diagnostics, old_probe, new_probe, "focused diagnostics probe")
+diagnostics = replace_once(
+    diagnostics,
+    '''        "problem_history": sanitize(deepcopy(problem_history)),\n        "latest_notification": sanitize(\n''',
+    '''        "problem_history": sanitize(deepcopy(problem_history)),\n        "error_investigation": sanitize(\n            {\n                "policy": "private_cloud_canonical_mqtt_transition_trigger",\n                "transition": error_transition_diagnostics(coordinator),\n                "raw_index2_vehicle_state": (raw.get("index2") or {}).get("vehicle_state"),\n                "raw_auth_vehicle_state": (raw.get("auth_item") or {}).get("vehicle_state"),\n                "raw_index2_error_data": deepcopy((raw.get("index2") or {}).get("error_data") or []),\n                "vendor_notification_raw_cache": deepcopy(\n                    getattr(coordinator, "_notification_raw_cache", None)\n                ),\n                "vendor_notification_normalized_cache": deepcopy(\n                    getattr(coordinator, "_notification_cache", None)\n                ),\n                "command_discovery": deepcopy(error_command_discovery),\n            }\n        ),\n        "latest_notification": sanitize(\n''',
+    "error investigation output",
+)
+diagnostics = replace_once(
+    diagnostics,
+    '''                "style": data.get("notification_style"),\n                "notification_code": data.get("notification_code"),\n''',
+    '''                "style": data.get("notification_style"),\n                "variable": deepcopy(data.get("notification_variable")),\n                "notification_code": data.get("notification_code"),\n''',
+    "notification variable diagnostics",
+)
+diagnostics = replace_once(
+    diagnostics,
+    '''            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta9 keeps the H5 probe compact and focused on report transport plus handleH5MowerSet export/import call-site evidence.",\n            "The beta H5 inspection sends no account or mower identity and executes no maintenance mutation or mower command.",\n''',
+    '''            "0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses the beta-only public H5 probe on Clear and resume / Reboot Mower evidence for the active error.",\n            "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",\n''',
+    "diagnostics notes",
 )
 diagnostics_path.write_text(diagnostics, encoding="utf-8")
 
 
+test_source = r'''"""Regression contracts for Navimower 0.4.3-beta10 error diagnostics."""
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENT = ROOT / "custom_components" / "navimower"
+
+
+def test_beta10_release_identity() -> None:
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.4.3-beta10"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta10")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta10")
+
+
+def test_beta10_error_sensor_is_cloud_canonical() -> None:
+    source = (COMPONENT / "state_semantics.py").read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'value_fn=lambda data: data.get("error_text") or "No errors"' in source
+    assert '"private_cloud_canonical_mqtt_transition_trigger"' in source
+    assert 'transition = bool(state_name and state_name != previous_named)' in source
+    assert 'state_name in {"Error", "Self-Checking"} or previous_named == "Error"' in source
+    assert 'snapshot["error_text"] = "Error"' not in source
+    assert 'snapshot["docked_source"] = "mqtt_error_state"' not in source
+
+
+def test_beta10_retains_raw_vendor_notification_feed() -> None:
+    source = (COMPONENT / "notification_feed.py").read_text(encoding="utf-8")
+    assert 'coordinator._notification_raw_cache = deepcopy(response)' in source
+    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
+    assert '"vendor_notification_raw_cache"' in diagnostics
+    assert '"vendor_notification_normalized_cache"' in diagnostics
+    assert '"variable": deepcopy(data.get("notification_variable"))' in diagnostics
+
+
+def test_beta10_diagnostics_focuses_only_error_action_discovery() -> None:
+    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
+    assert "from .error_h5_discovery import probe_error_h5" in diagnostics
+    assert "probe_error_h5," in diagnostics
+    assert '"paused": True' in diagnostics
+    assert '"error_investigation"' in diagnostics
+    assert '"command_discovery": deepcopy(error_command_discovery)' in diagnostics
+    assert "probe_maintenance_h5, coordinator.client" not in diagnostics
+
+
+def test_beta10_error_h5_probe_is_strictly_read_only() -> None:
+    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+    ast.parse(source)
+    for phrase in (
+        "Clear and resume",
+        "Reboot Mower",
+        "clearError",
+        "rebootMower",
+        "/vehicle/set/send",
+        "c:behavior",
+        "cmdCode",
+        "MAX_PREFIX_REQUESTS = 180",
+        "PREFIX_BYTES = 64 * 1024",
+        'method="GET"',
+        '"mutation_calls_executed": False',
+        '"live_command_call_executed": False',
+        '"notification_detail_call_executed": False',
+    ):
+        assert phrase in source
+    assert "client.call(" not in source
+    assert "Authorization" not in source
+    assert "Cookie" not in source
+
+
+def test_beta10_error_probe_keeps_bounded_evidence() -> None:
+    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+    for phrase in (
+        '"translation_keys"',
+        '"matched_assets"',
+        '"ui_contexts"',
+        '"command_contexts"',
+        '"prefix_request_count"',
+        '"full_request_count"',
+    ):
+        assert phrase in source
+'''
+(ROOT / "tests" / "test_v043_beta10.py").write_text(test_source, encoding="utf-8")
+
+
+notes = '''title: Navimower 0.4.3-beta10\n\nFocused active-error arbitration and command-contract diagnostics.\n\n### Changed\n\n- Make the Error sensor private-cloud canonical: repeated MQTT `Error` messages no longer overwrite a detailed cloud fault with generic `Error`.\n- Use named MQTT Error transitions only to invalidate `index2`/`auth_list` and request one fast private refresh; repeated identical MQTT state does not trigger another error-driven poll.\n- Show `No errors` when the Error sensor has no active cloud fault.\n- Pause Maintenance and Mowing Reports H5 discovery in Download diagnostics for this beta.\n\n### Added\n\n- Preserve the un-normalized vendor Device notification feed in memory and expose a sanitized copy in diagnostics, including fields not retained by the public notification sensor.\n- Add a dedicated public-H5 error action probe for the exact `Clear and resume`, `Reboot Mower` and `Got it` UI labels, translation keys, current error code/title, nearby request endpoints, command payload shapes and native bridge calls.\n- Add MQTT error-transition evidence and current raw `index2.error_data` to the focused error-investigation diagnostics section.\n\n### Safety\n\n- Download diagnostics remains read-only. The error-action probe performs only bounded unauthenticated public HTTPS GETs.\n- No `Clear and resume`, reboot, Resume, notification-detail/read, or other mower command is executed.\n- The private current error code/title is used only as a local search term against already-downloaded public JavaScript and is never sent as mower identity.\n'''
+(ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").write_text(notes, encoding="utf-8")
+
+
 changelog_path = ROOT / "CHANGELOG.md"
 changelog = changelog_path.read_text(encoding="utf-8")
-entry = """# Changelog
-
-## 0.4.3-beta9
-
-Compact contract recovery for Mowing Reports transport and Parts maintenance call sites.
-
-### Changed
-
-- Reduce broad H5 discovery from 48 to 12 successful assets and targeted discovery from 24 to 16, with a 64-request total ceiling instead of 168.
-- Reduce context/candidate output and replace the full per-asset dump with compact evidence rows containing only contract-relevant fields.
-- Tighten targeted routing so incidental `mowing` context no longer promotes unrelated neighboring route assets by score alone.
-- Keep the already observed Mowing Records chunk fallback and direct request/native dependencies discoverable.
-
-### Added
-
-- Recover dedicated `handleEncipherment` / `handleDecrypt` wrapper definitions as report transport evidence.
-- Trace `handleH5MowerSet` across ES-module export/import aliases so a wrapper exported by app-entry can be followed into lazy-chunk callers.
-- Report compact mower-set export aliases, import aliases and imported call-site contexts in diagnostics.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
-
-"""
+entry = '''## 0.4.3-beta10\n\nFocused active-error arbitration and command-contract diagnostics.\n\n### Changed\n\n- Keep the Error sensor canonical to private-cloud `index2.error_data`; MQTT named Error is now a transition trigger instead of a temporary display source.\n- Deduplicate repeated identical MQTT Error states so only state edges request an error-driven private refresh.\n- Display `No errors` when no active cloud fault exists.\n- Pause Maintenance/Mowing Reports H5 discovery while this beta concentrates on active error commands.\n\n### Added\n\n- Preserve sanitized raw vendor notification-feed evidence for Download diagnostics.\n- Add a bounded public-H5 probe for `Clear and resume`, `Reboot Mower`, their translation keys, request shapes, endpoints and native bridge contexts.\n- Add focused error-transition, raw `index2.error_data`, raw/normalized notification and command-discovery evidence to diagnostics.\n\n### Safety\n\n- Diagnostics executes no mower mutation and no notification-detail/read action; the H5 probe is public GET-only.\n\n'''
 if not changelog.startswith("# Changelog\n\n"):
     raise SystemExit("Unexpected changelog header")
-changelog = entry + changelog[len("# Changelog\n\n"):]
-changelog_path.write_text(changelog, encoding="utf-8")
-
-
-release_notes = """title: Navimower 0.4.3-beta9
-
-Navimower 0.4.3-beta9 puts the beta8 public-H5 crawler on a diet and focuses the remaining discovery on the two unresolved contracts: Mowing Reports transport and Parts maintenance call sites.
-
-### Compact discovery
-
-- Broad successful-asset budget is reduced from 48 to 12 and targeted budget from 24 to 16; the total request ceiling drops from 168 to 64.
-- The full `assets` dump is replaced by compact `asset_evidence`, and candidate/context output is bounded much more tightly.
-- Incidental `mowing` context is no longer enough to promote unrelated neighboring routes; observed Mowing Records plus direct report/request/native/maintenance evidence stays prioritized.
-
-### Mowing Reports
-
-- Keep the proven `/vehicle/report/vehicle-main-report` and `/vehicle/report/get-day-week-month-data` business contract and the observed Mowing Records chunk fallback.
-- Recover `handleEncipherment` and `handleDecrypt` wrapper definitions explicitly so the remaining transport boundary is easier to compare with Navimower's private-cloud transport.
-- No live report request is made because H5 native-bridge encryption is still not assumed interchangeable with the private-cloud p:101 envelope.
-
-### Parts maintenance
-
-- Keep the proven `l5=(e={})=>...callNative(\"handleH5MowerSet\",e)` wrapper recovery.
-- Follow that wrapper through modern ES-module `export{... as ...}` and `import{... as ...}` aliases into fetched lazy chunks, then capture actual imported call sites and their argument previews when present.
-
-### Safety
-
-Beta9 remains **strictly read-only** and Download-diagnostics-only. It performs bounded public HTTPS GET requests only, sends no account/mower identifiers to H5, and executes no report API request, blade reset, Replacement done action, Clean now action, maintenance-mode command, cutting-height change or other mower mutation.
-"""
-notes_path = ROOT / ".github" / "release-notes" / "0.4.3-beta9.md"
-notes_path.write_text(release_notes, encoding="utf-8")
-
-
-test_path = ROOT / "tests" / "test_v043_beta9.py"
-test_path.write_text(
-    '''"""Regression contracts for Navimower 0.4.3-beta9 compact contract recovery."""\nfrom __future__ import annotations\n\nimport ast\nimport json\nfrom pathlib import Path\nimport re\n\nROOT = Path(__file__).resolve().parents[1]\nCOMPONENT = ROOT / "custom_components" / "navimower"\n\n\ndef _compiled_patterns(source: str) -> dict[str, tuple[str, int]]:\n    tree = ast.parse(source)\n    rows: dict[str, tuple[str, int]] = {}\n    for node in ast.walk(tree):\n        if not isinstance(node, ast.Assign) or len(node.targets) != 1:\n            continue\n        target = node.targets[0]\n        call = node.value\n        if not (\n            isinstance(target, ast.Name)\n            and isinstance(call, ast.Call)\n            and isinstance(call.func, ast.Attribute)\n            and isinstance(call.func.value, ast.Name)\n            and call.func.value.id == "re"\n            and call.func.attr == "compile"\n            and call.args\n        ):\n            continue\n        pattern = ast.literal_eval(call.args[0])\n        assert isinstance(pattern, str)\n        re.compile(pattern)\n        rows[target.id] = (pattern, 0)\n    return rows\n\n\ndef test_beta9_version_notes_and_changelog() -> None:\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta9"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta9.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta9")\n    assert "Compact discovery" in notes\n    assert "strictly read-only" in notes\n    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")\n    assert changelog.startswith("# Changelog\\n\\n## 0.4.3-beta9")\n\n\ndef test_beta9_reduces_crawl_and_output_budget() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    for phrase in (\n        "MAX_ASSETS = 12",\n        "MAX_TARGETED_ASSETS = 16",\n        "MAX_TOTAL_REQUESTS = 64",\n        "MAX_CONTEXTS = 48",\n        "MAX_JS_CANDIDATES = 72",\n        '"asset_evidence": [',\n        "def _compact_asset_evidence",\n        "def _compact_candidate",\n    ):\n        assert phrase in source\n    assert '\"assets\": assets' not in source\n\n\ndef test_beta9_tightens_incidental_mowing_routing() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    assert 'term != "mowing"' in source\n    assert '"mowing_records" in source_context' in source\n    assert 'basename in OBSERVED_REPORT_ASSET_BASENAMES' in source\n    assert '"index-594ad42d.js"' in source\n\n\ndef test_beta9_recovers_report_transport_wrappers() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    patterns = _compiled_patterns(source)\n    assert "REPORT_TRANSPORT_ARROW_RE" in patterns\n    regex = re.compile(patterns["REPORT_TRANSPORT_ARROW_RE"][0], re.I | re.S)\n    sample = 'XH=e=>je.sendEncryptionData("handleEncipherment",e).then(a=>a),$H=e=>je.sendEncryptionData("handleDecrypt",e).then(a=>a);'\n    matches = list(regex.finditer(sample))\n    assert [(m.group("name"), m.group("method")) for m in matches] == [\n        ("XH", "handleEncipherment"),\n        ("$H", "handleDecrypt"),\n    ]\n    assert '\"report_transport_wrapper_definitions\"' in source\n\n\ndef test_beta9_has_cross_file_mower_set_alias_trace() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    patterns = _compiled_patterns(source)\n    export_re = re.compile(patterns["EXPORT_BLOCK_RE"][0], re.I)\n    import_re = re.compile(patterns["IMPORT_BLOCK_RE"][0], re.I)\n    export_match = export_re.search('const l5=e=>e;export{l5 as ac,x as y};')\n    assert export_match is not None and "l5 as ac" in export_match.group("bindings")\n    import_match = import_re.search('import{ac as M,q as z}from"./app-entry.js";M({type:1});')\n    assert import_match is not None and "ac as M" in import_match.group("bindings")\n    for phrase in (\n        "def _exported_aliases",\n        "def _import_aliases_for_source",\n        '\"mower_set_export_aliases\": mower_set_export_aliases',\n        '\"mower_set_import_aliases\": mower_set_import_aliases',\n        '"maintenance_mower_set_import_callsite"',\n    ):\n        assert phrase in source\n\n\ndef test_beta9_keeps_precise_mower_set_wrapper() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    patterns = _compiled_patterns(source)\n    regex = re.compile(patterns["MOWER_SET_ARROW_WRAPPER_RE"][0], re.I)\n    sample = '$H=(e={})=>je.sendEncryptionData("handleDecrypt",e),l5=(e={})=>je.callNative("handleH5MowerSet",e),x=1'\n    match = regex.search(sample)\n    assert match is not None\n    assert match.group("name") == "l5"\n    assert match.group("param") == "e"\n\n\ndef test_beta9_remains_public_get_only_and_non_mutating() -> None:\n    source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")\n    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")\n    assert 'method=\"GET\"' in source\n    assert '\"mutation_calls_executed\": False' in source\n    assert '\"live_report_request_executed\": False' in source\n    assert "client.call(" not in source\n    assert "Authorization" not in source\n    assert "Cookie" not in source\n    assert "0.4.3-beta9" in diagnostics\n    assert "bounded read-only public-H5 inspection" in diagnostics\n''',
-    encoding="utf-8",
-)
+changelog_path.write_text("# Changelog\n\n" + entry + changelog[len("# Changelog\n\n"):], encoding="utf-8")
