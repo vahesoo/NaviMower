@@ -1,21 +1,18 @@
-"""Regression contracts for Navimower 0.4.3-beta10 error diagnostics."""
+"""Regression contracts retained from Navimower 0.4.3-beta10 error diagnostics."""
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta10_release_identity() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta10"
+def test_beta10_release_artifacts_remain_in_history() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta10")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta10")
+    assert "## 0.4.3-beta10" in changelog
 
 
 def test_beta10_error_sensor_is_cloud_canonical() -> None:
@@ -48,7 +45,7 @@ def test_beta10_diagnostics_focuses_only_error_action_discovery() -> None:
     assert "probe_maintenance_h5, coordinator.client" not in diagnostics
 
 
-def test_beta10_error_h5_probe_is_strictly_read_only() -> None:
+def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
     source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
     ast.parse(source)
     for phrase in (
