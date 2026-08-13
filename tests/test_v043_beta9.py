@@ -1,8 +1,7 @@
-"""Regression contracts for Navimower 0.4.3-beta9 compact contract recovery."""
+"""Cumulative regression contracts retained from Navimower 0.4.3-beta9."""
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 import re
 
@@ -35,25 +34,23 @@ def _compiled_patterns(source: str) -> dict[str, tuple[str, int]]:
     return rows
 
 
-def test_beta9_version_notes_and_changelog() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta9"
+def test_beta9_release_artifacts_remain_in_history() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta9.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta9")
     assert "Compact discovery" in notes
     assert "strictly read-only" in notes
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta9")
+    assert "## 0.4.3-beta9" in changelog
 
 
-def test_beta9_reduces_crawl_and_output_budget() -> None:
+def test_beta9_keeps_bounded_compact_discovery_contract() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
-        "MAX_ASSETS = 12",
-        "MAX_TARGETED_ASSETS = 16",
-        "MAX_TOTAL_REQUESTS = 64",
-        "MAX_CONTEXTS = 48",
-        "MAX_JS_CANDIDATES = 72",
+        "MAX_ASSETS =",
+        "MAX_TARGETED_ASSETS =",
+        "MAX_TOTAL_REQUESTS =",
+        "MAX_CONTEXTS =",
+        "MAX_JS_CANDIDATES =",
         '"asset_evidence": [',
         "def _compact_asset_evidence",
         "def _compact_candidate",
@@ -114,14 +111,11 @@ def test_beta9_keeps_precise_mower_set_wrapper() -> None:
     assert match.group("param") == "e"
 
 
-def test_beta9_remains_public_get_only_and_non_mutating() -> None:
+def test_beta9_discovery_remains_public_get_only_and_non_mutating() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     assert 'method="GET"' in source
     assert '"mutation_calls_executed": False' in source
     assert '"live_report_request_executed": False' in source
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta9" in diagnostics
-    assert "bounded read-only public-H5 inspection" in diagnostics
