@@ -107,4 +107,4 @@ def test_beta8_remains_public_get_only_and_non_mutating() -> None:
     assert "Authorization" not in source
     assert "Cookie" not in source
     assert "0.4.3-beta" in diagnostics
-    assert "bounded read-only public-H5 inspection" in diagnostics
+    assert '"maintenance_h5_discovery"' in diagnostics
