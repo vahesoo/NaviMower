@@ -2,18 +2,17 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta11_release_identity() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta11"
+def test_beta11_release_artifacts_remain_in_history() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta11.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta11")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## 0.4.3-beta11" in changelog
 
 
 def test_beta11_error_discovery_uses_two_pass_full_fetch_selection() -> None:

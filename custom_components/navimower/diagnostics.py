@@ -1,6 +1,7 @@
 """Native Home Assistant diagnostics for Navimower."""
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -19,6 +20,9 @@ from .state_semantics import error_transition_diagnostics
 from .resume import resume_command_diagnostics
 
 
+ERROR_DISCOVERY_TIMEOUT_SECONDS = 30.0
+
+
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     """Return a compact copy of selected coordinator fields."""
     return {key: deepcopy(data.get(key)) for key in keys if key in data}
@@ -31,10 +35,10 @@ async def async_get_config_entry_diagnostics(
     """Return a sanitized snapshot for Home Assistant Download diagnostics.
 
     Normal diagnostics use the config entry, coordinator state and caches.
-    0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and focuses
-    Download diagnostics on active error command recovery, including two-pass
-    public-H5 evidence and any notification-detail response already produced by
-    an explicit user Mark notification as read action.
+    0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and makes
+    active-error command recovery diagnostics-safe: public-H5 inspection has a
+    strict wall-clock budget plus an outer Home Assistant timeout, while partial
+    evidence and explicit notification-detail traces remain downloadable.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -103,16 +107,30 @@ async def async_get_config_entry_diagnostics(
         "read_only": True,
         "beta_only": True,
         "paused": True,
-        "reason": "0.4.3-beta11 diagnostics focus only on active error action recovery",
+        "reason": "0.4.3-beta12 diagnostics focus only on bounded active error action recovery",
         "mutation_calls_executed": False,
     }
     try:
-        error_command_discovery = await hass.async_add_executor_job(
-            probe_error_h5,
-            coordinator.client,
-            str(data.get("error_code") or ""),
-            str(data.get("error_title") or data.get("error_text") or ""),
-        )
+        async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):
+            error_command_discovery = await hass.async_add_executor_job(
+                probe_error_h5,
+                coordinator.client,
+                str(data.get("error_code") or ""),
+                str(data.get("error_title") or data.get("error_text") or ""),
+            )
+    except TimeoutError:
+        error_command_discovery = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
+            "timed_out": True,
+            "timeout_seconds": ERROR_DISCOVERY_TIMEOUT_SECONDS,
+            "mutation_calls_executed": False,
+            "live_command_call_executed": False,
+            "notification_detail_call_executed": False,
+            "error_type": "TimeoutError",
+            "error": "public H5 error discovery exceeded the diagnostics timeout",
+        }
     except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
         error_command_discovery = {
             "ok": False,
@@ -310,7 +328,7 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and uses two-pass public H5 selection for Clear and resume / Reboot Mower evidence.",
+            "0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and bounds Clear and resume / Reboot Mower public-H5 recovery so Download diagnostics always returns partial evidence instead of waiting on the crawler.",
             "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",
             "Notification detail evidence is retained only after an explicit user Mark notification as read action; downloading diagnostics never calls the detail endpoint.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",

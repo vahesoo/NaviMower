@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -20,14 +21,17 @@ from .maintenance_h5_discovery import (
 )
 
 MAX_HTML = 256 * 1024
-MAX_ROOT_JS = 2 * 1024 * 1024
+MAX_ROOT_JS = 1024 * 1024
 PREFIX_BYTES = 64 * 1024
-MAX_PREFIX_REQUESTS = 180
-MAX_FULL_MATCHES = 18
+MAX_ROOT_REQUESTS = 4
+MAX_PREFIX_REQUESTS = 32
+MAX_FULL_MATCHES = 6
 MAX_FULL_JS = 2 * 1024 * 1024
 MAX_CONTEXTS = 80
 CONTEXT_RADIUS = 1800
-TIMEOUT = 5
+MAX_PROBE_SECONDS = 24.0
+TIMEOUT = 2.5
+MIN_REQUEST_TIMEOUT = 0.2
 
 SCRIPT_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I)
 JS_RE = re.compile(r"[\"']([^\"'\r\n]{1,420}\.js(?:\?[^\"'\r\n]{0,120})?)[\"']", re.I)
@@ -147,17 +151,17 @@ def _resolve(base_url: str, value: str) -> str:
     return _safe_url(urllib.parse.urljoin(base_url, raw))
 
 
-def _fetch(url: str, limit: int) -> dict[str, Any]:
+def _fetch(url: str, limit: int, timeout: float = TIMEOUT) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         headers={
             "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta11",
+            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta12",
         },
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=max(MIN_REQUEST_TIMEOUT, float(timeout))) as response:
             raw = response.read(limit + 1)
             status = int(getattr(response, "status", 200))
             content_type = str(response.headers.get("Content-Type", ""))
@@ -187,6 +191,19 @@ def _fetch(url: str, limit: int) -> dict[str, Any]:
     }
 
 
+def _deadline_fetch(url: str, limit: int, deadline: float) -> dict[str, Any]:
+    """Fetch without starting work after the diagnostics wall-clock budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= MIN_REQUEST_TIMEOUT:
+        return {
+            "ok": False,
+            "url": _safe_url(url),
+            "budget_exhausted": True,
+            "transport_error": "wall_clock_budget_exhausted",
+        }
+    return _fetch(url, limit, timeout=min(TIMEOUT, remaining))
+
+
 def _public(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key != "_text"}
 
@@ -205,6 +222,21 @@ def _priority(url: str, source_context: str = "") -> int:
     if "cloud-acc.navimow.com" in url:
         score += 25
     return score
+
+
+def _candidate_queue_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Put proven error-command and native/request assets ahead of generic chunks."""
+    url = str(item.get("url") or "")
+    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
+    observed_rank = 0 if basename in OBSERVED_ERROR_COMMAND_ASSETS else 1
+    support_rank = 0 if url in OBSERVED_PUBLIC_SUPPORT_SCRIPTS else 1
+    return (
+        observed_rank,
+        support_rank,
+        -int(item.get("priority") or 0),
+        int(item.get("order") or 0),
+        url,
+    )
 
 
 def _full_fetch_priority(
@@ -389,12 +421,24 @@ def _append_unique(rows: list[dict[str, Any]], additions: list[dict[str, Any]], 
 
 
 def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
-    """Inspect only public H5 assets for error-dialog command evidence."""
+    """Inspect public H5 error-action assets within a strict diagnostics deadline."""
+    started = time.monotonic()
+    deadline = started + MAX_PROBE_SECONDS
+    budget_exhausted = False
+    stop_reason: str | None = None
+
+    def fetch_bounded(url: str, limit: int) -> dict[str, Any]:
+        nonlocal budget_exhausted, stop_reason
+        row = _deadline_fetch(url, limit, deadline)
+        if row.get("budget_exhausted") or time.monotonic() >= deadline:
+            budget_exhausted = True
+            stop_reason = stop_reason or "wall_clock_budget"
+        return row
+
     host = _host(client)
     allowed_hosts = {urllib.parse.urlsplit(host).netloc, "cloud-acc.navimow.com"}
     entry_urls = (
         f"{host}/old/",
-        f"{host}/maintenance/",
         "https://cloud-acc.navimow.com/navimow/",
     )
     dynamic_terms = [term for term in (str(error_code or ""), str(error_title or "")) if term]
@@ -403,7 +447,9 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     pages: list[dict[str, Any]] = []
     root_urls: list[str] = []
     for url in entry_urls:
-        row = _fetch(url, MAX_HTML)
+        if budget_exhausted:
+            break
+        row = fetch_bounded(url, MAX_HTML)
         text = str(row.get("_text") or "")
         scripts: list[str] = []
         if text:
@@ -432,8 +478,10 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     mower_set_import_aliases: list[dict[str, Any]] = []
     mower_set_callsite_contexts: list[dict[str, Any]] = []
 
-    for url in root_urls[:10]:
-        row = _fetch(url, MAX_ROOT_JS)
+    for url in root_urls[:MAX_ROOT_REQUESTS]:
+        if budget_exhausted:
+            break
+        row = fetch_bounded(url, MAX_ROOT_JS)
         text = str(row.get("_text") or "")
         hits = [term for term in target_terms if term.lower() in text.lower()]
         matched_terms.update(hits)
@@ -471,10 +519,20 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
             },
         )
 
-    queue = sorted(
-        candidate_map.values(),
-        key=lambda item: (-int(item.get("priority") or 0), int(item.get("order") or 0), str(item["url"])),
-    )
+    for basename in OBSERVED_ERROR_COMMAND_ASSETS:
+        observed_url = f"{host}/old/assets/{basename}"
+        candidate_map.setdefault(
+            observed_url,
+            {
+                "url": observed_url,
+                "source": "observed_error_command_asset",
+                "order": -2,
+                "source_context": "temporary proven error-command asset fallback",
+                "priority": _priority(observed_url) + 5000,
+            },
+        )
+
+    queue = sorted(candidate_map.values(), key=_candidate_queue_key)
     prefix_requests = 0
     prefix_successes = 0
     full_requests = 0
@@ -486,14 +544,14 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     # Pass 1: collect bounded prefix evidence from the whole candidate queue. Do
     # not spend any full-fetch slots yet; beta10 could exhaust the 18-slot quota
     # before later, stronger multi-signal candidates were reached.
-    while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS:
+    while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS and not budget_exhausted:
         candidate = queue[index]
         index += 1
         url = str(candidate["url"])
         if url in scanned or not _allowed(url, allowed_hosts):
             continue
         scanned.add(url)
-        prefix = _fetch(url, PREFIX_BYTES)
+        prefix = fetch_bounded(url, PREFIX_BYTES)
         prefix_requests += 1
         text = str(prefix.get("_text") or "")
         if prefix.get("ok"):
@@ -544,6 +602,7 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
                     continue
                 candidate_map[child["url"]] = child
                 queue.append(child)
+            queue[index:] = sorted(queue[index:], key=_candidate_queue_key)
 
     full_plan = sorted(
         [row for row in prefix_evidence if row.get("full_fetch_eligible")],
@@ -557,10 +616,12 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
 
     # Pass 2: spend the full-fetch budget only on the strongest prefix evidence.
     for rank, planned in enumerate(full_plan[:MAX_FULL_MATCHES], start=1):
+        if budget_exhausted:
+            break
         url = str(planned.get("url") or "")
         if not url:
             continue
-        full = _fetch(url, MAX_FULL_JS)
+        full = fetch_bounded(url, MAX_FULL_JS)
         full_requests += 1
         full_text = str(full.get("_text") or "")
         if full.get("ok"):
@@ -679,12 +740,16 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         "allowed_hosts": sorted(allowed_hosts),
         "limits": {
             "prefix_bytes": PREFIX_BYTES,
+            "max_root_requests": MAX_ROOT_REQUESTS,
             "max_prefix_requests": MAX_PREFIX_REQUESTS,
             "max_full_matches": MAX_FULL_MATCHES,
             "max_full_js": MAX_FULL_JS,
+            "max_probe_seconds": MAX_PROBE_SECONDS,
+            "per_request_timeout_seconds": TIMEOUT,
         },
         "selection": {
             "mode": "two_pass_prefix_score_then_full",
+            "bounded_by_wall_clock": True,
             "full_fetch_candidate_count": len(full_plan),
             "full_fetch_plan": [
                 {
@@ -696,6 +761,12 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
                 }
                 for row in full_plan[: min(30, len(full_plan))]
             ],
+        },
+        "execution": {
+            "wall_clock_budget_seconds": MAX_PROBE_SECONDS,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "budget_exhausted": budget_exhausted,
+            "stop_reason": stop_reason,
         },
         "pages": pages,
         "root_scripts": root_rows,
@@ -714,9 +785,9 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         "mower_set_import_aliases": mower_set_import_aliases[:48],
         "mower_set_callsite_contexts": mower_set_callsite_contexts[:64],
         "note": (
-            "Public GET-only discovery now scores all bounded prefix evidence before using "
-            "full-fetch slots, then follows the beta9-proven handleH5MowerSet wrapper through "
-            "ES-module aliases to bounded call arguments. It never calls the private mower "
-            "command endpoint or the notification detail/read endpoint."
+            "Public GET-only discovery prioritizes proven error-command assets and keeps "
+            "two-pass prefix/full-fetch recovery inside a strict wall-clock budget. Partial "
+            "evidence is returned when the budget is exhausted. It never calls the private "
+            "mower command endpoint or the notification detail/read endpoint."
         ),
     }
