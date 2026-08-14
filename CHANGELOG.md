@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.3-beta12
+
+Bounded active-error diagnostics and Recorder-safe notification attributes.
+
+### Fixed
+
+- Bound Clear and resume / Reboot Mower public-H5 discovery by wall clock, per-request timeout and smaller request budgets so Download diagnostics returns reliably.
+- Prioritize proven error-command assets before generic lazy chunks and retain partial evidence when the discovery budget expires.
+- Add an outer Home Assistant diagnostics timeout as a final fail-safe.
+- Limit the Latest notification entity's recent attribute to five entries to stay below Recorder's 16 KiB state-attribute limit while retaining full internal/diagnostic history.
+
+### Safety
+
+- Error-action discovery remains public HTTPS GET-only and executes no mower or notification-detail command.
+
+## 0.4.3-beta11
+
+Two-pass active-error command discovery and explicit notification-detail trace retention.
+
+### Changed
+
+- Score bounded public-H5 prefix evidence before spending full-fetch slots so strong Clear and resume / Reboot Mower candidates cannot be starved by earlier generic assets.
+- Reuse the proven handleH5MowerSet wrapper/export/import tracing to capture bounded command-call argument evidence.
+- Preserve the response from an explicit user Mark notification as read action for later diagnostics without making a hidden detail request.
+
+### Safety
+
+- Discovery remained public, unauthenticated and GET-only and did not guess or execute unproven mower commands.
+
 ## 0.4.3-beta10
 
 Focused active-error arbitration and command-contract diagnostics.

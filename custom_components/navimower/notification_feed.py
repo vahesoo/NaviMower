@@ -31,7 +31,8 @@ from .notification_center import (
 _NOTIFICATION_PATH = "/mowerbot/user/message/vehicleMessageListField"
 _NOTIFICATION_FILTER = "all"
 _NOTIFICATION_TTL_SECONDS = 60
-_NOTIFICATION_ATTR_HISTORY_LIMIT = MERGED_NOTIFICATION_LIMIT
+# Entity attributes are intentionally smaller than the internal merged history so Recorder stays below its 16 KiB state-attribute limit.
+_NOTIFICATION_ATTR_HISTORY_LIMIT = 5
 
 # Legacy notification-history route kept as a callable compatibility/debug helper only.
 _LEGACY_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
