@@ -14,78 +14,30 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+# Release identity.
 manifest_path = COMPONENT / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("version") != "0.4.3-beta9":
-    raise SystemExit(f"Expected 0.4.3-beta9 base, got {manifest.get('version')!r}")
-manifest["version"] = "0.4.3-beta10"
+if manifest.get("version") != "0.4.3-beta11":
+    raise SystemExit(f"Expected 0.4.3-beta11 base, got {manifest.get('version')!r}")
+manifest["version"] = "0.4.3-beta12"
 manifest_path.write_text(
     json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
     encoding="utf-8",
 )
 
 
-# Error sensor: private cloud is canonical; MQTT named Error is only an edge trigger.
-state_path = COMPONENT / "state_semantics.py"
-state = state_path.read_text(encoding="utf-8")
-state = replace_once(
-    state,
-    "from copy import deepcopy\nfrom dataclasses import replace\nfrom typing import Any\n",
-    "from copy import deepcopy\nfrom dataclasses import replace\nfrom datetime import UTC, datetime\nfrom typing import Any\n",
-    "state diagnostics imports",
+# Bound active-error public-H5 diagnostics by both request counts and wall time.
+error_path = COMPONENT / "error_h5_discovery.py"
+error = error_path.read_text(encoding="utf-8")
+error = replace_once(
+    error,
+    "import hashlib\nimport re\nfrom typing import Any\n",
+    "import hashlib\nimport re\nimport time\nfrom typing import Any\n",
+    "error discovery time import",
 )
-state = replace_once(
-    state,
-    '''        replace(description, attrs_fn=attrs)\n        if description.key == "error_text"\n''',
-    '''        replace(\n            description,\n            value_fn=lambda data: data.get("error_text") or "No errors",\n            attrs_fn=attrs,\n        )\n        if description.key == "error_text"\n''',
-    "clean error sensor state",
-)
-insert_marker = "\n\ndef install_state_semantics() -> None:\n"
-if insert_marker not in state:
-    raise SystemExit("state diagnostics insertion marker missing")
-state = state.replace(
-    insert_marker,
-    '''\n\ndef error_transition_diagnostics(coordinator: Any) -> dict[str, Any]:\n    """Return MQTT-to-private error arbitration evidence without changing state."""\n    last_update = getattr(coordinator, "_mqtt_named_state_last_update", None)\n    age = coordinator._age_since(last_update) if last_update is not None else None  # noqa: SLF001\n    return {\n        "policy": "private_cloud_canonical_mqtt_transition_trigger",\n        "mqtt_named_state": getattr(coordinator, "_mqtt_named_state", None),\n        "mqtt_named_state_age": age,\n        "last_error_transition": deepcopy(\n            getattr(coordinator, "_error_transition_trace", None)\n        ),\n    }\n\n\ndef install_state_semantics() -> None:\n''',
-    1,
-)
-start_marker = "    def ingest_mqtt_state(self: Any, state: dict[str, Any]) -> None:\n"
-end_marker = "\n    cls._parse = parse\n"
-start = state.find(start_marker)
-end = state.find(end_marker, start)
-if start < 0 or end < 0:
-    raise SystemExit("ingest_mqtt_state replacement markers missing")
-new_ingest = '''    def ingest_mqtt_state(self: Any, state: dict[str, Any]) -> None:\n        if not isinstance(state, dict):\n            return original_ingest_state(self, state)\n\n        state_name = str(state.get("state") or "").strip()\n        previous_named = self._fresh_mqtt_named_state()  # noqa: SLF001\n        transition = bool(state_name and state_name != previous_named)\n        error_transition = bool(\n            transition\n            and (state_name in {"Error", "Self-Checking"} or previous_named == "Error")\n        )\n\n        # A repeated MQTT Error is not a new source value and must not cause a\n        # poll storm. Only a named-state edge invalidates the canonical private\n        # status endpoints; the normal coordinator still performs the reads.\n        if error_transition:\n            _mark_endpoints_due(self, "index2", "auth_list")\n\n        result = original_ingest_state(self, state)\n\n        if error_transition:\n            if state_name == "Error":\n                reason = "MQTT state changed to Error"\n            elif previous_named == "Error":\n                reason = f"MQTT state changed away from Error to {state_name}"\n            else:\n                reason = f"MQTT error-related state changed to {state_name}"\n            self._error_transition_trace = {  # noqa: SLF001\n                "previous_mqtt_state": previous_named,\n                "new_mqtt_state": state_name,\n                "observed_utc": datetime.now(UTC).isoformat(),\n                "private_endpoints_marked_due": ["index2", "auth_list"],\n                "fast_refresh_requested": True,\n                "reason": reason,\n            }\n            self.request_fast_refresh(reason)\n        return result\n'''
-state = state[:start] + new_ingest + state[end:]
-state_path.write_text(state, encoding="utf-8")
-
-
-# Retain the un-normalized Device feed in memory so diagnostics can show fields
-# that the public sensor intentionally does not expose.
-notification_path = COMPONENT / "notification_feed.py"
-notification = notification_path.read_text(encoding="utf-8")
-notification = replace_once(
-    notification,
-    '''    normalized = _normalize_response(response)\n    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]\n''',
-    '''    coordinator._notification_raw_cache = deepcopy(response)  # noqa: SLF001\n    normalized = _normalize_response(response)\n    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]\n''',
-    "raw notification cache",
-)
-notification_path.write_text(notification, encoding="utf-8")
-
-
-error_discovery = r'''"""Focused read-only public H5 discovery for active error actions."""
-from __future__ import annotations
-
-import hashlib
-import re
-from typing import Any
-import urllib.error
-import urllib.parse
-import urllib.request
-
-from .api.regions import canonical_region
-from .diagnostics_sanitize import sanitize
-
-MAX_HTML = 256 * 1024
+error = replace_once(
+    error,
+    '''MAX_HTML = 256 * 1024
 MAX_ROOT_JS = 2 * 1024 * 1024
 PREFIX_BYTES = 64 * 1024
 MAX_PREFIX_REQUESTS = 180
@@ -94,509 +46,414 @@ MAX_FULL_JS = 2 * 1024 * 1024
 MAX_CONTEXTS = 80
 CONTEXT_RADIUS = 1800
 TIMEOUT = 5
-
-SCRIPT_RE = re.compile(r"<script\\b[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", re.I)
-JS_RE = re.compile(r"[\"']([^\"'\\r\\n]{1,420}\\.js(?:\\?[^\"'\\r\\n]{0,120})?)[\"']", re.I)
-ENDPOINT_RE = re.compile(
-    r"[\"']((?:https?://[^\"'\\s]+)?/?(?:mowerbot|vehicle|setting|robot|api)/[^\"'\\r\\n]{1,320})[\"']",
-    re.I,
+''',
+    '''MAX_HTML = 256 * 1024
+MAX_ROOT_JS = 1024 * 1024
+PREFIX_BYTES = 64 * 1024
+MAX_ROOT_REQUESTS = 4
+MAX_PREFIX_REQUESTS = 32
+MAX_FULL_MATCHES = 6
+MAX_FULL_JS = 2 * 1024 * 1024
+MAX_CONTEXTS = 80
+CONTEXT_RADIUS = 1800
+MAX_PROBE_SECONDS = 24.0
+TIMEOUT = 2.5
+MIN_REQUEST_TIMEOUT = 0.2
+''',
+    "error discovery bounded limits",
 )
-HTTP_RE = re.compile(r"method\\s*:\\s*[\"']?(GET|POST|PUT|DELETE|PATCH)[\"']?", re.I)
-BRIDGE_RE = re.compile(
-    r"(?P<callee>(?:[A-Za-z_$][\\w$]*\\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
-    r"\\s*\\(\\s*[\"'](?P<method>[^\"']{1,160})[\"']",
-    re.I,
+error = replace_once(
+    error,
+    '"User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta11",',
+    '"User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta12",',
+    "error discovery user agent",
 )
-
-BASE_TARGET_TERMS = (
-    "Clear and resume",
-    "Reboot Mower",
-    "Got it",
-    "clearAndResume",
-    "clear_and_resume",
-    "clearResume",
-    "resumeAfterError",
-    "clearError",
-    "resetError",
-    "clearFault",
-    "resetFault",
-    "rebootMower",
-    "reboot_mower",
-    "restartMower",
-    "restart_mower",
-    "/vehicle/set/send",
-    "c:behavior",
-    "cmdCode",
-    "cmd_code",
-    "sendEncryptionData",
-    "callNative",
+error = replace_once(
+    error,
+    "def _fetch(url: str, limit: int) -> dict[str, Any]:",
+    "def _fetch(url: str, limit: int, timeout: float = TIMEOUT) -> dict[str, Any]:",
+    "fetch timeout argument",
 )
-UI_LABELS = ("Clear and resume", "Reboot Mower", "Got it")
-COMMAND_NEEDLES = (
-    "clear",
-    "resume",
-    "reboot",
-    "restart",
-    "fault",
-    "error",
-    "cmdCode",
-    "c:behavior",
-    "/vehicle/set/send",
-    "callNative",
-    "sendEncryptionData",
+error = replace_once(
+    error,
+    "with urllib.request.urlopen(request, timeout=TIMEOUT) as response:",
+    "with urllib.request.urlopen(request, timeout=max(MIN_REQUEST_TIMEOUT, float(timeout))) as response:",
+    "fetch bounded socket timeout",
 )
-PRIORITY_FILENAME_TOKENS = (
-    "error",
-    "fault",
-    "alarm",
-    "dialog",
-    "popup",
-    "home",
-    "mower",
-    "service-",
-    "request-",
-    "native-",
-    "state",
-)
-
-# Current public-app roots observed during the 0.4.3 beta line. They are only
-# fallback GET targets if the live HTML does not enumerate them; no identity is sent.
-OBSERVED_PUBLIC_ROOT_SCRIPTS = (
-    "https://cloud-acc.navimow.com/navimow/static/js/app-entry-afe8631d.js",
-    "https://cloud-acc.navimow.com/navimow/static/js/app-entry-legacy-83eb5a47.js",
-)
-OBSERVED_PUBLIC_SUPPORT_SCRIPTS = (
-    "https://cloud-acc.navimow.com/navimow/static/js/native-d66fe239.js",
-    "https://cloud-acc.navimow.com/navimow/static/js/request-e9a0ef42.js",
-)
-
-
-def _host(client: Any) -> str:
-    region = canonical_region(getattr(client, "region", "fra"))
-    return f"https://navimow-h5-{region}.willand.com"
-
-
-def _safe_url(url: str) -> str:
-    parsed = urllib.parse.urlsplit(str(url or ""))
-    path = parsed.path
-    while "/static/js/static/js/" in path:
-        path = path.replace("/static/js/static/js/", "/static/js/")
-    while "/assets/assets/" in path:
-        path = path.replace("/assets/assets/", "/assets/")
-    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
-def _resolve(base_url: str, value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    parsed_ref = urllib.parse.urlsplit(raw)
-    if parsed_ref.scheme and parsed_ref.netloc:
-        return _safe_url(raw)
-    base = urllib.parse.urlsplit(base_url)
-    clean = raw.lstrip("./")
-    for marker in ("static/js/", "assets/"):
-        if clean.startswith(marker):
-            idx = base.path.find("/" + marker)
-            if idx >= 0:
-                prefix = base.path[: idx + 1]
-                return _safe_url(
-                    urllib.parse.urlunsplit((base.scheme, base.netloc, prefix + clean, "", ""))
-                )
-    return _safe_url(urllib.parse.urljoin(base_url, raw))
-
-
-def _fetch(url: str, limit: int) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "text/html,application/javascript,text/javascript,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 NavimowerErrorDiagnostics/0.4.3-beta10",
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            raw = response.read(limit + 1)
-            status = int(getattr(response, "status", 200))
-            content_type = str(response.headers.get("Content-Type", ""))
-    except urllib.error.HTTPError as err:
-        raw = err.read(limit + 1)
-        status = int(err.code)
-        content_type = str(err.headers.get("Content-Type", ""))
-    except urllib.error.URLError as err:
-        return {"ok": False, "url": _safe_url(url), "transport_error": sanitize(str(err.reason))}
-    except Exception as err:  # noqa: BLE001 - optional diagnostics probe
+error = replace_once(
+    error,
+    '''\n\ndef _public(row: dict[str, Any]) -> dict[str, Any]:
+''',
+    '''\n\ndef _deadline_fetch(url: str, limit: int, deadline: float) -> dict[str, Any]:
+    """Fetch without starting work after the diagnostics wall-clock budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= MIN_REQUEST_TIMEOUT:
         return {
             "ok": False,
             "url": _safe_url(url),
-            "transport_error": sanitize(f"{type(err).__name__}: {err}"),
+            "budget_exhausted": True,
+            "transport_error": "wall_clock_budget_exhausted",
         }
-    truncated = len(raw) > limit
-    raw = raw[:limit]
-    return {
-        "ok": 200 <= status < 400,
-        "url": _safe_url(url),
-        "http_status": status,
-        "content_type": content_type,
-        "body_length_read": len(raw),
-        "body_sha256": hashlib.sha256(raw).hexdigest(),
-        "truncated": truncated,
-        "_text": raw.decode("utf-8", errors="replace"),
-    }
+    return _fetch(url, limit, timeout=min(TIMEOUT, remaining))
 
 
 def _public(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in row.items() if key != "_text"}
+''',
+    "deadline fetch helper",
+)
+error = replace_once(
+    error,
+    '''\n\ndef _full_fetch_priority(
+''',
+    '''\n\ndef _candidate_queue_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Put proven error-command and native/request assets ahead of generic chunks."""
+    url = str(item.get("url") or "")
+    basename = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
+    observed_rank = 0 if basename in OBSERVED_ERROR_COMMAND_ASSETS else 1
+    support_rank = 0 if url in OBSERVED_PUBLIC_SUPPORT_SCRIPTS else 1
+    return (
+        observed_rank,
+        support_rank,
+        -int(item.get("priority") or 0),
+        int(item.get("order") or 0),
+        url,
+    )
 
 
-def _allowed(url: str, hosts: set[str]) -> bool:
-    parsed = urllib.parse.urlsplit(url)
-    return parsed.scheme == "https" and parsed.netloc in hosts and parsed.path.lower().endswith(".js")
-
-
-def _priority(url: str, source_context: str = "") -> int:
-    text = (urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1] + " " + source_context).lower()
-    score = 0
-    for token in PRIORITY_FILENAME_TOKENS:
-        if token in text:
-            score += 120 if token in {"error", "fault", "native-", "request-"} else 55
-    if "cloud-acc.navimow.com" in url:
-        score += 25
-    return score
-
-
-def _contexts(text: str, source: str, terms: list[str]) -> list[dict[str, Any]]:
-    lower = text.lower()
-    rows: list[dict[str, Any]] = []
-    for term in terms:
-        needle = str(term or "").strip()
-        if not needle:
-            continue
-        start = 0
-        found = 0
-        while found < 2 and len(rows) < MAX_CONTEXTS:
-            index = lower.find(needle.lower(), start)
-            if index < 0:
-                break
-            lo = max(0, index - CONTEXT_RADIUS)
-            hi = min(len(text), index + len(needle) + CONTEXT_RADIUS)
-            nearby = re.sub(r"\\s+", " ", text[lo:hi]).strip()
-            endpoints = sorted(set(ENDPOINT_RE.findall(nearby)))[:20]
-            methods = sorted(set(value.upper() for value in HTTP_RE.findall(nearby)))
-            bridges = [
-                {"callee": match.group("callee"), "method": match.group("method")}
-                for match in BRIDGE_RE.finditer(nearby)
-            ][:20]
-            rows.append(
-                {
-                    "term": needle,
-                    "source": _safe_url(source),
-                    "offset": index,
-                    "endpoint_paths": endpoints,
-                    "http_methods": methods,
-                    "bridge_calls": bridges,
-                    "context": nearby,
-                }
-            )
-            start = index + len(needle)
-            found += 1
-    return rows
-
-
-def _translation_keys(text: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for label in UI_LABELS:
-        pattern = re.compile(
-            r"[\"'](?P<key>[A-Za-z0-9_.-]{2,100})[\"']\\s*:\\s*[\"']"
-            + re.escape(label)
-            + r"[\"']",
-            re.I,
-        )
-        for match in pattern.finditer(text):
-            row = {"label": label, "key": match.group("key")}
-            if row not in rows:
-                rows.append(row)
-    return rows
-
-
-def _js_references(text: str, source: str, hosts: set[str]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for order, match in enumerate(JS_RE.finditer(text)):
-        url = _resolve(source, match.group(1))
-        if not _allowed(url, hosts) or url in seen:
-            continue
-        seen.add(url)
-        lo = max(0, match.start() - 650)
-        hi = min(len(text), match.end() + 650)
-        context = re.sub(r"\\s+", " ", text[lo:hi]).strip()
-        rows.append(
-            {
-                "url": url,
-                "source": _safe_url(source),
-                "order": order,
-                "source_context": context,
-                "priority": _priority(url, context),
-            }
-        )
-    return rows
-
-
-def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
+def _full_fetch_priority(
+''',
+    "candidate queue priority helper",
+)
+error = replace_once(
+    error,
+    '''def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
     """Inspect only public H5 assets for error-dialog command evidence."""
     host = _host(client)
-    allowed_hosts = {urllib.parse.urlsplit(host).netloc, "cloud-acc.navimow.com"}
-    entry_urls = (
+''',
+    '''def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> dict[str, Any]:
+    """Inspect public H5 error-action assets within a strict diagnostics deadline."""
+    started = time.monotonic()
+    deadline = started + MAX_PROBE_SECONDS
+    budget_exhausted = False
+    stop_reason: str | None = None
+
+    def fetch_bounded(url: str, limit: int) -> dict[str, Any]:
+        nonlocal budget_exhausted, stop_reason
+        row = _deadline_fetch(url, limit, deadline)
+        if row.get("budget_exhausted") or time.monotonic() >= deadline:
+            budget_exhausted = True
+            stop_reason = stop_reason or "wall_clock_budget"
+        return row
+
+    host = _host(client)
+''',
+    "probe deadline state",
+)
+error = replace_once(
+    error,
+    '''    entry_urls = (
         f"{host}/old/",
         f"{host}/maintenance/",
         "https://cloud-acc.navimow.com/navimow/",
     )
-    dynamic_terms = [term for term in (str(error_code or ""), str(error_title or "")) if term]
-    target_terms = list(dict.fromkeys([*BASE_TARGET_TERMS, *dynamic_terms]))
-
-    pages: list[dict[str, Any]] = []
-    root_urls: list[str] = []
-    for url in entry_urls:
+''',
+    '''    entry_urls = (
+        f"{host}/old/",
+        "https://cloud-acc.navimow.com/navimow/",
+    )
+''',
+    "error-only entry roots",
+)
+error = replace_once(
+    error,
+    '''    for url in entry_urls:
         row = _fetch(url, MAX_HTML)
-        text = str(row.get("_text") or "")
-        scripts: list[str] = []
-        if text:
-            for value in SCRIPT_RE.findall(text):
-                resolved = _resolve(url, value)
-                if _allowed(resolved, allowed_hosts) and resolved not in scripts:
-                    scripts.append(resolved)
-        pages.append({**_public(row), "script_urls": scripts})
-        for script in scripts:
-            if script not in root_urls:
-                root_urls.append(script)
-
-    for fallback in OBSERVED_PUBLIC_ROOT_SCRIPTS:
-        if fallback not in root_urls:
-            root_urls.append(fallback)
-
-    root_rows: list[dict[str, Any]] = []
-    candidate_map: dict[str, dict[str, Any]] = {}
-    ui_contexts: list[dict[str, Any]] = []
-    command_contexts: list[dict[str, Any]] = []
-    translation_keys: list[dict[str, str]] = []
-    matched_terms: set[str] = set()
-
-    for url in root_urls[:10]:
+''',
+    '''    for url in entry_urls:
+        if budget_exhausted:
+            break
+        row = fetch_bounded(url, MAX_HTML)
+''',
+    "bounded entry fetch",
+)
+error = replace_once(
+    error,
+    '''    for url in root_urls[:10]:
         row = _fetch(url, MAX_ROOT_JS)
-        text = str(row.get("_text") or "")
-        hits = [term for term in target_terms if term.lower() in text.lower()]
-        matched_terms.update(hits)
-        root_rows.append({**_public(row), "matched_terms": hits[:40]})
-        if not row.get("ok") or not text:
-            continue
-        for item in _contexts(text, url, hits):
-            if item not in ui_contexts:
-                ui_contexts.append(item)
-        for item in _contexts(text, url, [term for term in COMMAND_NEEDLES if term.lower() in text.lower()]):
-            if item not in command_contexts:
-                command_contexts.append(item)
-        for item in _translation_keys(text):
-            if item not in translation_keys:
-                translation_keys.append(item)
-        for candidate in _js_references(text, url, allowed_hosts):
-            existing = candidate_map.get(candidate["url"])
-            if existing is None or candidate["priority"] > existing["priority"]:
-                candidate_map[candidate["url"]] = candidate
-
-    for url in OBSERVED_PUBLIC_SUPPORT_SCRIPTS:
-        candidate_map.setdefault(
-            url,
-            {
-                "url": url,
-                "source": "observed_public_support_script",
-                "order": -1,
-                "source_context": "temporary observed beta fallback",
-                "priority": _priority(url) + 200,
-            },
-        )
-
-    queue = sorted(
+''',
+    '''    for url in root_urls[:MAX_ROOT_REQUESTS]:
+        if budget_exhausted:
+            break
+        row = fetch_bounded(url, MAX_ROOT_JS)
+''',
+    "bounded root fetch",
+)
+error = replace_once(
+    error,
+    '''    queue = sorted(
         candidate_map.values(),
         key=lambda item: (-int(item.get("priority") or 0), int(item.get("order") or 0), str(item["url"])),
     )
-    prefix_requests = 0
-    prefix_successes = 0
-    full_requests = 0
-    full_successes = 0
-    matched_assets: list[dict[str, Any]] = []
-    scanned: set[str] = set()
-    full_fetched: set[str] = set()
-    index = 0
-
-    while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS:
-        candidate = queue[index]
-        index += 1
-        url = str(candidate["url"])
-        if url in scanned or not _allowed(url, allowed_hosts):
-            continue
-        scanned.add(url)
-        prefix = _fetch(url, PREFIX_BYTES)
-        prefix_requests += 1
-        text = str(prefix.get("_text") or "")
-        if prefix.get("ok"):
-            prefix_successes += 1
-        hits = [term for term in target_terms if term.lower() in text.lower()]
-        keys = _translation_keys(text) if text else []
-        known_key_hits = [
-            item["key"]
-            for item in translation_keys
-            if item.get("key") and item["key"].lower() in text.lower()
-        ] if text else []
-        command_hits = [term for term in COMMAND_NEEDLES if term.lower() in text.lower()] if text else []
-        matched_terms.update(hits)
-        for item in keys:
-            if item not in translation_keys:
-                translation_keys.append(item)
-        should_full = bool(
-            hits
-            or keys
-            or known_key_hits
-            or (command_hits and int(candidate.get("priority") or 0) >= 55)
-            or int(candidate.get("priority") or 0) >= 180
+''',
+    '''    for basename in OBSERVED_ERROR_COMMAND_ASSETS:
+        observed_url = f"{host}/old/assets/{basename}"
+        candidate_map.setdefault(
+            observed_url,
+            {
+                "url": observed_url,
+                "source": "observed_error_command_asset",
+                "order": -2,
+                "source_context": "temporary proven error-command asset fallback",
+                "priority": _priority(observed_url) + 5000,
+            },
         )
-        asset_row = {
-            "url": url,
-            "source": candidate.get("source"),
-            "priority": candidate.get("priority"),
-            "prefix_http_status": prefix.get("http_status"),
-            "prefix_length": prefix.get("body_length_read"),
-            "prefix_sha256": prefix.get("body_sha256"),
-            "matched_terms": hits[:40],
-            "translation_keys": keys[:20],
-            "known_translation_key_hits": known_key_hits[:20],
-            "command_terms": command_hits[:30],
-            "full_fetched": False,
-        }
 
-        if should_full and full_requests < MAX_FULL_MATCHES:
-            full = _fetch(url, MAX_FULL_JS)
-            full_requests += 1
-            full_fetched.add(url)
-            full_text = str(full.get("_text") or "")
-            if full.get("ok"):
-                full_successes += 1
-            full_hits = [term for term in target_terms if term.lower() in full_text.lower()]
-            full_keys = _translation_keys(full_text) if full_text else []
-            for item in full_keys:
-                if item not in translation_keys:
-                    translation_keys.append(item)
-            key_terms = [item["key"] for item in translation_keys if item.get("key")]
-            context_terms = list(dict.fromkeys([*full_hits, *key_terms, *COMMAND_NEEDLES]))
-            contexts = _contexts(full_text, url, [term for term in context_terms if term.lower() in full_text.lower()])
-            for context in contexts:
-                if context["term"] in COMMAND_NEEDLES or any(
-                    marker.lower() in context["context"].lower()
-                    for marker in ("cmdcode", "/vehicle/set/send", "callnative", "sendencryptiondata", "reboot", "clear")
-                ):
-                    if context not in command_contexts and len(command_contexts) < MAX_CONTEXTS:
-                        command_contexts.append(context)
-                elif context not in ui_contexts and len(ui_contexts) < MAX_CONTEXTS:
-                    ui_contexts.append(context)
-            for child in _js_references(full_text, url, allowed_hosts):
-                if child["url"] not in candidate_map:
-                    candidate_map[child["url"]] = child
-                    queue.append(child)
-            asset_row.update(
-                {
-                    "full_fetched": True,
-                    "full_http_status": full.get("http_status"),
-                    "full_length": full.get("body_length_read"),
-                    "full_sha256": full.get("body_sha256"),
-                    "full_matched_terms": full_hits[:50],
-                    "full_translation_keys": full_keys[:20],
-                }
-            )
-        if hits or keys or known_key_hits or command_hits or asset_row["full_fetched"]:
-            matched_assets.append(asset_row)
+    queue = sorted(candidate_map.values(), key=_candidate_queue_key)
+''',
+    "prioritized observed error asset",
+)
+error = replace_once(
+    error,
+    "while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS:",
+    "while index < len(queue) and prefix_requests < MAX_PREFIX_REQUESTS and not budget_exhausted:",
+    "prefix wall-clock guard",
+)
+error = replace_once(
+    error,
+    "        prefix = _fetch(url, PREFIX_BYTES)\n",
+    "        prefix = fetch_bounded(url, PREFIX_BYTES)\n",
+    "bounded prefix fetch",
+)
+error = replace_once(
+    error,
+    '''                candidate_map[child["url"]] = child
+                queue.append(child)
 
-    return {
-        "ok": True,
-        "beta_only": True,
-        "focus": "active_error_clear_resume_reboot_contract_recovery",
-        "read_only": True,
-        "public_unauthenticated_h5_only": True,
-        "mutation_calls_executed": False,
-        "live_command_call_executed": False,
-        "notification_detail_call_executed": False,
-        "current_error_code_used_as_search_term": str(error_code or "") or None,
-        "current_error_title_used_as_search_term": str(error_title or "") or None,
-        "allowed_hosts": sorted(allowed_hosts),
-        "limits": {
+    full_plan = sorted(
+''',
+    '''                candidate_map[child["url"]] = child
+                queue.append(child)
+            queue[index:] = sorted(queue[index:], key=_candidate_queue_key)
+
+    full_plan = sorted(
+''',
+    "reprioritize discovered children",
+)
+error = replace_once(
+    error,
+    '''    for rank, planned in enumerate(full_plan[:MAX_FULL_MATCHES], start=1):
+        url = str(planned.get("url") or "")
+''',
+    '''    for rank, planned in enumerate(full_plan[:MAX_FULL_MATCHES], start=1):
+        if budget_exhausted:
+            break
+        url = str(planned.get("url") or "")
+''',
+    "full fetch wall-clock guard",
+)
+error = replace_once(
+    error,
+    "        full = _fetch(url, MAX_FULL_JS)\n",
+    "        full = fetch_bounded(url, MAX_FULL_JS)\n",
+    "bounded full fetch",
+)
+error = replace_once(
+    error,
+    '''        "limits": {
             "prefix_bytes": PREFIX_BYTES,
             "max_prefix_requests": MAX_PREFIX_REQUESTS,
             "max_full_matches": MAX_FULL_MATCHES,
             "max_full_js": MAX_FULL_JS,
         },
+''',
+    '''        "limits": {
+            "prefix_bytes": PREFIX_BYTES,
+            "max_root_requests": MAX_ROOT_REQUESTS,
+            "max_prefix_requests": MAX_PREFIX_REQUESTS,
+            "max_full_matches": MAX_FULL_MATCHES,
+            "max_full_js": MAX_FULL_JS,
+            "max_probe_seconds": MAX_PROBE_SECONDS,
+            "per_request_timeout_seconds": TIMEOUT,
+        },
+''',
+    "diagnostics bounded limits evidence",
+)
+error = replace_once(
+    error,
+    '''        "selection": {
+            "mode": "two_pass_prefix_score_then_full",
+''',
+    '''        "selection": {
+            "mode": "two_pass_prefix_score_then_full",
+            "bounded_by_wall_clock": True,
+''',
+    "selection bounded marker",
+)
+error = replace_once(
+    error,
+    '''        "pages": pages,
+''',
+    '''        "execution": {
+            "wall_clock_budget_seconds": MAX_PROBE_SECONDS,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "budget_exhausted": budget_exhausted,
+            "stop_reason": stop_reason,
+        },
         "pages": pages,
-        "root_scripts": root_rows,
-        "candidate_count": len(candidate_map),
-        "prefix_request_count": prefix_requests,
-        "prefix_success_count": prefix_successes,
-        "full_request_count": full_requests,
-        "full_success_count": full_successes,
-        "matched_terms": sorted(matched_terms),
-        "translation_keys": translation_keys[:40],
-        "matched_assets": matched_assets[:60],
-        "ui_contexts": ui_contexts[:MAX_CONTEXTS],
-        "command_contexts": command_contexts[:MAX_CONTEXTS],
-        "note": (
-            "Public GET-only discovery searches the current error code/title plus the exact "
-            "Clear and resume and Reboot Mower UI labels, their translation keys, command "
-            "wrappers and nearby request shapes. It never calls the private mower command "
-            "endpoint or the notification detail/read endpoint."
-        ),
-    }
-'''
-(COMPONENT / "error_h5_discovery.py").write_text(error_discovery, encoding="utf-8")
+''',
+    "execution budget diagnostics",
+)
+error = replace_once(
+    error,
+    '''            "Public GET-only discovery now scores all bounded prefix evidence before using "
+            "full-fetch slots, then follows the beta9-proven handleH5MowerSet wrapper through "
+            "ES-module aliases to bounded call arguments. It never calls the private mower "
+            "command endpoint or the notification detail/read endpoint."
+''',
+    '''            "Public GET-only discovery prioritizes proven error-command assets and keeps "
+            "two-pass prefix/full-fetch recovery inside a strict wall-clock budget. Partial "
+            "evidence is returned when the budget is exhausted. It never calls the private "
+            "mower command endpoint or the notification detail/read endpoint."
+''',
+    "bounded discovery note",
+)
+error_path.write_text(error, encoding="utf-8")
 
 
-# Diagnostics: stop running Maintenance/Reports discovery and devote the beta probe
-# to the active error and its action contracts.
+# Home Assistant fail-safe: even an unexpected public-H5 stall must not block the download.
 diagnostics_path = COMPONENT / "diagnostics.py"
 diagnostics = diagnostics_path.read_text(encoding="utf-8")
 diagnostics = replace_once(
     diagnostics,
-    "from .maintenance_h5_discovery import probe_maintenance_h5\n",
-    "from .maintenance_h5_discovery import probe_maintenance_h5\nfrom .error_h5_discovery import probe_error_h5\nfrom .state_semantics import error_transition_diagnostics\n",
-    "error diagnostics imports",
+    "from __future__ import annotations\n\nfrom copy import deepcopy\n",
+    "from __future__ import annotations\n\nimport asyncio\nfrom copy import deepcopy\n",
+    "diagnostics asyncio import",
 )
 diagnostics = replace_once(
     diagnostics,
-    '''    0.4.3-beta9 performs compact Mowing Reports transport recovery plus cross-file Parts maintenance alias/call-site tracing\n    within the bounded read-only public-H5 inspection; crawler budgets and output are reduced, and no mutation or report API request runs.\n''',
-    '''    0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses Download diagnostics on the active error,\n    MQTT-to-private arbitration evidence, raw vendor notification fields and public-H5 recovery of Clear and resume / Reboot Mower contracts.\n''',
-    "diagnostics beta focus",
-)
-old_probe = '''    try:\n        maintenance_h5_discovery = await hass.async_add_executor_job(\n            probe_maintenance_h5, coordinator.client\n        )\n    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery\n        maintenance_h5_discovery = {\n            "ok": False, "read_only": True, "beta_only": True,\n            "mutation_calls_executed": False,\n            "error_type": type(err).__name__, "error": sanitize(str(err)),\n        }\n\n'''
-new_probe = '''    maintenance_h5_discovery = {\n        "ok": True,\n        "read_only": True,\n        "beta_only": True,\n        "paused": True,\n        "reason": "0.4.3-beta10 diagnostics focus only on active error action recovery",\n        "mutation_calls_executed": False,\n    }\n    try:\n        error_command_discovery = await hass.async_add_executor_job(\n            probe_error_h5,\n            coordinator.client,\n            str(data.get("error_code") or ""),\n            str(data.get("error_title") or data.get("error_text") or ""),\n        )\n    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery\n        error_command_discovery = {\n            "ok": False,\n            "read_only": True,\n            "beta_only": True,\n            "mutation_calls_executed": False,\n            "live_command_call_executed": False,\n            "notification_detail_call_executed": False,\n            "error_type": type(err).__name__,\n            "error": sanitize(str(err)),\n        }\n\n'''
-diagnostics = replace_once(diagnostics, old_probe, new_probe, "focused diagnostics probe")
-diagnostics = replace_once(
-    diagnostics,
-    '''        "problem_history": sanitize(deepcopy(problem_history)),\n        "latest_notification": sanitize(\n''',
-    '''        "problem_history": sanitize(deepcopy(problem_history)),\n        "error_investigation": sanitize(\n            {\n                "policy": "private_cloud_canonical_mqtt_transition_trigger",\n                "transition": error_transition_diagnostics(coordinator),\n                "raw_index2_vehicle_state": (raw.get("index2") or {}).get("vehicle_state"),\n                "raw_auth_vehicle_state": (raw.get("auth_item") or {}).get("vehicle_state"),\n                "raw_index2_error_data": deepcopy((raw.get("index2") or {}).get("error_data") or []),\n                "vendor_notification_raw_cache": deepcopy(\n                    getattr(coordinator, "_notification_raw_cache", None)\n                ),\n                "vendor_notification_normalized_cache": deepcopy(\n                    getattr(coordinator, "_notification_cache", None)\n                ),\n                "command_discovery": deepcopy(error_command_discovery),\n            }\n        ),\n        "latest_notification": sanitize(\n''',
-    "error investigation output",
+    "from .resume import resume_command_diagnostics\n\n\n",
+    "from .resume import resume_command_diagnostics\n\n\nERROR_DISCOVERY_TIMEOUT_SECONDS = 30.0\n\n\n",
+    "diagnostics outer timeout constant",
 )
 diagnostics = replace_once(
     diagnostics,
-    '''                "style": data.get("notification_style"),\n                "notification_code": data.get("notification_code"),\n''',
-    '''                "style": data.get("notification_style"),\n                "variable": deepcopy(data.get("notification_variable")),\n                "notification_code": data.get("notification_code"),\n''',
-    "notification variable diagnostics",
+    '''    0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and focuses
+    Download diagnostics on active error command recovery, including two-pass
+    public-H5 evidence and any notification-detail response already produced by
+    an explicit user Mark notification as read action.
+''',
+    '''    0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and makes
+    active-error command recovery diagnostics-safe: public-H5 inspection has a
+    strict wall-clock budget plus an outer Home Assistant timeout, while partial
+    evidence and explicit notification-detail traces remain downloadable.
+''',
+    "diagnostics beta12 docstring",
 )
 diagnostics = replace_once(
     diagnostics,
-    '''            "Normal diagnostics use current coordinator state and caches; 0.4.3-beta9 keeps the H5 probe compact and focused on report transport plus handleH5MowerSet export/import call-site evidence.",\n            "The beta H5 inspection sends no account or mower identity and executes no maintenance mutation or mower command.",\n''',
-    '''            "0.4.3-beta10 pauses Maintenance/Mowing Reports discovery and focuses the beta-only public H5 probe on Clear and resume / Reboot Mower evidence for the active error.",\n            "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",\n''',
-    "diagnostics notes",
+    '"reason": "0.4.3-beta11 diagnostics focus only on active error action recovery",',
+    '"reason": "0.4.3-beta12 diagnostics focus only on bounded active error action recovery",',
+    "paused maintenance reason",
+)
+diagnostics = replace_once(
+    diagnostics,
+    '''    try:
+        error_command_discovery = await hass.async_add_executor_job(
+            probe_error_h5,
+            coordinator.client,
+            str(data.get("error_code") or ""),
+            str(data.get("error_title") or data.get("error_text") or ""),
+        )
+    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
+        error_command_discovery = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
+            "mutation_calls_executed": False,
+            "live_command_call_executed": False,
+            "notification_detail_call_executed": False,
+            "error_type": type(err).__name__,
+            "error": sanitize(str(err)),
+        }
+''',
+    '''    try:
+        async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):
+            error_command_discovery = await hass.async_add_executor_job(
+                probe_error_h5,
+                coordinator.client,
+                str(data.get("error_code") or ""),
+                str(data.get("error_title") or data.get("error_text") or ""),
+            )
+    except TimeoutError:
+        error_command_discovery = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
+            "timed_out": True,
+            "timeout_seconds": ERROR_DISCOVERY_TIMEOUT_SECONDS,
+            "mutation_calls_executed": False,
+            "live_command_call_executed": False,
+            "notification_detail_call_executed": False,
+            "error_type": "TimeoutError",
+            "error": "public H5 error discovery exceeded the diagnostics timeout",
+        }
+    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
+        error_command_discovery = {
+            "ok": False,
+            "read_only": True,
+            "beta_only": True,
+            "mutation_calls_executed": False,
+            "live_command_call_executed": False,
+            "notification_detail_call_executed": False,
+            "error_type": type(err).__name__,
+            "error": sanitize(str(err)),
+        }
+''',
+    "diagnostics outer timeout wrapper",
+)
+diagnostics = diagnostics.replace(
+    "0.4.3-beta11 keeps Maintenance/Mowing Reports discovery paused and uses two-pass public H5 selection for Clear and resume / Reboot Mower evidence.",
+    "0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and bounds Clear and resume / Reboot Mower public-H5 recovery so Download diagnostics always returns partial evidence instead of waiting on the crawler.",
 )
 diagnostics_path.write_text(diagnostics, encoding="utf-8")
 
 
-test_source = r'''"""Regression contracts for Navimower 0.4.3-beta10 error diagnostics."""
+# Keep entity attributes Recorder-safe while retaining full internal/diagnostic history.
+notification_path = COMPONENT / "notification_feed.py"
+notification = notification_path.read_text(encoding="utf-8")
+notification = replace_once(
+    notification,
+    "_NOTIFICATION_ATTR_HISTORY_LIMIT = MERGED_NOTIFICATION_LIMIT\n",
+    "# Entity attributes are intentionally smaller than the internal merged history so Recorder stays below its 16 KiB state-attribute limit.\n_NOTIFICATION_ATTR_HISTORY_LIMIT = 5\n",
+    "notification attribute history limit",
+)
+notification_path.write_text(notification, encoding="utf-8")
+
+
+# Keep beta11 historical tests cumulative now that beta12 is current.
+beta11_path = ROOT / "tests" / "test_v043_beta11.py"
+beta11 = beta11_path.read_text(encoding="utf-8")
+beta11 = replace_once(beta11, "import json\n", "", "beta11 json import")
+beta11 = replace_once(
+    beta11,
+    '''def test_beta11_release_identity() -> None:
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.4.3-beta11"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta11.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta11")
+''',
+    '''def test_beta11_release_artifacts_remain_in_history() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta11.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta11")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## 0.4.3-beta11" in changelog
+''',
+    "beta11 cumulative release identity",
+)
+beta11_path.write_text(beta11, encoding="utf-8")
+
+
+beta12_test = '''"""Regression contracts for Navimower 0.4.3-beta12 bounded diagnostics."""
 from __future__ import annotations
 
 import ast
@@ -607,91 +464,137 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta10_release_identity() -> None:
+def test_beta12_release_identity() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta10"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").read_text(encoding="utf-8")
-    assert notes.startswith("title: Navimower 0.4.3-beta10")
+    assert manifest["version"] == "0.4.3-beta12"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta12.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta12")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta10")
+    assert changelog.startswith("# Changelog\\n\\n## 0.4.3-beta12")
 
 
-def test_beta10_error_sensor_is_cloud_canonical() -> None:
-    source = (COMPONENT / "state_semantics.py").read_text(encoding="utf-8")
-    ast.parse(source)
-    assert 'value_fn=lambda data: data.get("error_text") or "No errors"' in source
-    assert '"private_cloud_canonical_mqtt_transition_trigger"' in source
-    assert 'transition = bool(state_name and state_name != previous_named)' in source
-    assert 'state_name in {"Error", "Self-Checking"} or previous_named == "Error"' in source
-    assert 'snapshot["error_text"] = "Error"' not in source
-    assert 'snapshot["docked_source"] = "mqtt_error_state"' not in source
-
-
-def test_beta10_retains_raw_vendor_notification_feed() -> None:
-    source = (COMPONENT / "notification_feed.py").read_text(encoding="utf-8")
-    assert 'coordinator._notification_raw_cache = deepcopy(response)' in source
-    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    assert '"vendor_notification_raw_cache"' in diagnostics
-    assert '"vendor_notification_normalized_cache"' in diagnostics
-    assert '"variable": deepcopy(data.get("notification_variable"))' in diagnostics
-
-
-def test_beta10_diagnostics_focuses_only_error_action_discovery() -> None:
-    diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    assert "from .error_h5_discovery import probe_error_h5" in diagnostics
-    assert "probe_error_h5," in diagnostics
-    assert '"paused": True' in diagnostics
-    assert '"error_investigation"' in diagnostics
-    assert '"command_discovery": deepcopy(error_command_discovery)' in diagnostics
-    assert "probe_maintenance_h5, coordinator.client" not in diagnostics
-
-
-def test_beta10_error_h5_probe_is_strictly_read_only() -> None:
+def test_beta12_error_discovery_is_wall_clock_bounded() -> None:
     source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
     ast.parse(source)
     for phrase in (
-        "Clear and resume",
-        "Reboot Mower",
-        "clearError",
-        "rebootMower",
-        "/vehicle/set/send",
-        "c:behavior",
-        "cmdCode",
-        "MAX_PREFIX_REQUESTS = 180",
-        "PREFIX_BYTES = 64 * 1024",
-        'method="GET"',
-        '"mutation_calls_executed": False',
-        '"live_command_call_executed": False',
-        '"notification_detail_call_executed": False',
+        "MAX_ROOT_REQUESTS = 4",
+        "MAX_PREFIX_REQUESTS = 32",
+        "MAX_FULL_MATCHES = 6",
+        "MAX_PROBE_SECONDS = 24.0",
+        "TIMEOUT = 2.5",
+        "def _deadline_fetch",
+        "wall_clock_budget_exhausted",
+        "and not budget_exhausted",
+        '"bounded_by_wall_clock": True',
+        '"budget_exhausted": budget_exhausted',
+        '"elapsed_seconds"',
     ):
         assert phrase in source
+
+
+def test_beta12_prioritizes_proven_error_command_asset() -> None:
+    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+    assert "def _candidate_queue_key" in source
+    assert '"source": "observed_error_command_asset"' in source
+    assert '"priority": _priority(observed_url) + 5000' in source
+    assert "queue = sorted(candidate_map.values(), key=_candidate_queue_key)" in source
+
+
+def test_beta12_diagnostics_has_outer_timeout_fail_safe() -> None:
+    source = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
+    ast.parse(source)
+    assert "ERROR_DISCOVERY_TIMEOUT_SECONDS = 30.0" in source
+    assert "async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):" in source
+    assert '"timed_out": True' in source
+    assert "public H5 error discovery exceeded the diagnostics timeout" in source
+
+
+def test_beta12_notification_entity_history_is_recorder_safe() -> None:
+    source = (COMPONENT / "notification_feed.py").read_text(encoding="utf-8")
+    ast.parse(source)
+    assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in source
+    assert "Recorder stays below its 16 KiB state-attribute limit" in source
+    assert "MERGED_NOTIFICATION_LIMIT = LOCAL_NOTIFICATION_LIMIT + VENDOR_NOTIFICATION_LIMIT" in (COMPONENT / "notification_center.py").read_text(encoding="utf-8")
+
+
+def test_beta12_discovery_remains_non_mutating() -> None:
+    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+    assert 'method="GET"' in source
+    assert '"mutation_calls_executed": False' in source
+    assert '"live_command_call_executed": False' in source
+    assert '"notification_detail_call_executed": False' in source
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-
-
-def test_beta10_error_probe_keeps_bounded_evidence() -> None:
-    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-    for phrase in (
-        '"translation_keys"',
-        '"matched_assets"',
-        '"ui_contexts"',
-        '"command_contexts"',
-        '"prefix_request_count"',
-        '"full_request_count"',
-    ):
-        assert phrase in source
 '''
-(ROOT / "tests" / "test_v043_beta10.py").write_text(test_source, encoding="utf-8")
+(ROOT / "tests" / "test_v043_beta12.py").write_text(beta12_test, encoding="utf-8")
 
 
-notes = '''title: Navimower 0.4.3-beta10\n\nFocused active-error arbitration and command-contract diagnostics.\n\n### Changed\n\n- Make the Error sensor private-cloud canonical: repeated MQTT `Error` messages no longer overwrite a detailed cloud fault with generic `Error`.\n- Use named MQTT Error transitions only to invalidate `index2`/`auth_list` and request one fast private refresh; repeated identical MQTT state does not trigger another error-driven poll.\n- Show `No errors` when the Error sensor has no active cloud fault.\n- Pause Maintenance and Mowing Reports H5 discovery in Download diagnostics for this beta.\n\n### Added\n\n- Preserve the un-normalized vendor Device notification feed in memory and expose a sanitized copy in diagnostics, including fields not retained by the public notification sensor.\n- Add a dedicated public-H5 error action probe for the exact `Clear and resume`, `Reboot Mower` and `Got it` UI labels, translation keys, current error code/title, nearby request endpoints, command payload shapes and native bridge calls.\n- Add MQTT error-transition evidence and current raw `index2.error_data` to the focused error-investigation diagnostics section.\n\n### Safety\n\n- Download diagnostics remains read-only. The error-action probe performs only bounded unauthenticated public HTTPS GETs.\n- No `Clear and resume`, reboot, Resume, notification-detail/read, or other mower command is executed.\n- The private current error code/title is used only as a local search term against already-downloaded public JavaScript and is never sent as mower identity.\n'''
-(ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").write_text(notes, encoding="utf-8")
+release_notes = '''title: Navimower 0.4.3-beta12
+
+Navimower 0.4.3-beta12 fixes the beta11 Download diagnostics stall while preserving focused read-only recovery of the active error's Clear and resume / Reboot Mower command contracts.
+
+### Fixed
+
+- Bound the public-H5 error-action probe to a 24-second wall-clock budget with a 2.5-second per-request ceiling.
+- Reduce generic discovery from up to 180 prefix requests and 18 full JavaScript fetches to at most 32 prefixes and 6 full fetches, plus four root-script requests.
+- Add a 30-second Home Assistant diagnostics timeout as a final fail-safe so the download returns even if an unexpected H5/network operation stalls.
+- Return partial discovery evidence with explicit elapsed/budget-exhausted diagnostics instead of withholding the entire diagnostics file.
+- Prioritize the previously observed `index-594ad42d.js` error-command asset and native/request support chunks before generic lazy assets.
+- Limit the `Latest notification` sensor's `recent` attribute to five entries while keeping the full bounded vendor/local history internally and in Download diagnostics, preventing Recorder's 16 KiB attribute warning.
+
+### Preserved
+
+- Error remains private-cloud canonical; MQTT Error transitions are triggers for cloud refresh rather than display values.
+- Explicit user notification-detail traces remain available to diagnostics.
+- Maintenance and Mowing Reports discovery remains paused while the beta line focuses on active error recovery commands.
+
+### Safety
+
+- Error H5 discovery remains public, unauthenticated and GET-only.
+- Download diagnostics sends no Clear and resume, Reboot Mower, Resume, notification-detail/read or other mower command.
+'''
+(ROOT / ".github" / "release-notes" / "0.4.3-beta12.md").write_text(release_notes, encoding="utf-8")
 
 
 changelog_path = ROOT / "CHANGELOG.md"
 changelog = changelog_path.read_text(encoding="utf-8")
-entry = '''## 0.4.3-beta10\n\nFocused active-error arbitration and command-contract diagnostics.\n\n### Changed\n\n- Keep the Error sensor canonical to private-cloud `index2.error_data`; MQTT named Error is now a transition trigger instead of a temporary display source.\n- Deduplicate repeated identical MQTT Error states so only state edges request an error-driven private refresh.\n- Display `No errors` when no active cloud fault exists.\n- Pause Maintenance/Mowing Reports H5 discovery while this beta concentrates on active error commands.\n\n### Added\n\n- Preserve sanitized raw vendor notification-feed evidence for Download diagnostics.\n- Add a bounded public-H5 probe for `Clear and resume`, `Reboot Mower`, their translation keys, request shapes, endpoints and native bridge contexts.\n- Add focused error-transition, raw `index2.error_data`, raw/normalized notification and command-discovery evidence to diagnostics.\n\n### Safety\n\n- Diagnostics executes no mower mutation and no notification-detail/read action; the H5 probe is public GET-only.\n\n'''
-if not changelog.startswith("# Changelog\n\n"):
-    raise SystemExit("Unexpected changelog header")
-changelog_path.write_text("# Changelog\n\n" + entry + changelog[len("# Changelog\n\n"):], encoding="utf-8")
+changelog = replace_once(
+    changelog,
+    "# Changelog\n\n## 0.4.3-beta10\n",
+    '''# Changelog
+
+## 0.4.3-beta12
+
+Bounded active-error diagnostics and Recorder-safe notification attributes.
+
+### Fixed
+
+- Bound Clear and resume / Reboot Mower public-H5 discovery by wall clock, per-request timeout and smaller request budgets so Download diagnostics returns reliably.
+- Prioritize proven error-command assets before generic lazy chunks and retain partial evidence when the discovery budget expires.
+- Add an outer Home Assistant diagnostics timeout as a final fail-safe.
+- Limit the Latest notification entity's recent attribute to five entries to stay below Recorder's 16 KiB state-attribute limit while retaining full internal/diagnostic history.
+
+### Safety
+
+- Error-action discovery remains public HTTPS GET-only and executes no mower or notification-detail command.
+
+## 0.4.3-beta11
+
+Two-pass active-error command discovery and explicit notification-detail trace retention.
+
+### Changed
+
+- Score bounded public-H5 prefix evidence before spending full-fetch slots so strong Clear and resume / Reboot Mower candidates cannot be starved by earlier generic assets.
+- Reuse the proven handleH5MowerSet wrapper/export/import tracing to capture bounded command-call argument evidence.
+- Preserve the response from an explicit user Mark notification as read action for later diagnostics without making a hidden detail request.
+
+### Safety
+
+- Discovery remained public, unauthenticated and GET-only and did not guess or execute unproven mower commands.
+
+## 0.4.3-beta10
+''',
+    "prepend beta12 and restore beta11 changelog history",
+)
+changelog_path.write_text(changelog, encoding="utf-8")
