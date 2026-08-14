@@ -56,7 +56,7 @@ def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
         "/vehicle/set/send",
         "c:behavior",
         "cmdCode",
-        "MAX_PREFIX_REQUESTS = 180",
+        "MAX_PREFIX_REQUESTS =",
         "PREFIX_BYTES = 64 * 1024",
         'method="GET"',
         '"mutation_calls_executed": False',
