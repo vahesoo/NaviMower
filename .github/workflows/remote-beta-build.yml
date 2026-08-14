@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA10 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA12 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta10
+      BUILD_BRANCH: release/0.4.3-beta12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,59 +40,54 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
           python .github/scripts/remote_beta_builder.py
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("custom_components/navimower/error_h5_discovery.py")
-          source = path.read_text(encoding="utf-8")
-          source = source.replace(chr(92) * 2, chr(92))
-          path.write_text(source, encoding="utf-8")
-          PY
-          python - <<'PY'
-          import ast
-          from pathlib import Path
-          import re
-
-          source = Path("custom_components/navimower/error_h5_discovery.py").read_text(encoding="utf-8")
-          tree = ast.parse(source)
-          patterns = {}
-          for node in tree.body:
-              if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-                  continue
-              target = node.targets[0]
-              call = node.value
-              if not (
-                  isinstance(target, ast.Name)
-                  and isinstance(call, ast.Call)
-                  and isinstance(call.func, ast.Attribute)
-                  and isinstance(call.func.value, ast.Name)
-                  and call.func.value.id == "re"
-                  and call.func.attr == "compile"
-                  and call.args
-              ):
-                  continue
-              patterns[target.id] = ast.literal_eval(call.args[0])
-          assert re.compile(patterns["SCRIPT_RE"], re.I).search('<script src="app.js">')
-          assert re.compile(patterns["JS_RE"], re.I).search('"index-123.js"')
-          assert re.compile(patterns["ENDPOINT_RE"], re.I).search('"/vehicle/set/send"')
-          assert re.compile(patterns["HTTP_RE"], re.I).search('method:"POST"')
-          bridge = re.compile(patterns["BRIDGE_RE"], re.I).search('je.callNative("handleError",e)')
-          assert bridge is not None and bridge.group("method") == "handleError"
-          PY
           python -m compileall -q custom_components/navimower
           python -m pytest -q
           git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          expected = {
+              ".github/release-notes/0.4.3-beta12.md",
+              "CHANGELOG.md",
+              "custom_components/navimower/diagnostics.py",
+              "custom_components/navimower/error_h5_discovery.py",
+              "custom_components/navimower/manifest.json",
+              "custom_components/navimower/notification_feed.py",
+              "tests/test_v043_beta11.py",
+              "tests/test_v043_beta12.py",
+          }
+          actual = set(
+              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          )
+          if actual != expected:
+              raise SystemExit(
+                  "Unexpected beta12 diff. "
+                  f"Missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
+              )
+
+          error_source = Path("custom_components/navimower/error_h5_discovery.py").read_text(encoding="utf-8")
+          assert "MAX_PROBE_SECONDS = 24.0" in error_source
+          assert "MAX_PREFIX_REQUESTS = 32" in error_source
+          assert "MAX_FULL_MATCHES = 6" in error_source
+          assert "def _deadline_fetch" in error_source
+          assert '"source": "observed_error_command_asset"' in error_source
+          diagnostics = Path("custom_components/navimower/diagnostics.py").read_text(encoding="utf-8")
+          assert "async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):" in diagnostics
+          notifications = Path("custom_components/navimower/notification_feed.py").read_text(encoding="utf-8")
+          assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in notifications
+          PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add custom_components/navimower/manifest.json \
-                  custom_components/navimower/diagnostics.py \
-                  custom_components/navimower/state_semantics.py \
-                  custom_components/navimower/notification_feed.py \
-                  custom_components/navimower/error_h5_discovery.py \
-                  tests/test_v043_beta10.py \
+          git add .github/release-notes/0.4.3-beta12.md \
                   CHANGELOG.md \
-                  .github/release-notes/0.4.3-beta10.md
-          git commit -m "Prepare Navimower 0.4.3-beta10 error diagnostics"
+                  custom_components/navimower/diagnostics.py \
+                  custom_components/navimower/error_h5_discovery.py \
+                  custom_components/navimower/manifest.json \
+                  custom_components/navimower/notification_feed.py \
+                  tests/test_v043_beta11.py \
+                  tests/test_v043_beta12.py
+          git commit -m "Prepare Navimower 0.4.3-beta12 bounded diagnostics"
           git push --force-with-lease origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -100,15 +95,15 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta10 remote build succeeded. Full test suite and error-discovery regex smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta12 remote build succeeded. Full test suite, compileall, diff-check and bounded-diagnostics smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
 
       - name: Comment failure
         if: steps.build.outcome != 'success'
         shell: bash
         run: |
-          tail -n 160 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
+          tail -n 180 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta10 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta12 remote build failed before publishing the release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
