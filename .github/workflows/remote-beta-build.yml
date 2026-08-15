@@ -72,6 +72,17 @@ jobs:
           if old not in source:
               raise SystemExit("beta12 historical identity marker missing")
           test_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+          # A reset command can itself close the previous local history cycle and
+          # advance last_completed_at from stale 100% progress. Capture the
+          # scheduler completion baseline only after that local boundary is made.
+          schedule_path = Path("custom_components/navimower/navimower_schedule.py")
+          schedule = schedule_path.read_text(encoding="utf-8")
+          old = '''        if reset:\n            self.coordinator.start_new_mowing_cycle([zone_id], source=source)\n            self._runtime["active_zone_id"] = zone_id\n            self._runtime["active_cycle_id"] = row.get("cycle_id")\n            self._runtime["active_zone_baseline_completed_at"] = row.get("last_completed_at")\n            self._runtime["dispatch_started_at"] = sent_at\n'''
+          new = '''        if reset:\n            self.coordinator.start_new_mowing_cycle([zone_id], source=source)\n            post_reset_row = self._zone(zone_id) or row\n            self._runtime["active_zone_id"] = zone_id\n            self._runtime["active_cycle_id"] = post_reset_row.get("cycle_id")\n            self._runtime["active_zone_baseline_completed_at"] = later_iso(\n                row.get("last_completed_at"),\n                post_reset_row.get("last_completed_at"),\n            )\n            self._runtime["dispatch_started_at"] = sent_at\n'''
+          if old not in schedule:
+              raise SystemExit("beta13 post-reset completion baseline marker missing")
+          schedule_path.write_text(schedule.replace(old, new, 1), encoding="utf-8")
           PY
           python -m compileall -q custom_components/navimower
           python -m pytest -q
@@ -117,6 +128,8 @@ jobs:
           assert 'async_resume_task(self.coordinator, source="navimower_schedule_window_resume")' in schedule
           assert 'reset=False, source="navimower_schedule_continue_fallback"' in schedule
           assert 'completed_zone_ids_in_window' in schedule
+          assert 'post_reset_row = self._zone(zone_id) or row' in schedule
+          assert 'active_zone_baseline_completed_at"] = later_iso(' in schedule
           assert 'last_mowed_at' not in schedule
           assert 'def completion_advanced' in logic
           assert 'def select_oldest_zone' in logic
