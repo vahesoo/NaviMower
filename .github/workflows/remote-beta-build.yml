@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA12 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA13 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta12
+      BUILD_BRANCH: release/0.4.3-beta13
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,14 +48,18 @@ jobs:
           import subprocess
 
           expected = {
-              ".github/release-notes/0.4.3-beta12.md",
+              ".github/release-notes/0.4.3-beta13.md",
               "CHANGELOG.md",
+              "custom_components/navimower/__init__.py",
               "custom_components/navimower/diagnostics.py",
-              "custom_components/navimower/error_h5_discovery.py",
               "custom_components/navimower/manifest.json",
-              "custom_components/navimower/notification_feed.py",
-              "tests/test_v043_beta11.py",
-              "tests/test_v043_beta12.py",
+              "custom_components/navimower/navimower_schedule.py",
+              "custom_components/navimower/notification_center.py",
+              "custom_components/navimower/schedule_logic.py",
+              "custom_components/navimower/switch.py",
+              "custom_components/navimower/time.py",
+              "tests/test_navimower_schedule_logic.py",
+              "tests/test_v043_beta13.py",
           }
           tracked = subprocess.check_output(
               ["git", "diff", "--name-only"], text=True
@@ -66,32 +70,37 @@ jobs:
           actual = set([*tracked, *untracked])
           if actual != expected:
               raise SystemExit(
-                  "Unexpected beta12 diff. "
+                  "Unexpected beta13 diff. "
                   f"Missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
               )
 
-          error_source = Path("custom_components/navimower/error_h5_discovery.py").read_text(encoding="utf-8")
-          assert "MAX_PROBE_SECONDS = 24.0" in error_source
-          assert "MAX_PREFIX_REQUESTS = 32" in error_source
-          assert "MAX_FULL_MATCHES = 6" in error_source
-          assert "def _deadline_fetch" in error_source
-          assert '"source": "observed_error_command_asset"' in error_source
-          diagnostics = Path("custom_components/navimower/diagnostics.py").read_text(encoding="utf-8")
-          assert "async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):" in diagnostics
-          notifications = Path("custom_components/navimower/notification_feed.py").read_text(encoding="utf-8")
-          assert "_NOTIFICATION_ATTR_HISTORY_LIMIT = 5" in notifications
+          schedule = Path("custom_components/navimower/navimower_schedule.py").read_text(encoding="utf-8")
+          logic = Path("custom_components/navimower/schedule_logic.py").read_text(encoding="utf-8")
+          notifications = Path("custom_components/navimower/notification_center.py").read_text(encoding="utf-8")
+          assert 'entry.options.get(OPT_SCHEDULE_ENABLED, False)' in schedule
+          assert 'async_resume_task(self.coordinator, source="navimower_schedule_window_resume")' in schedule
+          assert 'reset=False, source="navimower_schedule_continue_fallback"' in schedule
+          assert 'completed_zone_ids_in_window' in schedule
+          assert 'last_mowed_at' not in schedule
+          assert 'def completion_advanced' in logic
+          assert 'def select_oldest_zone' in logic
+          assert 'The command source was not Home Assistant' not in notifications
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-notes/0.4.3-beta12.md \
+          git add .github/release-notes/0.4.3-beta13.md \
                   CHANGELOG.md \
+                  custom_components/navimower/__init__.py \
                   custom_components/navimower/diagnostics.py \
-                  custom_components/navimower/error_h5_discovery.py \
                   custom_components/navimower/manifest.json \
-                  custom_components/navimower/notification_feed.py \
-                  tests/test_v043_beta11.py \
-                  tests/test_v043_beta12.py
-          git commit -m "Prepare Navimower 0.4.3-beta12 bounded diagnostics"
+                  custom_components/navimower/navimower_schedule.py \
+                  custom_components/navimower/notification_center.py \
+                  custom_components/navimower/schedule_logic.py \
+                  custom_components/navimower/switch.py \
+                  custom_components/navimower/time.py \
+                  tests/test_navimower_schedule_logic.py \
+                  tests/test_v043_beta13.py
+          git commit -m "Prepare Navimower 0.4.3-beta13 managed schedule"
           git push --force-with-lease origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -99,15 +108,15 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta12 remote build succeeded. Full test suite, compileall, diff-check and bounded-diagnostics smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta13 remote build succeeded. Full test suite, compileall, diff-check and managed-schedule smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
 
       - name: Comment failure
         if: steps.build.outcome != 'success'
         shell: bash
         run: |
-          tail -n 180 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
+          tail -n 200 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta12 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta13 remote build failed before publishing the release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
