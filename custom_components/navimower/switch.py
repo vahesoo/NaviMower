@@ -441,9 +441,37 @@ async def async_setup_entry(
             hass, coordinator, {desc.key for desc in supported_descriptions}
         )
 
-    async_add_entities(
-        NavimowSwitch(coordinator, desc) for desc in supported_descriptions
-    )
+    entities = [NavimowSwitch(coordinator, desc) for desc in supported_descriptions]
+    if getattr(coordinator, "navimower_schedule", None) is not None:
+        entities.append(NavimowerScheduleSwitch(coordinator))
+    async_add_entities(entities)
+
+
+class NavimowerScheduleSwitch(NavimowEntity, SwitchEntity):
+    """Enable the integration-owned daily mowing window."""
+
+    _attr_name = "Navimower schedule"
+    _attr_icon = "mdi:calendar-sync"
+
+    def __init__(self, coordinator: NavimowCoordinator) -> None:
+        super().__init__(coordinator, "navimower_schedule")
+        self.controller = coordinator.navimower_schedule
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.controller.enabled)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.controller.entity_attributes()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.controller.async_set_enabled(True, reason="home_assistant_switch")
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.controller.async_set_enabled(False, reason="home_assistant_switch")
+        self.async_write_ha_state()
 
 
 class NavimowSwitch(NavimowEntity, SwitchEntity):
@@ -468,6 +496,10 @@ class NavimowSwitch(NavimowEntity, SwitchEntity):
 
     async def _write(self, on: bool) -> None:
         desc = self.entity_description
+        if desc.key == "mowing_schedule_enabled" and on:
+            controller = getattr(self.coordinator, "navimower_schedule", None)
+            if controller is not None and controller.enabled:
+                await controller.async_set_enabled(False, reason="native_schedule_enabled_from_home_assistant")
         operations = []
         if desc.iot:
             robot_value: Any = (

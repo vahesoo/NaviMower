@@ -1,5 +1,27 @@
 # Changelog
 
+
+## 0.4.3-beta13
+
+Integration-owned one-zone mowing window for field testing.
+
+### Added
+
+- Add a disabled-by-default Navimower schedule switch and configurable local start/end time entities.
+- Select one zone at a time by the oldest confirmed `last_completed_at`, with per-window completion and just-completed race guards.
+- At window close, retain the interrupted zone and send Dock/Home; at the next window try Resume first and `mow(reset=false)` second.
+- Persist scheduler runtime state across Home Assistant restarts and expose it in Download diagnostics.
+
+### Changed
+
+- Make native mower schedule and Navimower schedule mutually exclusive.
+- Remove the command-source caveat from External mowing task started notifications.
+
+### Safety
+
+- Leave low-battery charging to the mower.
+- Never use automatic `reset=true` as an interrupted-task fallback; suspend instead if Resume and continue cannot be confirmed.
+
 ## 0.4.3-beta12
 
 Bounded active-error diagnostics and Recorder-safe notification attributes.

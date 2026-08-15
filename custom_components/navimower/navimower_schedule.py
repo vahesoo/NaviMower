@@ -1,0 +1,597 @@
+"""Navimower-owned one-zone-at-a-time mowing schedule."""
+from __future__ import annotations
+
+import asyncio
+from copy import deepcopy
+from datetime import UTC, datetime, time
+import logging
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+
+from .const import (
+    ACTIVITY_DOCKED,
+    ACTIVITY_ERROR,
+    ACTIVITY_MOWING,
+    ACTIVITY_PAUSED,
+    ACTIVITY_RETURNING,
+    DOMAIN,
+    encode_partition_ids,
+    mow_setup,
+)
+from .resume import async_resume_task
+from .schedule_logic import (
+    completion_advanced,
+    format_hhmm,
+    later_iso,
+    parse_hhmm,
+    parse_iso,
+    select_oldest_zone,
+    window_state,
+)
+from .setting_write import async_write_settings
+
+_LOGGER = logging.getLogger(__name__)
+
+OPT_SCHEDULE_ENABLED = "navimower_schedule_enabled"
+OPT_SCHEDULE_START = "navimower_schedule_start"
+OPT_SCHEDULE_END = "navimower_schedule_end"
+DEFAULT_SCHEDULE_START = "10:00"
+DEFAULT_SCHEDULE_END = "20:00"
+
+_STORE_VERSION = 1
+_TICK_SECONDS = 20
+_RESUME_CONFIRM_SECONDS = 90
+_CONTINUE_CONFIRM_SECONDS = 120
+_DOCK_RETRY_SECONDS = 60
+_RETRY_NEW_MOW_SECONDS = 30
+
+
+def schedule_store(hass: HomeAssistant, entry_id: str) -> Store:
+    key = f"{DOMAIN}_managed_schedule_{entry_id}"
+    try:
+        return Store(hass, _STORE_VERSION, key, serialize_in_event_loop=False)
+    except TypeError:
+        return Store(hass, _STORE_VERSION, key)
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _age_seconds(value: Any) -> float | None:
+    parsed = parse_iso(value)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds())
+
+
+class NavimowerScheduleController:
+    """Own a daily mowing window while leaving charging decisions to the mower."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: Any) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.coordinator = coordinator
+        self._store = schedule_store(hass, entry.entry_id)
+        self._enabled = bool(entry.options.get(OPT_SCHEDULE_ENABLED, False))
+        self._start = parse_hhmm(entry.options.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
+        self._end = parse_hhmm(entry.options.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
+        self._runtime: dict[str, Any] = self._empty_runtime()
+        self._unsub = None
+        self._tick_task: asyncio.Task | None = None
+        self._evaluate_task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self._stopped = False
+
+    @staticmethod
+    def _empty_runtime() -> dict[str, Any]:
+        return {
+            "window_token": None,
+            "completed_zone_ids_in_window": [],
+            "active_zone_id": None,
+            "active_cycle_id": None,
+            "active_zone_baseline_completed_at": None,
+            "dispatch_started_at": None,
+            "just_completed_zone_id": None,
+            "scheduler_completed_at": {},
+            "resume_pending": False,
+            "interrupted_zone_id": None,
+            "interrupted_cycle_id": None,
+            "progress_before_interrupt": None,
+            "pending_command": None,
+            "retry_not_before": None,
+            "last_command": None,
+            "last_command_at": None,
+            "last_error": None,
+            "suspended_reason": None,
+        }
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def start_time(self) -> time:
+        return self._start
+
+    @property
+    def end_time(self) -> time:
+        return self._end
+
+    async def async_start(self) -> None:
+        try:
+            saved = await self._store.async_load()
+        except Exception:
+            saved = None
+        if isinstance(saved, dict):
+            restored = self._empty_runtime()
+            restored.update({key: deepcopy(value) for key, value in saved.items() if key in restored})
+            self._runtime = restored
+        self._unsub = self.coordinator.async_add_listener(self._handle_update)
+        self._tick_task = self.hass.async_create_background_task(
+            self._tick_loop(),
+            f"Navimower managed schedule {self.entry.entry_id}",
+        )
+        self._queue_evaluation()
+
+    async def async_stop(self) -> None:
+        self._stopped = True
+        if self._unsub is not None:
+            self._unsub()
+            self._unsub = None
+        if self._tick_task is not None:
+            self._tick_task.cancel()
+            await asyncio.gather(self._tick_task, return_exceptions=True)
+            self._tick_task = None
+        if self._evaluate_task is not None:
+            await asyncio.gather(self._evaluate_task, return_exceptions=True)
+            self._evaluate_task = None
+        await self._save()
+
+    @staticmethod
+    async def async_remove_all(hass: HomeAssistant, entry_id: str) -> None:
+        try:
+            await schedule_store(hass, entry_id).async_remove()
+        except Exception:
+            return
+
+    def diagnostics(self) -> dict[str, Any]:
+        now = dt_util.now()
+        open_now, token = window_state(now, self._start, self._end)
+        return {
+            "enabled": self._enabled,
+            "start": format_hhmm(self._start),
+            "end": format_hhmm(self._end),
+            "window_open": open_now,
+            "window_token_now": token,
+            **deepcopy(self._runtime),
+        }
+
+    def entity_attributes(self) -> dict[str, Any]:
+        row = self.diagnostics()
+        return {
+            key: row.get(key)
+            for key in (
+                "start",
+                "end",
+                "window_open",
+                "active_zone_id",
+                "resume_pending",
+                "interrupted_zone_id",
+                "last_command",
+                "last_error",
+                "suspended_reason",
+            )
+        }
+
+    async def async_set_enabled(self, enabled: bool, *, reason: str) -> None:
+        enabled = bool(enabled)
+        if enabled == self._enabled:
+            return
+        if enabled:
+            native = (self.coordinator.data or {}).get("settings", {}).get("schedule_enabled")
+            if native is None:
+                raise RuntimeError("Native mowing schedule state is not available yet")
+            if native is True:
+                await self._async_set_native_schedule(False)
+            self._runtime = self._empty_runtime()
+            self._runtime["last_command"] = f"enabled:{reason}"
+            self._runtime["last_command_at"] = _utc_now()
+        else:
+            confirmed = deepcopy(self._runtime.get("scheduler_completed_at") or {})
+            self._runtime = self._empty_runtime()
+            self._runtime["scheduler_completed_at"] = confirmed
+            self._runtime["last_command"] = f"disabled:{reason}"
+            self._runtime["last_command_at"] = _utc_now()
+        self._enabled = enabled
+        self._update_options(**{OPT_SCHEDULE_ENABLED: enabled})
+        await self._save()
+        if enabled:
+            await self.async_evaluate()
+
+    async def async_set_window(self, key: str, value: time) -> None:
+        new_value = value.replace(second=0, microsecond=0)
+        start = new_value if key == "start" else self._start
+        end = new_value if key == "end" else self._end
+        if start == end:
+            raise ValueError("Navimower schedule start and end must be different")
+        if key == "start":
+            self._start = new_value
+            option_key = OPT_SCHEDULE_START
+        elif key == "end":
+            self._end = new_value
+            option_key = OPT_SCHEDULE_END
+        else:
+            raise ValueError(f"Unknown schedule time key: {key}")
+        self._update_options(**{option_key: format_hhmm(new_value)})
+        self._queue_evaluation()
+
+    def _update_options(self, **updates: Any) -> None:
+        options = dict(self.entry.options)
+        options.update(updates)
+        self.hass.config_entries.async_update_entry(self.entry, options=options)
+
+    async def _async_set_native_schedule(self, on: bool) -> None:
+        value = "1" if on else "0"
+        await async_write_settings(
+            self.coordinator,
+            operations=(
+                (
+                    self.coordinator.client.send_setting_device,
+                    (self.coordinator.sn, {"startPlan": value}),
+                ),
+                (
+                    self.coordinator.client.set_iot_bool,
+                    (
+                        self.coordinator.sn,
+                        self.coordinator.vehicle_type,
+                        "startPlan",
+                        on,
+                        False,
+                    ),
+                ),
+            ),
+            cache_values={"startPlan": value},
+        )
+
+    @callback
+    def _handle_update(self) -> None:
+        self._queue_evaluation()
+
+    def _queue_evaluation(self) -> None:
+        if self._stopped:
+            return
+        if self._evaluate_task is not None and not self._evaluate_task.done():
+            return
+        self._evaluate_task = self.hass.async_create_task(
+            self.async_evaluate(),
+            f"Navimower schedule evaluate {self.entry.entry_id}",
+        )
+
+    async def _tick_loop(self) -> None:
+        try:
+            while not self._stopped:
+                await asyncio.sleep(_TICK_SECONDS)
+                await self.async_evaluate()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Navimower schedule tick failed")
+
+    def _zones(self) -> list[dict[str, Any]]:
+        return [row for row in (self.coordinator.data or {}).get("zone_states") or [] if isinstance(row, dict)]
+
+    def _zone(self, zone_id: int | None) -> dict[str, Any] | None:
+        if zone_id is None:
+            return None
+        for row in self._zones():
+            try:
+                if int(row.get("id")) == int(zone_id):
+                    return row
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _progress_for_zone(self, zone_id: int | None) -> float | None:
+        data = self.coordinator.data or {}
+        if zone_id is not None and data.get("active_zone_progress_zone_id") == zone_id:
+            try:
+                return float(data.get("active_zone_progress"))
+            except (TypeError, ValueError):
+                pass
+        row = self._zone(zone_id)
+        if row is not None:
+            try:
+                return float(row.get("coverage_pct"))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(data.get("mowing_progress"))
+        except (TypeError, ValueError):
+            return None
+
+    def _pending_age(self) -> float | None:
+        pending = self._runtime.get("pending_command")
+        return _age_seconds(pending.get("sent_at")) if isinstance(pending, dict) else None
+
+    def _retry_ready(self) -> bool:
+        stamp = self._runtime.get("retry_not_before")
+        parsed = parse_iso(stamp)
+        return parsed is None or datetime.now(UTC) >= parsed.astimezone(UTC)
+
+    async def async_evaluate(self) -> None:
+        if self._stopped:
+            return
+        async with self._lock:
+            try:
+                await self._evaluate_locked()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self._runtime["last_error"] = f"{type(err).__name__}: {err}"
+                _LOGGER.warning("Navimower schedule evaluation failed: %s", err)
+                await self._save()
+
+    async def _evaluate_locked(self) -> None:
+        if not self._enabled:
+            return
+        data = self.coordinator.data or {}
+        settings = data.get("settings") or {}
+        if settings.get("schedule_enabled") is True:
+            await self.async_set_enabled(False, reason="native_schedule_enabled")
+            return
+
+        now = dt_util.now()
+        in_window, token = window_state(now, self._start, self._end)
+        if in_window and token and token != self._runtime.get("window_token"):
+            self._runtime["window_token"] = token
+            self._runtime["completed_zone_ids_in_window"] = []
+            self._runtime["just_completed_zone_id"] = None
+            self._runtime["suspended_reason"] = None
+            self._runtime["retry_not_before"] = None
+            await self._save()
+
+        completed_now = await self._confirm_active_completion()
+        activity = data.get("activity")
+        await self._confirm_pending(activity)
+
+        if not in_window:
+            await self._enforce_closed_window(activity)
+            return
+        if self._runtime.get("suspended_reason"):
+            return
+
+        if self._runtime.get("resume_pending"):
+            if activity == ACTIVITY_MOWING:
+                self._runtime["resume_pending"] = False
+                self._runtime["pending_command"] = None
+                self._runtime["last_command"] = "retained_task_already_mowing"
+                self._runtime["last_command_at"] = _utc_now()
+                await self._save()
+                return
+            await self._continue_interrupted_task(activity)
+            return
+
+        if self._runtime.get("active_zone_id") is not None:
+            return
+
+        pending = self._runtime.get("pending_command")
+        if isinstance(pending, dict):
+            return
+        if not self._retry_ready():
+            return
+        if activity not in {ACTIVITY_DOCKED, ACTIVITY_PAUSED} and not (
+            completed_now and activity == ACTIVITY_MOWING
+        ):
+            return
+
+        completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
+        candidate = select_oldest_zone(
+            self._zones(),
+            completed_in_window=completed,
+            just_completed_zone_id=self._runtime.get("just_completed_zone_id"),
+            scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
+        )
+        if candidate is None:
+            return
+        try:
+            zone_id = int(candidate["id"])
+        except (KeyError, TypeError, ValueError):
+            return
+        await self._async_send_mow(zone_id, reset=True, source="navimower_schedule_next_zone")
+
+    async def _confirm_active_completion(self) -> bool:
+        zone_id = self._runtime.get("active_zone_id")
+        if zone_id is None:
+            return False
+        row = self._zone(int(zone_id))
+        if row is None:
+            return False
+        current = row.get("last_completed_at")
+        if not completion_advanced(
+            current,
+            self._runtime.get("active_zone_baseline_completed_at"),
+            self._runtime.get("dispatch_started_at"),
+        ):
+            return False
+        stamp = str(current)
+        completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
+        completed.add(int(zone_id))
+        self._runtime["completed_zone_ids_in_window"] = sorted(completed)
+        self._runtime["just_completed_zone_id"] = int(zone_id)
+        confirmed = dict(self._runtime.get("scheduler_completed_at") or {})
+        confirmed[str(zone_id)] = later_iso(confirmed.get(str(zone_id)), stamp) or stamp
+        self._runtime["scheduler_completed_at"] = confirmed
+        self._runtime["active_zone_id"] = None
+        self._runtime["active_cycle_id"] = None
+        self._runtime["active_zone_baseline_completed_at"] = None
+        self._runtime["dispatch_started_at"] = None
+        self._runtime["resume_pending"] = False
+        self._runtime["interrupted_zone_id"] = None
+        self._runtime["interrupted_cycle_id"] = None
+        self._runtime["progress_before_interrupt"] = None
+        self._runtime["pending_command"] = None
+        self._runtime["retry_not_before"] = None
+        self._runtime["last_command"] = f"zone_completed:{zone_id}"
+        self._runtime["last_command_at"] = _utc_now()
+        self._runtime["last_error"] = None
+        await self._save()
+        return True
+
+    async def _confirm_pending(self, activity: Any) -> None:
+        pending = self._runtime.get("pending_command")
+        if not isinstance(pending, dict):
+            return
+        kind = str(pending.get("kind") or "")
+        if kind in {"mow", "resume", "continue"} and activity == ACTIVITY_MOWING:
+            self._runtime["pending_command"] = None
+            if kind in {"resume", "continue"}:
+                self._runtime["resume_pending"] = False
+            self._runtime["last_error"] = None
+            await self._save()
+        elif kind == "dock" and activity in {ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
+            self._runtime["pending_command"] = None
+            await self._save()
+
+    async def _enforce_closed_window(self, activity: Any) -> None:
+        zone_id = self._runtime.get("active_zone_id")
+        if zone_id is not None and not self._runtime.get("resume_pending"):
+            self._runtime["resume_pending"] = True
+            self._runtime["interrupted_zone_id"] = int(zone_id)
+            self._runtime["interrupted_cycle_id"] = self._runtime.get("active_cycle_id")
+            self._runtime["progress_before_interrupt"] = self._progress_for_zone(int(zone_id))
+            await self._save()
+
+        if activity not in {ACTIVITY_MOWING, ACTIVITY_PAUSED}:
+            return
+        pending = self._runtime.get("pending_command")
+        age = self._pending_age()
+        if isinstance(pending, dict) and pending.get("kind") == "dock" and age is not None and age < _DOCK_RETRY_SECONDS:
+            return
+        await self._async_send_dock("navimower_schedule_window_closed")
+
+    async def _continue_interrupted_task(self, activity: Any) -> None:
+        zone_id = self._runtime.get("interrupted_zone_id") or self._runtime.get("active_zone_id")
+        if zone_id is None:
+            self._runtime["resume_pending"] = False
+            await self._save()
+            return
+        pending = self._runtime.get("pending_command")
+        age = self._pending_age()
+        if isinstance(pending, dict):
+            kind = pending.get("kind")
+            if kind == "resume" and age is not None and age >= _RESUME_CONFIRM_SECONDS:
+                self._runtime["pending_command"] = None
+                await self._async_send_mow(int(zone_id), reset=False, source="navimower_schedule_continue_fallback")
+            elif kind == "continue" and age is not None and age >= _CONTINUE_CONFIRM_SECONDS:
+                self._runtime["pending_command"] = None
+                self._runtime["suspended_reason"] = "interrupted_task_continue_not_confirmed"
+                self._runtime["last_error"] = "Resume and one-zone continue were not confirmed; automatic reset was refused"
+                await self._save()
+            return
+        if activity in {ACTIVITY_ERROR, ACTIVITY_RETURNING}:
+            return
+        try:
+            await async_resume_task(self.coordinator, source="navimower_schedule_window_resume")
+        except Exception as err:
+            self._runtime["last_error"] = f"Resume failed: {type(err).__name__}: {err}"
+            await self._async_send_mow(int(zone_id), reset=False, source="navimower_schedule_continue_fallback")
+            return
+        self._runtime["pending_command"] = {"kind": "resume", "zone_id": int(zone_id), "sent_at": _utc_now()}
+        self._runtime["last_command"] = f"resume:{zone_id}"
+        self._runtime["last_command_at"] = _utc_now()
+        await self._save()
+
+    async def _async_send_mow(self, zone_id: int, *, reset: bool, source: str) -> None:
+        row = self._zone(zone_id) or {}
+        partition_ids = encode_partition_ids([zone_id])
+        partition_setup = mow_setup(reset=reset, ordered=False)
+        self.coordinator.begin_mow_command_trace(
+            source=source,
+            requested_zone_ids=[zone_id],
+            resolved_zone_ids=[zone_id],
+            reset=reset,
+            ordered=False,
+            partition_ids_hex=partition_ids,
+            partition_setup=partition_setup,
+        )
+        self.coordinator.set_pending_activity(ACTIVITY_MOWING)
+        self.coordinator.set_command_target([zone_id], source=source)
+        sent_at = _utc_now()
+        try:
+            result = await self.coordinator.async_send(
+                self.coordinator.client.mow_zones,
+                self.coordinator.sn,
+                partition_ids,
+                partition_setup,
+            )
+            self.coordinator.record_mow_command_result(result)
+        except Exception as err:
+            self.coordinator.record_mow_command_error(err)
+            self.coordinator.clear_pending_activity()
+            self.coordinator.clear_command_target()
+            self._runtime["last_error"] = f"{source} failed: {type(err).__name__}: {err}"
+            if reset:
+                retry_at = datetime.now(UTC).timestamp() + _RETRY_NEW_MOW_SECONDS
+                self._runtime["retry_not_before"] = datetime.fromtimestamp(retry_at, UTC).isoformat()
+            else:
+                self._runtime["suspended_reason"] = "interrupted_task_continue_failed"
+            await self._save()
+            return
+
+        if reset:
+            self.coordinator.start_new_mowing_cycle([zone_id], source=source)
+            post_reset_row = self._zone(zone_id) or row
+            self._runtime["active_zone_id"] = zone_id
+            self._runtime["active_cycle_id"] = post_reset_row.get("cycle_id")
+            self._runtime["active_zone_baseline_completed_at"] = later_iso(
+                row.get("last_completed_at"),
+                post_reset_row.get("last_completed_at"),
+            )
+            self._runtime["dispatch_started_at"] = sent_at
+            self._runtime["just_completed_zone_id"] = None
+            self._runtime["retry_not_before"] = None
+        else:
+            self._runtime["active_zone_id"] = int(self._runtime.get("active_zone_id") or zone_id)
+            self._runtime["resume_pending"] = True
+        self._runtime["pending_command"] = {
+            "kind": "mow" if reset else "continue",
+            "zone_id": zone_id,
+            "reset": reset,
+            "sent_at": sent_at,
+        }
+        self._runtime["last_command"] = f"mow:{zone_id}:reset={str(reset).lower()}"
+        self._runtime["last_command_at"] = sent_at
+        self._runtime["last_error"] = None
+        await self._save()
+
+    async def _async_send_dock(self, source: str) -> None:
+        self.coordinator.clear_command_target()
+        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
+        center = getattr(self.coordinator, "notification_center", None)
+        if center is not None:
+            center.note_dock_command(source)
+        sent_at = _utc_now()
+        try:
+            await self.coordinator.async_send(self.coordinator.client.dock, self.coordinator.sn)
+        except Exception as err:
+            if center is not None:
+                center.clear_dock_command()
+            self.coordinator.clear_pending_activity()
+            self._runtime["last_error"] = f"Dock failed: {type(err).__name__}: {err}"
+            await self._save()
+            return
+        self._runtime["pending_command"] = {"kind": "dock", "sent_at": sent_at}
+        self._runtime["last_command"] = "dock:window_closed"
+        self._runtime["last_command_at"] = sent_at
+        await self._save()
+
+    async def _save(self) -> None:
+        try:
+            await self._store.async_save(deepcopy(self._runtime))
+        except Exception:
+            _LOGGER.debug("Could not persist Navimower schedule state", exc_info=True)

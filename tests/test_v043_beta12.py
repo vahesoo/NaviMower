@@ -10,12 +10,10 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def test_beta12_release_identity() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta12"
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta12.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta12")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert changelog.startswith("# Changelog\n\n## 0.4.3-beta12")
+    assert "## 0.4.3-beta12" in changelog
 
 
 def test_beta12_error_discovery_is_wall_clock_bounded() -> None:

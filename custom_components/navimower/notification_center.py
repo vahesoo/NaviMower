@@ -546,7 +546,7 @@ class NavimowerNotificationCenter:
             content += f" in {_zone_phrase(names)}"
         else:
             content += " for all zones or a target list not exposed by the mower"
-        content += ". The command source was not Home Assistant, so Navimower does not assume it came from the mobile app."
+        content += "."
         item = self._emit(
             "NM1003",
             "External mowing task started",

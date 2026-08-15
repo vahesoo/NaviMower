@@ -87,6 +87,12 @@ async def async_get_config_entry_diagnostics(
         and hasattr(notification_center, "diagnostics")
         else None
     )
+    navimower_schedule = getattr(coordinator, "navimower_schedule", None)
+    navimower_schedule_diagnostics = (
+        navimower_schedule.diagnostics()
+        if navimower_schedule is not None and hasattr(navimower_schedule, "diagnostics")
+        else None
+    )
 
     history_index = (
         coordinator.history.sessions_index_payload()
@@ -256,6 +262,7 @@ async def async_get_config_entry_diagnostics(
             )
         ),
         "settings": sanitize(deepcopy(settings)),
+        "navimower_schedule": sanitize(deepcopy(navimower_schedule_diagnostics)),
         "map": sanitize(
             {
                 "id": map_data.get("id"),
@@ -328,7 +335,7 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(deepcopy(raw)),
         "notes": [
-            "0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and bounds Clear and resume / Reboot Mower public-H5 recovery so Download diagnostics always returns partial evidence instead of waiting on the crawler.",
+            "The integration-owned one-zone schedule is disabled by default and exposes only its persisted runtime state in diagnostics; bounded error-command discovery remains unchanged.",
             "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",
             "Notification detail evidence is retained only after an explicit user Mark notification as read action; downloading diagnostics never calls the detail endpoint.",
             "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
