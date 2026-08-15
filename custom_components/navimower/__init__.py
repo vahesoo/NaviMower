@@ -37,6 +37,7 @@ from .history import NavimowerHistory
 from .map_api import async_register_map_api
 from .mqtt import NavimowerMqttBridge
 from .notification_center import NavimowerNotificationCenter
+from .navimower_schedule import NavimowerScheduleController
 from .oauth import async_register_oauth_implementation
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
@@ -292,6 +293,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinator.data:
         coordinator.async_set_updated_data(coordinator.bootstrap_snapshot())
 
+    navimower_schedule = NavimowerScheduleController(hass, entry, coordinator)
+    coordinator.navimower_schedule = navimower_schedule
+    await navimower_schedule.async_start()
+
     coordinator.private_poll_guard_task = hass.async_create_background_task(
         _async_private_poll_guard(coordinator),
         f"Navimower private poll guard {entry.entry_id}",
@@ -312,6 +317,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     session_archive = (
         getattr(coordinator, "session_archive", None) if coordinator else None
+    )
+    navimower_schedule = (
+        getattr(coordinator, "navimower_schedule", None) if coordinator else None
     )
     private_poll_guard = (
         getattr(coordinator, "private_poll_guard_task", None) if coordinator else None
@@ -342,6 +350,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
         return False
 
+    if navimower_schedule is not None:
+        await navimower_schedule.async_stop()
     if notification_center is not None:
         await notification_center.async_stop()
     if session_archive is not None:
@@ -358,6 +368,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove cached map data, local notifications and retained mowing sessions."""
     await NavimowerNotificationCenter.async_remove_all(hass, entry.entry_id)
+    await NavimowerScheduleController.async_remove_all(hass, entry.entry_id)
     await SessionArchiveManager.async_remove_all(hass, entry.entry_id)
     await NavimowerHistory.async_remove_all(hass, entry.entry_id)
     try:
