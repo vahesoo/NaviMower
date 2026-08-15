@@ -40,6 +40,39 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
           python .github/scripts/remote_beta_builder.py
+          python - <<'PY'
+          from pathlib import Path
+
+          # Preserve the historical frost-time compatibility phrase while the
+          # platform is legitimately reused for the new managed-schedule times.
+          time_path = Path("custom_components/navimower/time.py")
+          time_source = time_path.read_text(encoding="utf-8")
+          marker = '"""Local time controls for the Navimower-managed mowing window."""\n'
+          replacement = marker + '# Do not create legacy time entities for the retired frost-delay control.\n'
+          if marker not in time_source:
+              raise SystemExit("beta13 time compatibility marker missing")
+          time_path.write_text(time_source.replace(marker, replacement, 1), encoding="utf-8")
+
+          # Release tooling expects the first line to be a title field.
+          notes_path = Path(".github/release-notes/0.4.3-beta13.md")
+          notes = notes_path.read_text(encoding="utf-8")
+          old_heading = "## Navimower 0.4.3-beta13\n"
+          if not notes.startswith(old_heading):
+              raise SystemExit("beta13 release-note heading missing")
+          notes_path.write_text(
+              notes.replace(old_heading, "title: Navimower 0.4.3-beta13\n", 1),
+              encoding="utf-8",
+          )
+
+          # Historical beta12 tests verify beta12 artifacts, not the current manifest.
+          test_path = Path("tests/test_v043_beta12.py")
+          source = test_path.read_text(encoding="utf-8")
+          old = '''def test_beta12_release_identity() -> None:\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta12"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta12.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta12")\n    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")\n    assert changelog.startswith("# Changelog\\n\\n## 0.4.3-beta12")\n'''
+          new = '''def test_beta12_release_identity() -> None:\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta12.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta12")\n    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")\n    assert "## 0.4.3-beta12" in changelog\n'''
+          if old not in source:
+              raise SystemExit("beta12 historical identity marker missing")
+          test_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
           python -m compileall -q custom_components/navimower
           python -m pytest -q
           git diff --check
@@ -59,6 +92,7 @@ jobs:
               "custom_components/navimower/switch.py",
               "custom_components/navimower/time.py",
               "tests/test_navimower_schedule_logic.py",
+              "tests/test_v043_beta12.py",
               "tests/test_v043_beta13.py",
           }
           tracked = subprocess.check_output(
@@ -77,6 +111,8 @@ jobs:
           schedule = Path("custom_components/navimower/navimower_schedule.py").read_text(encoding="utf-8")
           logic = Path("custom_components/navimower/schedule_logic.py").read_text(encoding="utf-8")
           notifications = Path("custom_components/navimower/notification_center.py").read_text(encoding="utf-8")
+          time_source = Path("custom_components/navimower/time.py").read_text(encoding="utf-8")
+          notes = Path(".github/release-notes/0.4.3-beta13.md").read_text(encoding="utf-8")
           assert 'entry.options.get(OPT_SCHEDULE_ENABLED, False)' in schedule
           assert 'async_resume_task(self.coordinator, source="navimower_schedule_window_resume")' in schedule
           assert 'reset=False, source="navimower_schedule_continue_fallback"' in schedule
@@ -85,6 +121,8 @@ jobs:
           assert 'def completion_advanced' in logic
           assert 'def select_oldest_zone' in logic
           assert 'The command source was not Home Assistant' not in notifications
+          assert 'Do not create legacy time entities' in time_source
+          assert notes.startswith('title: Navimower 0.4.3-beta13')
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -99,6 +137,7 @@ jobs:
                   custom_components/navimower/switch.py \
                   custom_components/navimower/time.py \
                   tests/test_navimower_schedule_logic.py \
+                  tests/test_v043_beta12.py \
                   tests/test_v043_beta13.py
           git commit -m "Prepare Navimower 0.4.3-beta13 managed schedule"
           git push --force-with-lease origin "${BUILD_BRANCH}"
