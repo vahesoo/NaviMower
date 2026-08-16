@@ -1,6 +1,18 @@
 # Changelog
 
 
+## 0.4.3-beta14
+
+Stabilization for task attribution, observed manual mowing state and transient private-cloud failures.
+
+### Changed
+
+- Remove the duplicate local mowing-completed notification and rely on the vendor completion notification.
+- Preserve native schedule attribution for mowing transitions observed inside an active native schedule period instead of labelling them External.
+- Map private state `0212` as Manual mowing and treat it as active work.
+- Warn about private endpoint failures only after repeated consecutive failures while preserving last-good values.
+
+
 ## 0.4.3-beta13
 
 Integration-owned one-zone mowing window for field testing.
