@@ -6,8 +6,8 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def test_beta13_identity_and_schedule_modules():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta13"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta13.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta13")
     assert (COMPONENT / "navimower_schedule.py").exists()
     assert (COMPONENT / "schedule_logic.py").exists()
 

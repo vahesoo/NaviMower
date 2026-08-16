@@ -538,6 +538,32 @@ class NavimowerNotificationCenter:
             self._interrupted_reason = None
             return item is not None
 
+        active_schedule_period = self._schedule_period_containing_now(snapshot, now_local)
+        if active_schedule_period is not None:
+            ids = _dedupe_ints(active_schedule_period.get("zone_ids"))
+            if not ids:
+                ids = self._observed_task_zone_ids(snapshot)
+            names = list(active_schedule_period.get("zone_names") or [])
+            if not names:
+                names_by_id = _zone_names(snapshot)
+                names = [names_by_id.get(value, f"Zone {value}") for value in ids]
+            start_dt = active_schedule_period["start_dt"]
+            end_dt = active_schedule_period["end_dt"]
+            self._active_task = {
+                "task_id": f"schedule-observed-{now_local.date().isoformat()}-{active_schedule_period['start_min']}",
+                "origin": "schedule",
+                "trigger": "schedule_window_observed_late",
+                "zone_ids": ids,
+                "zone_names": names,
+                "ordered": False,
+                "started_at": datetime.now(UTC).isoformat(),
+                "schedule_start": start_dt.isoformat(),
+                "schedule_end": end_dt.isoformat(),
+                "night_mowing": (snapshot.get("settings") or {}).get("night_mow"),
+            }
+            self._interrupted_reason = None
+            return False
+
         ids = self._observed_task_zone_ids(snapshot)
         names_by_id = _zone_names(snapshot)
         names = [names_by_id.get(value, f"Zone {value}") for value in ids]
@@ -588,26 +614,13 @@ class NavimowerNotificationCenter:
             self._active_task["progress_before_pause"] = progress
             self._active_task["battery_before_pause"] = battery
 
-        # 100% is intentionally strict here. Vendor history may accept lower
-        # practical completion percentages, but a local user-facing "completed"
-        # notification should not be invented from an ambiguous 95-99% return.
+        # Vendor notifications already report completed one-time/scheduled tasks.
+        # Keep the local task context correct, but do not duplicate the vendor
+        # completion with a second Navimower-local notification.
         if progress is not None and progress >= 100:
-            names = list((self._active_task or {}).get("zone_names") or [])
-            content = "Completed the mowing task"
-            if names:
-                content += f" in {_zone_phrase(names)}"
-            content += "."
-            item = self._emit(
-                "NM1009",
-                "Mowing task completed",
-                content,
-                kind="mowing_completed",
-                confidence="confirmed_100_percent_transition",
-                event_key=self._task_token(),
-            )
             self._active_task = None
             self._interrupted_reason = None
-            return item is not None
+            return False
 
         if self._recent_ha_dock():
             content = "Home Assistant sent the mower to the dock"
@@ -761,6 +774,38 @@ class NavimowerNotificationCenter:
                     "start_dt": day_start + timedelta(minutes=start_min),
                     "end_dt": day_start + timedelta(minutes=end_min),
                 }
+        return None
+
+    def _schedule_period_containing_now(
+        self, snapshot: dict[str, Any], now_local: datetime
+    ) -> dict[str, Any] | None:
+        """Return the active native schedule period even after its start grace."""
+        settings = snapshot.get("settings") or {}
+        if settings.get("schedule_enabled") is False:
+            return None
+        weekday = (now_local.weekday() + 1) % 7 + 1
+        minutes = now_local.hour * 60 + now_local.minute
+        day_start = dt_util.start_of_local_day(now_local)
+        for row in snapshot.get("schedule") or []:
+            if not isinstance(row, dict) or not row.get("enabled"):
+                continue
+            if _as_int(row.get("day")) != weekday:
+                continue
+            for period in row.get("periods") or []:
+                if not isinstance(period, dict):
+                    continue
+                start_min = _as_int(period.get("start_min"))
+                end_min = _as_int(period.get("end_min"))
+                if start_min is None or end_min is None or end_min <= start_min:
+                    continue
+                if start_min <= minutes < end_min:
+                    return {
+                        **period,
+                        "start_min": start_min,
+                        "end_min": end_min,
+                        "start_dt": day_start + timedelta(minutes=start_min),
+                        "end_dt": day_start + timedelta(minutes=end_min),
+                    }
         return None
 
     def _next_schedule_start_today(

@@ -1690,6 +1690,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "attempts": 0,
                 "successes": 0,
                 "failures": 0,
+                "consecutive_failures": 0,
                 "last_attempt_mono": None,
                 "last_success_mono": None,
                 "last_error": None,
@@ -1716,30 +1717,41 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             status["last_error_utc"] = datetime.now(UTC).isoformat()
             raise
         except Exception as err:  # noqa: BLE001 - preserve cache and continue.
-            previous_error = status.get("last_error")
             status["failures"] += 1
+            consecutive = int(status.get("consecutive_failures") or 0) + 1
+            status["consecutive_failures"] = consecutive
             status["last_error"] = str(err)
             status["last_error_utc"] = datetime.now(UTC).isoformat()
-            if previous_error != str(err) or status["failures"] in {1, 10, 25}:
+            if consecutive in {3, 10, 25}:
                 _LOGGER.warning(
-                    "Navimower private endpoint %s failed; keeping last-good "
-                    "data (failure %s): %s",
+                    "Navimower private endpoint %s failed repeatedly; keeping last-good "
+                    "data (consecutive failure %s): %s",
                     key,
-                    status["failures"],
+                    consecutive,
+                    err,
+                )
+            else:
+                _LOGGER.debug(
+                    "Navimower private endpoint %s transient failure %s; keeping last-good data: %s",
+                    key,
+                    consecutive,
                     err,
                 )
             return False
 
-        recovered = bool(status.get("last_error"))
+        consecutive_failures = int(status.get("consecutive_failures") or 0)
         raw[key] = value
         status["successes"] += 1
         status["last_success_mono"] = now
         status["last_success_utc"] = datetime.now(UTC).isoformat()
         status["last_error"] = None
         status["last_error_utc"] = None
+        status["consecutive_failures"] = 0
         status["last_result_type"] = type(value).__name__
-        if recovered:
+        if consecutive_failures >= 3:
             _LOGGER.info("Navimower private endpoint %s recovered", key)
+        elif consecutive_failures:
+            _LOGGER.debug("Navimower private endpoint %s recovered after a transient failure", key)
         return True
 
     def private_poll_age(self) -> float | None:
@@ -1777,6 +1789,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "attempts": status.get("attempts", 0),
                 "successes": status.get("successes", 0),
                 "failures": status.get("failures", 0),
+                "consecutive_failures": status.get("consecutive_failures", 0),
                 "last_attempt_utc": status.get("last_attempt_utc"),
                 "last_success_utc": status.get("last_success_utc"),
                 "last_error_utc": status.get("last_error_utc"),
