@@ -39,6 +39,12 @@ assert '("private_task_percentage", private_progress)' in source
 assert '("mqtt_map_work_position", mqtt_progress["work_progress"])' in source
 assert '("mqtt_route_progress", mqtt_progress["route_progress"])' in source
 assert 'snapshot["active_zone_progress"]' in source
-assert 'item.get("progress")' in source.split("def _session_completed", 1)[1].split("def ", 1)[0]
+completion = source.split("def _session_completed", 1)[1].split("def ", 1)[0]
+# Completion may be resolved directly from live progress or, in later builds,
+# from history's current-cycle confirmation set. Keep this regression semantic.
+assert (
+    'item.get("progress")' in completion
+    or 'task_zone_completion_confirmed' in completion
+)
 
 print("progress mapping tests passed")
