@@ -15,7 +15,7 @@ from dataclasses import replace
 from typing import Any
 
 from . import coordinator as _coordinator
-from .position_fallback import choose_position
+from .position_fallback import apply_docked_display_override, choose_position
 
 
 class _NavigationProxy:
@@ -133,6 +133,26 @@ def _decorate_navigation_result(
     age = context.get("age")
     stale = bool(context.get("stale"))
     position = context.get("position")
+
+    # Charging/docked state is authoritative for the virtual physical Dock area.
+    # Do this before pose decoration so an unavailable, stale or edge-flapping
+    # coordinate can never display a stationary docked mower as a lawn zone or
+    # Outside mapped zones. A pending command suppresses the override while a
+    # mower is being dispatched away from the station.
+    if apply_docked_display_override(
+        result,
+        docked=snapshot.get("docked") is True,
+        pending_activity=coordinator._pending_activity_value(),  # noqa: SLF001
+    ):
+        for state in (result.get("gate_states") or {}).values():
+            if not isinstance(state, dict):
+                continue
+            state["position_source"] = "state"
+            state["position_age"] = None
+            state["position_stale"] = False
+            state["mqtt_pose_valid"] = coordinator._fresh_mqtt_position() is not None  # noqa: SLF001
+            state["cloud_fallback"] = False
+        return result
 
     # Display follows the best available position independently from gate safety.
     # This also means the first cloud arrival sample may update the visible zone
