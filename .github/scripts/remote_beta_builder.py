@@ -16,398 +16,242 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_section(path: Path, start: str, end: str, replacement: str, label: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise SystemExit(f"{label}: section markers changed")
+    a = text.index(start)
+    b = text.index(end, a)
+    path.write_text(text[:a] + dedent(replacement).lstrip("\n") + text[b:], encoding="utf-8")
+
+
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(text).lstrip(), encoding="utf-8")
 
 
-# Release identity.
+# Identity.
 manifest_path = COMPONENT / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("version") != "0.4.3-beta15":
-    raise SystemExit(f"Expected beta15 base, got {manifest.get('version')!r}")
-manifest["version"] = "0.4.3-beta16"
-manifest_path.write_text(
-    json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-    encoding="utf-8",
+if manifest.get("version") != "0.4.3-beta17":
+    raise SystemExit(f"Expected beta17 base, got {manifest.get('version')!r}")
+manifest["version"] = "0.4.3-beta18"
+manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+# Vendor end_time/high percentage stays visible as diagnostics, not authoritative completion.
+coordinator_path = COMPONENT / "coordinator.py"
+replace_once(
+    coordinator_path,
+    '''                    "last_completed_at": (\n                        dt_util.utc_from_timestamp(end_time).isoformat()\n                        if end_time\n                        and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN\n                        else None\n                    ),\n''',
+    '''                    "vendor_start_time": start_time,\n                    "vendor_end_time": end_time,\n                    "vendor_completed_at": (\n                        dt_util.utc_from_timestamp(end_time).isoformat()\n                        if end_time\n                        and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN\n                        else None\n                    ),\n                    "last_completed_at": None,\n''',
+    "vendor completion candidate",
+)
+replace_section(
+    coordinator_path,
+    "    def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:\n",
+    "    def _active_cutting_height(self, snapshot: dict[str, Any]) -> int | None:\n",
+    '''
+    def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
+        """Return success only for zones confirmed inside this observed cycle."""
+        del snapshot
+        active = self.history.active_session
+        if not active:
+            return None
+        selected = {
+            value for raw in active.get("zone_ids") or []
+            if (value := _as_int(raw)) is not None
+        }
+        if not selected:
+            return None
+        confirmed = {
+            value for raw in active.get("task_zone_completion_confirmed") or []
+            if (value := _as_int(raw)) is not None
+        }
+        return selected.issubset(confirmed)
+
+''',
+    "session completion resolver",
 )
 
-
-# Shared production option keys belong with the rest of config-entry constants.
-const_path = COMPONENT / "const.py"
+history_path = COMPONENT / "history.py"
 replace_once(
-    const_path,
-    '''OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"\n\nDEFAULT_TRAIL_RETENTION_DAYS: Final = 7\n''',
-    '''OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"\nOPT_SCHEDULE_ENABLED: Final = "navimower_schedule_enabled"\nOPT_SCHEDULE_START: Final = "navimower_schedule_start"\nOPT_SCHEDULE_END: Final = "navimower_schedule_end"\nOPT_SCHEDULE_MODE: Final = "navimower_schedule_mode"\nOPT_SCHEDULE_ZONE_IDS: Final = "navimower_schedule_zone_ids"\n\nSCHEDULE_MODE_WINDOW: Final = "window"\nSCHEDULE_MODE_CONTINUOUS: Final = "continuous"\nDEFAULT_SCHEDULE_MODE: Final = SCHEDULE_MODE_WINDOW\nDEFAULT_SCHEDULE_START: Final = "10:00"\nDEFAULT_SCHEDULE_END: Final = "20:00"\n\nDEFAULT_TRAIL_RETENTION_DAYS: Final = 7\n''',
-    "schedule option constants",
-)
-
-
-# Pure scheduling helpers: accept TimeSelector HH:MM:SS values, filter explicitly
-# selected/proven zones, and never rank an uncompleted zone as the oldest.
-schedule_logic_path = COMPONENT / "schedule_logic.py"
-write(schedule_logic_path, r'''
-"""Pure decision helpers for Navimower-managed mowing windows."""
-from __future__ import annotations
-
-from datetime import datetime, time, timedelta
-from typing import Any, Iterable
-
-
-def parse_hhmm(value: Any, default: str) -> time:
-    """Return a local wall-clock time from ``HH:MM[:SS]`` or a time object."""
-    if isinstance(value, time):
-        return value.replace(second=0, microsecond=0)
-    text = str(value or default).strip()
-    try:
-        parts = text.split(":")
-        if len(parts) < 2:
-            raise ValueError
-        hour, minute = int(parts[0]), int(parts[1])
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError
-    except (TypeError, ValueError):
-        hour_s, minute_s = default.split(":", 1)
-        hour, minute = int(hour_s), int(minute_s)
-    return time(hour=hour, minute=minute)
-
-
-def format_hhmm(value: time) -> str:
-    return f"{value.hour:02d}:{value.minute:02d}"
-
-
-def window_state(now: datetime, start: time, end: time) -> tuple[bool, str | None]:
-    """Return whether ``now`` is in the daily window and its stable start-date token."""
-    local_time = now.timetz().replace(tzinfo=None)
-    if start == end:
-        return False, None
-    if start < end:
-        if start <= local_time < end:
-            return True, now.date().isoformat()
-        return False, None
-    if local_time >= start:
-        return True, now.date().isoformat()
-    if local_time < end:
-        return True, (now.date() - timedelta(days=1)).isoformat()
-    return False, None
-
-
-def parse_iso(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
-    return parsed
-
-
-def later_iso(first: Any, second: Any) -> str | None:
-    """Return the later valid ISO timestamp."""
-    a, b = parse_iso(first), parse_iso(second)
-    if a is None and b is None:
-        return None
-    if a is None:
-        return str(second)
-    if b is None:
-        return str(first)
-    return str(second) if b > a else str(first)
-
-
-def completion_advanced(current: Any, baseline: Any, dispatched_at: Any) -> bool:
-    """Accept completion only when it is newer than both baseline and this dispatch."""
-    current_dt = parse_iso(current)
-    dispatch_dt = parse_iso(dispatched_at)
-    if current_dt is None or dispatch_dt is None or current_dt <= dispatch_dt:
-        return False
-    baseline_dt = parse_iso(baseline)
-    return baseline_dt is None or current_dt > baseline_dt
-
-
-def filter_schedule_zones(
-    zones: Iterable[dict[str, Any]],
-    selected_zone_ids: Iterable[int],
-    *,
-    scheduler_completed_at: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """Return only user-selected zones with a confirmed successful completion."""
-    selected: set[int] = set()
-    for value in selected_zone_ids or []:
-        try:
-            selected.add(int(value))
-        except (TypeError, ValueError):
-            continue
-    confirmed = scheduler_completed_at or {}
-    result: list[dict[str, Any]] = []
-    for row in zones or []:
-        if not isinstance(row, dict):
-            continue
-        try:
-            zone_id = int(row.get("id"))
-        except (TypeError, ValueError):
-            continue
-        if zone_id not in selected:
-            continue
-        effective = later_iso(row.get("last_completed_at"), confirmed.get(str(zone_id)))
-        if parse_iso(effective) is None:
-            continue
-        result.append(row)
-    return result
-
-
-def select_oldest_zone(
-    zones: Iterable[dict[str, Any]],
-    *,
-    completed_in_window: set[int] | None = None,
-    just_completed_zone_id: int | None = None,
-    scheduler_completed_at: dict[str, str] | None = None,
-) -> dict[str, Any] | None:
-    """Choose the eligible zone whose confirmed completion is oldest."""
-    completed = completed_in_window or set()
-    confirmed = scheduler_completed_at or {}
-    candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    for row in zones or []:
-        if not isinstance(row, dict):
-            continue
-        try:
-            zone_id = int(row.get("id"))
-        except (TypeError, ValueError):
-            continue
-        if zone_id <= 0 or zone_id in completed or zone_id == just_completed_zone_id:
-            continue
-        effective = later_iso(row.get("last_completed_at"), confirmed.get(str(zone_id)))
-        parsed = parse_iso(effective)
-        if parsed is None:
-            continue
-        candidates.append(((parsed, zone_id), row))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
-''')
-
-
-# Managed scheduler runtime: selected-zone allowlist, proven-completion guard and
-# continuous 24-hour mode while retaining the existing one-zone-at-a-time model.
-schedule_path = COMPONENT / "navimower_schedule.py"
-replace_once(
-    schedule_path,
-    '''    ACTIVITY_RETURNING,\n    DOMAIN,\n    encode_partition_ids,\n    mow_setup,\n)\n''',
-    '''    ACTIVITY_RETURNING,\n    DEFAULT_SCHEDULE_END,\n    DEFAULT_SCHEDULE_MODE,\n    DEFAULT_SCHEDULE_START,\n    DOMAIN,\n    OPT_SCHEDULE_ENABLED,\n    OPT_SCHEDULE_END,\n    OPT_SCHEDULE_MODE,\n    OPT_SCHEDULE_START,\n    OPT_SCHEDULE_ZONE_IDS,\n    SCHEDULE_MODE_CONTINUOUS,\n    SCHEDULE_MODE_WINDOW,\n    encode_partition_ids,\n    mow_setup,\n)\n''',
-    "schedule shared constants import",
+    history_path,
+    "def _metadata(session: dict[str, Any]) -> dict[str, Any]:\n",
+    '''def _iso_ms(value: Any) -> int | None:\n    if not value:\n        return None\n    try:\n        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))\n        if parsed.tzinfo is None:\n            parsed = parsed.replace(tzinfo=UTC)\n        return int(parsed.timestamp() * 1000)\n    except (TypeError, ValueError, OverflowError, OSError):\n        return None\n\n\ndef _metadata(session: dict[str, Any]) -> dict[str, Any]:\n''',
+    "ISO timestamp parser",
 )
 replace_once(
-    schedule_path,
-    '''    completion_advanced,\n    format_hhmm,\n    later_iso,\n''',
-    '''    completion_advanced,\n    filter_schedule_zones,\n    format_hhmm,\n    later_iso,\n''',
-    "schedule zone filter import",
+    history_path,
+    '''    merged["cycle_reset_zone_ids"] = _unique_ints(\n        previous.get("cycle_reset_zone_ids"),\n        continuation.get("cycle_reset_zone_ids"),\n    )\n    merged["zone_cycle_boundaries"] = sorted(\n''',
+    '''    merged["cycle_reset_zone_ids"] = _unique_ints(\n        previous.get("cycle_reset_zone_ids"),\n        continuation.get("cycle_reset_zone_ids"),\n    )\n    task_progress = dict(previous.get("task_zone_progress") or {})\n    task_progress.update(continuation.get("task_zone_progress") or {})\n    merged["task_zone_progress"] = task_progress\n    merged["task_zone_seen_incomplete"] = _unique_ints(\n        previous.get("task_zone_seen_incomplete"), continuation.get("task_zone_seen_incomplete")\n    )\n    merged["task_zone_completion_confirmed"] = _unique_ints(\n        previous.get("task_zone_completion_confirmed"), continuation.get("task_zone_completion_confirmed")\n    )\n    merged["zone_cycle_boundaries"] = sorted(\n''',
+    "merge completion evidence",
 )
 replace_once(
-    schedule_path,
-    '''OPT_SCHEDULE_ENABLED = "navimower_schedule_enabled"\nOPT_SCHEDULE_START = "navimower_schedule_start"\nOPT_SCHEDULE_END = "navimower_schedule_end"\nDEFAULT_SCHEDULE_START = "10:00"\nDEFAULT_SCHEDULE_END = "20:00"\n\n''',
-    '',
-    "remove local schedule option constants",
+    history_path,
+    "    async def _async_migrate_legacy_store(self) -> None:\n",
+    '''    async def _async_repair_unverified_zone_completions(self) -> None:\n        """Remove beta-era raw-vendor/reset-boundary completion timestamps."""\n        repaired = 0\n        with self._lock:\n            reset_boundaries: dict[int, list[int]] = {}\n            for session in self._cache.values():\n                for item in (session or {}).get("zone_cycle_boundaries") or []:\n                    if not isinstance(item, dict):\n                        continue\n                    zone_id, at_ms = _as_int(item.get("zone_id")), _as_int(item.get("at_ms"))\n                    if zone_id is not None and at_ms is not None:\n                        reset_boundaries.setdefault(zone_id, []).append(at_ms)\n            for key, original in list(self._zone_history.items()):\n                record = dict(original)\n                completed_ms = _iso_ms(record.get("last_completed_at"))\n                if completed_ms is None:\n                    continue\n                zone_id = _as_int(record.get("id")) or _as_int(key)\n                unverified = _as_int(record.get("last_completed_progress")) is None\n                reset_stamp = bool(\n                    zone_id is not None and any(\n                        abs(completed_ms - boundary) <= 60_000\n                        for boundary in reset_boundaries.get(zone_id, [])\n                    )\n                )\n                if not (unverified or reset_stamp):\n                    continue\n                record.pop("last_completed_at", None)\n                record.pop("last_completed_progress", None)\n                self._zone_history[str(key)] = record\n                repaired += 1\n        if repaired:\n            await self._index_store.async_save(self._index_data())\n            _LOGGER.info("Removed %d unverified Navimower zone completion timestamp(s)", repaired)\n\n    async def _async_migrate_legacy_store(self) -> None:\n''',
+    "completion repair helper",
 )
 replace_once(
-    schedule_path,
-    '''        self._enabled = bool(entry.options.get(OPT_SCHEDULE_ENABLED, False))\n        self._start = parse_hhmm(entry.options.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)\n        self._end = parse_hhmm(entry.options.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)\n        self._runtime: dict[str, Any] = self._empty_runtime()\n''',
-    '''        self._enabled = bool(entry.options.get(OPT_SCHEDULE_ENABLED, False))\n        mode = str(entry.options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))\n        self._mode = mode if mode in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS} else DEFAULT_SCHEDULE_MODE\n        self._start = parse_hhmm(entry.options.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)\n        self._end = parse_hhmm(entry.options.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)\n        self._selection_configured = OPT_SCHEDULE_ZONE_IDS in entry.options\n        self._selected_zone_ids = self._normalize_zone_ids(entry.options.get(OPT_SCHEDULE_ZONE_IDS, []))\n        self._legacy_selection_migration_allowed = self._enabled and not self._selection_configured\n        self._runtime: dict[str, Any] = self._empty_runtime()\n''',
-    "schedule runtime options",
+    history_path,
+    '''        await self._async_merge_adjacent_sessions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_migrate_legacy_store()\n''',
+    '''        await self._async_merge_adjacent_sessions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_repair_unverified_zone_completions()\n        await self._async_migrate_legacy_store()\n''',
+    "completion repair load hook",
 )
 replace_once(
-    schedule_path,
-    '''    @staticmethod\n    def _empty_runtime() -> dict[str, Any]:\n''',
-    '''    @staticmethod\n    def _normalize_zone_ids(values: Any) -> set[int]:\n        if not isinstance(values, (list, tuple, set)):\n            values = [] if values in (None, "") else [values]\n        result: set[int] = set()\n        for value in values:\n            try:\n                zone_id = int(value)\n            except (TypeError, ValueError):\n                continue\n            if zone_id > 0:\n                result.add(zone_id)\n        return result\n\n    @staticmethod\n    def _empty_runtime() -> dict[str, Any]:\n''',
-    "schedule zone id normalizer",
+    history_path,
+    '''            "task_zone_progress": {str(value): 0 for value in zone_ids},\n            "segment_starts_ms": [start_ms],\n''',
+    '''            "task_zone_progress": {str(value): 0 for value in zone_ids},\n            "task_zone_seen_incomplete": [],\n            "task_zone_completion_confirmed": [],\n            "segment_starts_ms": [start_ms],\n''',
+    "new session completion evidence",
 )
 replace_once(
-    schedule_path,
-    '''            "window_token": None,\n            "completed_zone_ids_in_window": [],\n''',
-    '''            "window_token": None,\n            "round_index": 1,\n            "round_started_at": None,\n            "completed_zone_ids_in_window": [],\n''',
-    "schedule round runtime",
+    history_path,
+    '''        previous.setdefault("visited_zone_ids", [])\n        previous.setdefault("task_zone_progress", {})\n        previous["zone_ids"] = _unique_ints(\n''',
+    '''        previous.setdefault("visited_zone_ids", [])\n        previous.setdefault("task_zone_progress", {})\n        previous.setdefault("task_zone_seen_incomplete", [])\n        previous.setdefault("task_zone_completion_confirmed", [])\n        previous["zone_ids"] = _unique_ints(\n''',
+    "resume completion evidence",
 )
 replace_once(
-    schedule_path,
-    '''    @property\n    def start_time(self) -> time:\n        return self._start\n\n    @property\n    def end_time(self) -> time:\n        return self._end\n''',
-    '''    @property\n    def mode(self) -> str:\n        return self._mode\n\n    @property\n    def selected_zone_ids(self) -> tuple[int, ...]:\n        return tuple(sorted(self._selected_zone_ids))\n\n    @property\n    def start_time(self) -> time:\n        return self._start\n\n    @property\n    def end_time(self) -> time:\n        return self._end\n''',
-    "schedule option properties",
-)
-replace_once(
-    schedule_path,
-    '''        if isinstance(saved, dict):\n            restored = self._empty_runtime()\n            restored.update({key: deepcopy(value) for key, value in saved.items() if key in restored})\n            self._runtime = restored\n        self._unsub = self.coordinator.async_add_listener(self._handle_update)\n''',
-    '''        if isinstance(saved, dict):\n            restored = self._empty_runtime()\n            restored.update({key: deepcopy(value) for key, value in saved.items() if key in restored})\n            self._runtime = restored\n        self._maybe_migrate_legacy_zone_selection()\n        self._unsub = self.coordinator.async_add_listener(self._handle_update)\n''',
-    "legacy scheduler zone migration start",
-)
-replace_once(
-    schedule_path,
-    '''    def diagnostics(self) -> dict[str, Any]:\n        now = dt_util.now()\n        open_now, token = window_state(now, self._start, self._end)\n        return {\n            "enabled": self._enabled,\n            "start": format_hhmm(self._start),\n            "end": format_hhmm(self._end),\n            "window_open": open_now,\n            "window_token_now": token,\n            **deepcopy(self._runtime),\n        }\n''',
-    '''    def diagnostics(self) -> dict[str, Any]:\n        now = dt_util.now()\n        open_now, token = self._window_state(now)\n        eligible = self._eligible_zones()\n        eligible_ids = sorted(int(row["id"]) for row in eligible if row.get("id") is not None)\n        return {\n            "enabled": self._enabled,\n            "mode": self._mode,\n            "start": format_hhmm(self._start),\n            "end": format_hhmm(self._end),\n            "selected_zone_ids": sorted(self._selected_zone_ids),\n            "eligible_zone_ids": eligible_ids,\n            "zone_selection_configured": self._selection_configured,\n            "window_open": open_now,\n            "window_token_now": token,\n            **deepcopy(self._runtime),\n        }\n''',
-    "schedule diagnostics options",
-)
-replace_once(
-    schedule_path,
-    '''                "start",\n                "end",\n                "window_open",\n''',
-    '''                "mode",\n                "start",\n                "end",\n                "selected_zone_ids",\n                "eligible_zone_ids",\n                "window_open",\n''',
-    "schedule entity option attributes",
-)
-replace_once(
-    schedule_path,
-    '''        if enabled:\n            native = (self.coordinator.data or {}).get("settings", {}).get("schedule_enabled")\n            if native is None:\n                raise RuntimeError("Native mowing schedule state is not available yet")\n            if native is True:\n                await self._async_set_native_schedule(False)\n''',
-    '''        if enabled:\n            if not self._eligible_zones():\n                raise RuntimeError(\n                    "Configure at least one successfully completed automatic mowing zone first"\n                )\n            native = (self.coordinator.data or {}).get("settings", {}).get("schedule_enabled")\n            if native is None:\n                raise RuntimeError("Native mowing schedule state is not available yet")\n            if native is True:\n                await self._async_set_native_schedule(False)\n''',
-    "schedule enable selection guard",
-)
-replace_once(
-    schedule_path,
-    '''        self._enabled = enabled\n        self._update_options(**{OPT_SCHEDULE_ENABLED: enabled})\n''',
-    '''        self._enabled = enabled\n        self._legacy_selection_migration_allowed = False\n        self._update_options(**{OPT_SCHEDULE_ENABLED: enabled})\n''',
-    "disable legacy migration after user switch",
-)
-replace_once(
-    schedule_path,
-    '''    def _zones(self) -> list[dict[str, Any]]:\n        return [row for row in (self.coordinator.data or {}).get("zone_states") or [] if isinstance(row, dict)]\n\n    def _zone(self, zone_id: int | None) -> dict[str, Any] | None:\n''',
-    '''    def _zones(self) -> list[dict[str, Any]]:\n        return [row for row in (self.coordinator.data or {}).get("zone_states") or [] if isinstance(row, dict)]\n\n    def _maybe_migrate_legacy_zone_selection(self) -> None:\n        """Preserve an already-enabled beta scheduler without auto-enrolling future zones."""\n        if not self._legacy_selection_migration_allowed or self._selection_configured:\n            return\n        zones = self._zones()\n        if not zones:\n            return\n        proven: set[int] = set()\n        for row in zones:\n            try:\n                zone_id = int(row.get("id"))\n            except (TypeError, ValueError):\n                continue\n            if zone_id > 0 and parse_iso(row.get("last_completed_at")) is not None:\n                proven.add(zone_id)\n        self._selected_zone_ids = proven\n        self._selection_configured = True\n        self._legacy_selection_migration_allowed = False\n        self._update_options(\n            **{\n                OPT_SCHEDULE_ZONE_IDS: [str(value) for value in sorted(proven)],\n                OPT_SCHEDULE_MODE: self._mode,\n            }\n        )\n        _LOGGER.info(\n            "Migrated the enabled beta Navimower schedule to an explicit allowlist of %s proven zones",\n            len(proven),\n        )\n\n    def _eligible_zones(self) -> list[dict[str, Any]]:\n        return filter_schedule_zones(\n            self._zones(),\n            self._selected_zone_ids,\n            scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},\n        )\n\n    def _window_state(self, now: datetime) -> tuple[bool, str | None]:\n        if self._mode == SCHEDULE_MODE_CONTINUOUS:\n            return True, "continuous"\n        return window_state(now, self._start, self._end)\n\n    def _zone(self, zone_id: int | None) -> dict[str, Any] | None:\n''',
-    "schedule selection helpers",
-)
-replace_once(
-    schedule_path,
-    '''        data = self.coordinator.data or {}\n        settings = data.get("settings") or {}\n''',
-    '''        data = self.coordinator.data or {}\n        self._maybe_migrate_legacy_zone_selection()\n        settings = data.get("settings") or {}\n''',
-    "legacy schedule migration evaluation",
-)
-replace_once(
-    schedule_path,
-    '''        now = dt_util.now()\n        in_window, token = window_state(now, self._start, self._end)\n        if in_window and token and token != self._runtime.get("window_token"):\n            self._runtime["window_token"] = token\n            self._runtime["completed_zone_ids_in_window"] = []\n            self._runtime["just_completed_zone_id"] = None\n            self._runtime["suspended_reason"] = None\n            self._runtime["retry_not_before"] = None\n            await self._save()\n''',
-    '''        now = dt_util.now()\n        in_window, token = self._window_state(now)\n        if in_window and token and token != self._runtime.get("window_token"):\n            self._runtime["window_token"] = token\n            self._runtime["round_index"] = 1\n            self._runtime["round_started_at"] = _utc_now()\n            self._runtime["completed_zone_ids_in_window"] = []\n            self._runtime["just_completed_zone_id"] = None\n            self._runtime["suspended_reason"] = None\n            self._runtime["retry_not_before"] = None\n            await self._save()\n''',
-    "continuous window state",
-)
-replace_once(
-    schedule_path,
-    '''        completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}\n        candidate = select_oldest_zone(\n            self._zones(),\n            completed_in_window=completed,\n            just_completed_zone_id=self._runtime.get("just_completed_zone_id"),\n            scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},\n        )\n        if candidate is None:\n            return\n''',
-    '''        completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}\n        eligible = self._eligible_zones()\n        candidate = select_oldest_zone(\n            eligible,\n            completed_in_window=completed,\n            just_completed_zone_id=self._runtime.get("just_completed_zone_id"),\n            scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},\n        )\n        if candidate is None and self._mode == SCHEDULE_MODE_CONTINUOUS and eligible:\n            eligible_ids = {int(row["id"]) for row in eligible if row.get("id") is not None}\n            if eligible_ids and eligible_ids.issubset(completed):\n                self._runtime["completed_zone_ids_in_window"] = []\n                self._runtime["just_completed_zone_id"] = None\n                self._runtime["round_index"] = int(self._runtime.get("round_index") or 1) + 1\n                self._runtime["round_started_at"] = _utc_now()\n                await self._save()\n                candidate = select_oldest_zone(\n                    eligible,\n                    completed_in_window=set(),\n                    just_completed_zone_id=None,\n                    scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},\n                )\n        if candidate is None:\n            return\n''',
-    "schedule eligible zone selection and continuous rounds",
+    history_path,
+    '''            if completed is not None:\n                active["completed"] = completed\n\n            # Once a mowing session exists, preserve transit and pause positions.\n''',
+    '''            if completed is not None:\n                if completed is True:\n                    selected = set(_unique_ints(active.get("zone_ids")))\n                    confirmed = set(_unique_ints(active.get("task_zone_completion_confirmed")))\n                    completed = bool(selected) and selected.issubset(confirmed)\n                active["completed"] = completed\n\n            # Once a mowing session exists, preserve transit and pause positions.\n''',
+    "process completion guard",
 )
 
-
-# Options flow: a dedicated Navimower Schedule page under the integration gear.
-config_flow_path = COMPONENT / "config_flow.py"
+# Explicit reset: keep diagnostics/session boundary, never manufacture a completion timestamp.
 replace_once(
-    config_flow_path,
-    'from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType\n',
-    '''from homeassistant.helpers.selector import (\n    SelectSelector,\n    SelectSelectorConfig,\n    SelectSelectorMode,\n    TextSelector,\n    TextSelectorConfig,\n    TextSelectorType,\n    TimeSelector,\n)\n''',
-    "schedule selector imports",
+    history_path,
+    '''            final_progress: dict[str, int] = {}\n            known_progress: list[int] = []\n            for zone_id in relevant:\n                state = self._zone_progress_state.get(str(zone_id)) or {}\n                progress = _as_int(state.get("peak_progress"))\n                if progress is None:\n                    progress = _as_int(state.get("progress"))\n                if progress is not None:\n                    final_progress[str(zone_id)] = progress\n                    known_progress.append(progress)\n            completed = bool(known_progress) and all(\n                value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known_progress\n            )\n''',
+    '''            final_progress: dict[str, int] = {}\n            for zone_id in relevant:\n                state = self._zone_progress_state.get(str(zone_id)) or {}\n                progress = _as_int(state.get("peak_progress"))\n                if progress is None:\n                    progress = _as_int(state.get("progress"))\n                if progress is not None:\n                    final_progress[str(zone_id)] = progress\n            confirmed = set(_unique_ints((active or {}).get("task_zone_completion_confirmed")))\n            completed = bool(relevant) and set(relevant).issubset(confirmed)\n''',
+    "explicit reset completion evidence",
 )
 replace_once(
-    config_flow_path,
-    '''    DEFAULT_INCLUDE_RETURN_TRAIL,\n    DEFAULT_LANGUAGE,\n    DEFAULT_TRAIL_RETENTION_DAYS,\n''',
-    '''    DEFAULT_INCLUDE_RETURN_TRAIL,\n    DEFAULT_LANGUAGE,\n    DEFAULT_SCHEDULE_END,\n    DEFAULT_SCHEDULE_MODE,\n    DEFAULT_SCHEDULE_START,\n    DEFAULT_TRAIL_RETENTION_DAYS,\n''',
-    "schedule default imports",
-)
-replace_once(
-    config_flow_path,
-    '''    OPT_INCLUDE_RETURN_TRAIL,\n    OPT_TRAIL_RETENTION_DAYS,\n    OPT_ZONES,\n''',
-    '''    OPT_INCLUDE_RETURN_TRAIL,\n    OPT_SCHEDULE_END,\n    OPT_SCHEDULE_MODE,\n    OPT_SCHEDULE_START,\n    OPT_SCHEDULE_ZONE_IDS,\n    OPT_TRAIL_RETENTION_DAYS,\n    OPT_ZONES,\n    SCHEDULE_MODE_CONTINUOUS,\n    SCHEDULE_MODE_WINDOW,\n''',
-    "schedule option imports",
-)
-replace_once(
-    config_flow_path,
-    'from .oauth import async_register_oauth_implementation\n',
-    'from .oauth import async_register_oauth_implementation\nfrom .schedule_logic import format_hhmm, parse_hhmm\n',
-    "schedule time helpers import",
-)
-replace_once(
-    config_flow_path,
-    '    """Manage general history, user-friendly gates and local channels."""\n',
-    '    """Manage history, the managed scheduler, gates and local channels."""\n',
-    "options flow docstring",
-)
-replace_once(
-    config_flow_path,
-    '''    def _gates(self) -> list[NavimowerGate]:\n''',
-    '''    def _schedule_zone_rows(self) -> list[dict[str, Any]]:\n        coordinator = self._coordinator()\n        data = getattr(coordinator, "data", None) or {}\n        rows = data.get("zone_states") or []\n        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]\n\n    def _schedule_zone_choices(self) -> dict[str, str]:\n        choices: dict[str, str] = {}\n        for row in self._schedule_zone_rows():\n            if not row.get("last_completed_at"):\n                continue\n            try:\n                zone_id = str(int(row["id"]))\n            except (TypeError, ValueError):\n                continue\n            choices[zone_id] = str(row.get("name") or f"Zone {zone_id}")\n        for value in self._options().get(OPT_SCHEDULE_ZONE_IDS, []) or []:\n            text = str(value)\n            if text.isdigit():\n                choices.setdefault(text, f"Zone {text} (saved)")\n        return choices\n\n    def _schedule_unavailable_text(self) -> str:\n        rows: list[str] = []\n        for row in self._schedule_zone_rows():\n            if row.get("last_completed_at"):\n                continue\n            name = str(row.get("name") or f"Zone {row.get('id')}")\n            rows.append(f"- {name} — Never completed")\n        return "\\n".join(rows) if rows else "None"\n\n    def _gates(self) -> list[NavimowerGate]:\n''',
-    "schedule options zone helpers",
-)
-replace_once(
-    config_flow_path,
-    '            menu_options=["general", "gates", "channels"],\n',
-    '            menu_options=["general", "navimower_schedule", "gates", "channels"],\n',
-    "options menu schedule entry",
-)
-insert_marker = '    async def async_step_gates(\n'
-schedule_step = '''    async def async_step_navimower_schedule(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        options = self._options()\n        choices = self._schedule_zone_choices()\n        errors: dict[str, str] = {}\n        if user_input is not None:\n            selected = [\n                str(value)\n                for value in user_input.get(OPT_SCHEDULE_ZONE_IDS, []) or []\n                if str(value) in choices\n            ]\n            mode = str(user_input.get(OPT_SCHEDULE_MODE) or DEFAULT_SCHEDULE_MODE)\n            start = format_hhmm(\n                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)\n            )\n            end = format_hhmm(\n                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)\n            )\n            if mode == SCHEDULE_MODE_WINDOW and start == end:\n                errors["base"] = "schedule_same_time"\n            else:\n                return self._save(\n                    **{\n                        OPT_SCHEDULE_ZONE_IDS: selected,\n                        OPT_SCHEDULE_MODE: mode,\n                        OPT_SCHEDULE_START: start,\n                        OPT_SCHEDULE_END: end,\n                    }\n                )\n\n        selected_default = [\n            str(value)\n            for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []\n            if str(value) in choices\n        ]\n        mode_default = str(options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))\n        if mode_default not in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS}:\n            mode_default = DEFAULT_SCHEDULE_MODE\n        return self.async_show_form(\n            step_id="navimower_schedule",\n            data_schema=vol.Schema(\n                {\n                    vol.Required(\n                        OPT_SCHEDULE_ZONE_IDS,\n                        default=selected_default,\n                    ): SelectSelector(\n                        SelectSelectorConfig(\n                            options=[\n                                {"value": value, "label": label}\n                                for value, label in choices.items()\n                            ],\n                            multiple=True,\n                            mode=SelectSelectorMode.LIST,\n                        )\n                    ),\n                    vol.Required(\n                        OPT_SCHEDULE_MODE,\n                        default=mode_default,\n                    ): SelectSelector(\n                        SelectSelectorConfig(\n                            options=[\n                                {"value": SCHEDULE_MODE_WINDOW, "label": "Time window"},\n                                {"value": SCHEDULE_MODE_CONTINUOUS, "label": "24 hours"},\n                            ],\n                            mode=SelectSelectorMode.LIST,\n                        )\n                    ),\n                    vol.Required(\n                        OPT_SCHEDULE_START,\n                        default=str(options.get(OPT_SCHEDULE_START, DEFAULT_SCHEDULE_START)),\n                    ): TimeSelector(),\n                    vol.Required(\n                        OPT_SCHEDULE_END,\n                        default=str(options.get(OPT_SCHEDULE_END, DEFAULT_SCHEDULE_END)),\n                    ): TimeSelector(),\n                }\n            ),\n            errors=errors,\n            description_placeholders={\n                "unavailable_zones": self._schedule_unavailable_text(),\n            },\n        )\n\n'''
-replace_once(
-    config_flow_path,
-    insert_marker,
-    schedule_step + insert_marker,
-    "schedule options form",
+    history_path,
+    '''            if completed:\n                for zone_id in relevant:\n                    progress = final_progress.get(str(zone_id))\n                    record = dict(self._zone_history.get(str(zone_id)) or {})\n                    record.update({\n                        "id": zone_id,\n                        "name": record.get("name") or f"Zone {zone_id}",\n                        "last_completed_at": _iso(boundary_ms),\n                        "last_completed_progress": progress,\n                    })\n                    self._zone_history[str(zone_id)] = record\n''',
+    "",
+    "remove explicit reset completion timestamp",
 )
 
+# Vendor reset: boundary only. Completion evidence is cleared for the new cycle.
+replace_once(
+    history_path,
+    '''                boundaries = active.setdefault("zone_cycle_boundaries", [])\n                for _previous, row, previous_peak in reset_rows:\n''',
+    '''                boundaries = active.setdefault("zone_cycle_boundaries", [])\n                confirmed_before = set(_unique_ints(active.get("task_zone_completion_confirmed")))\n                for _previous, row, previous_peak in reset_rows:\n''',
+    "vendor reset prior evidence",
+)
+replace_once(
+    history_path,
+    '''                    completed_zone = previous_peak >= VENDOR_COMPLETION_PROGRESS_MIN\n                    completed_flags.append(completed_zone)\n                    if completed_zone:\n                        record = dict(self._zone_history.get(str(zone_id)) or {})\n                        record.update({"id": zone_id, "name": row.get("name") or record.get("name") or f"Zone {zone_id}", "last_completed_at": _iso(at_ms), "last_completed_progress": previous_peak})\n                        self._zone_history[str(zone_id)] = record\n                self._update_active_metadata_locked(active)\n''',
+    '''                    completed_zone = zone_id in confirmed_before\n                    completed_flags.append(completed_zone)\n                reset_set = set(reset_zone_ids)\n                active["task_zone_seen_incomplete"] = [\n                    value for value in _unique_ints(active.get("task_zone_seen_incomplete"))\n                    if value not in reset_set\n                ]\n                active["task_zone_completion_confirmed"] = [\n                    value for value in _unique_ints(active.get("task_zone_completion_confirmed"))\n                    if value not in reset_set\n                ]\n                task_progress = active.setdefault("task_zone_progress", {})\n                for zone_id in reset_set:\n                    task_progress[str(zone_id)] = 0\n                if active.get("completion_reason") == "vendor_progress":\n                    active["completed"] = None\n                    active["completion_reason"] = None\n                    active["final_progress"] = {}\n                self._update_active_metadata_locked(active)\n''',
+    "vendor reset is not completion",
+)
 
-# User-facing copy in both the source strings and bundled English translation.
-for relative in ("strings.json", "translations/en.json"):
-    path = COMPONENT / relative
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    options = payload["options"]
-    init = options["step"]["init"]
-    init["description"] = (
-        "Configure retained trail history, Navimower Schedule, zone-pair gates and "
-        "optional local X/Y gate areas."
-    )
-    menu = init["menu_options"]
-    rebuilt_menu: dict[str, str] = {}
-    for key, value in menu.items():
-        rebuilt_menu[key] = value
-        if key == "general":
-            rebuilt_menu["navimower_schedule"] = "Navimower Schedule"
-    init["menu_options"] = rebuilt_menu
-    options["step"]["navimower_schedule"] = {
-        "title": "Navimower Schedule",
-        "description": (
-            "Choose which proven zones the integration may mow automatically and when it "
-            "may work. Only zones with at least one confirmed successful completion can "
-            "be selected. A new or difficult zone must first be fully completed manually "
-            "once; completing it does not select it automatically. Start and end are used "
-            "only in Time window mode.\\n\\nNot yet available for automatic mowing:\\n"
-            "{unavailable_zones}"
-        ),
-        "data": {
-            "navimower_schedule_zone_ids": "Automatic mowing zones",
-            "navimower_schedule_mode": "Allowed mowing time",
-            "navimower_schedule_start": "Start",
-            "navimower_schedule_end": "End",
-        },
-        "data_description": {
-            "navimower_schedule_zone_ids": (
-                "The scheduler only dispatches zones selected here. New zones are never "
-                "added automatically."
-            ),
-            "navimower_schedule_mode": (
-                "Time window stops managed mowing outside the configured hours. 24 hours "
-                "keeps the managed scheduler available continuously and starts a new round "
-                "after every selected zone has completed."
-            ),
-            "navimower_schedule_start": "Used only in Time window mode.",
-            "navimower_schedule_end": "Used only in Time window mode.",
+# Never import raw vendor last_completed; collect current-cycle low->high evidence.
+replace_once(
+    history_path,
+    '''                for key in (\n                    "last_started_at",\n                    "last_mowed_at",\n                    "last_completed_at",\n                ):\n''',
+    '''                for key in (\n                    "last_started_at",\n                    "last_mowed_at",\n                ):\n''',
+    "ignore raw completion timestamp",
+)
+replace_once(
+    history_path,
+    '''                task_progress = active.setdefault("task_zone_progress", {})\n                for zone_id in active.get("zone_ids") or []:\n                    task_progress.setdefault(str(zone_id), 0)\n                active_zone_id = _as_int(active_progress_zone_id)\n''',
+    '''                task_progress = active.setdefault("task_zone_progress", {})\n                for zone_id in active.get("zone_ids") or []:\n                    task_progress.setdefault(str(zone_id), 0)\n                seen_incomplete = set(_unique_ints(active.get("task_zone_seen_incomplete")))\n                completion_confirmed = set(_unique_ints(active.get("task_zone_completion_confirmed")))\n                active_zone_id = _as_int(active_progress_zone_id)\n''',
+    "completion evidence sets",
+)
+replace_once(
+    history_path,
+    '''                        if progress is not None:\n                            previous_progress = _as_int(\n                                task_progress.get(str(active_zone_id))\n                            )\n''',
+    '''                        if progress is not None:\n                            if progress < VENDOR_COMPLETION_PROGRESS_MIN:\n                                seen_incomplete.add(active_zone_id)\n                                completion_confirmed.discard(active_zone_id)\n                            elif active_zone_id in seen_incomplete:\n                                completion_confirmed.add(active_zone_id)\n                            previous_progress = _as_int(\n                                task_progress.get(str(active_zone_id))\n                            )\n''',
+    "observe cycle progress",
+)
+replace_once(
+    history_path,
+    '''                if active.get("cutting_height_mm") is None:\n''',
+    '''                active["task_zone_seen_incomplete"] = sorted(seen_incomplete)\n                active["task_zone_completion_confirmed"] = sorted(completion_confirmed)\n                if active.get("cutting_height_mm") is None:\n''',
+    "persist cycle evidence",
+)
+replace_once(
+    history_path,
+    '''                percentages = [\n                    _as_int(task_progress.get(str(zone_id)))\n                    for zone_id in active.get("zone_ids") or []\n                    if _as_int(task_progress.get(str(zone_id))) is not None\n                ]\n                if (\n                    percentages\n                    and len(percentages) == len(active.get("zone_ids") or [])\n                    and all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in percentages)\n                ):\n''',
+    '''                selected_zone_ids = _unique_ints(active.get("zone_ids"))\n                if (\n                    selected_zone_ids\n                    and set(selected_zone_ids).issubset(completion_confirmed)\n                ):\n''',
+    "confirmed completion rule",
+)
+
+# Existing regressions: reset is no longer completion and valid completion needs low->high evidence.
+test_path = ROOT / "tests" / "test_history_merge.py"
+replace_once(test_path,
+    '''    zone_history = manager.zone_history()["24"]\n    assert zone_history["last_completed_progress"] == 98\n    assert zone_history["last_completed_at"]\n''',
+    '''    zone_history = manager.zone_history().get("24", {})\n    assert "last_completed_progress" not in zone_history\n    assert "last_completed_at" not in zone_history\n''',
+    "reset regression")
+replace_once(test_path,
+    '''    manager.update_zone_history(\n        {"zones": [{"id": 13, "pct": 97}]},\n        [{"id": 13, "name": "Street", "percentage": 97}],\n        active_zone_progress=97,\n        active_progress_zone_id=13,\n    )\n''',
+    '''    manager.update_zone_history(\n        {"zones": [{"id": 13, "pct": 40}]},\n        [{"id": 13, "name": "Street", "percentage": 40}],\n        active_zone_progress=40,\n        active_progress_zone_id=13,\n    )\n    manager.update_zone_history(\n        {"zones": [{"id": 13, "pct": 97}]},\n        [{"id": 13, "name": "Street", "percentage": 97}],\n        active_zone_progress=97,\n        active_progress_zone_id=13,\n    )\n''',
+    "threshold evidence regression")
+replace_once(test_path,
+    '''    manager.update_zone_history(\n        {"zones": [{"id": 24, "pct": 97}]},\n        [{"id": 24, "name": "Yard", "progress": 97, "percentage": 23}],\n        active_zone_progress=97,\n        active_progress_zone_id=24,\n    )\n''',
+    '''    manager.update_zone_history(\n        {"zones": [{"id": 24, "pct": 23}]},\n        [{"id": 24, "name": "Yard", "progress": 23, "percentage": 23}],\n        active_zone_progress=23,\n        active_progress_zone_id=24,\n    )\n    manager.update_zone_history(\n        {"zones": [{"id": 24, "pct": 97}]},\n        [{"id": 24, "name": "Yard", "progress": 97, "percentage": 23}],\n        active_zone_progress=97,\n        active_progress_zone_id=24,\n    )\n''',
+    "dock evidence regression")
+with test_path.open("a", encoding="utf-8") as handle:
+    handle.write(dedent(r'''
+
+async def beta18_stale_high_error_return_test() -> None:
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-beta18-error", "TEST")
+    manager.process_pose(position={"x": 5.0, "y": 5.0}, pose_time=2_700_000_000, heading=0.0,
+        activity="mowing", cutting=True, docked=False, returning=False, zone_ids=[24], physical_zone_id=24)
+    manager.update_zone_history(
+        {"zones": [{"id": 24, "pct": 98}]},
+        [{"id": 24, "name": "Yard", "progress": 98, "percentage": 98,
+          "last_completed_at": history._iso(2_700_000_010_000)}],
+        active_zone_progress=98, active_progress_zone_id=24)
+    active = manager.active_session
+    assert active and active["completed"] is not True
+    assert active["task_zone_completion_confirmed"] == []
+    assert "last_completed_at" not in manager.zone_history()["24"]
+    manager.process_pose(position={"x": 5.1, "y": 5.1}, pose_time=2_700_000_020, heading=0.0,
+        activity="docked", cutting=False, docked=True, returning=False, zone_ids=[24], completed=True)
+    assert "last_completed_at" not in manager.zone_history()["24"]
+    assert manager.session_summaries(include_points=True)[-1]["completed"] is False
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+asyncio.run(beta18_stale_high_error_return_test())
+
+async def beta18_persisted_false_completion_repair_test() -> None:
+    Store.values.clear()
+    reset_ms = 2_800_000_020_000
+    reset_session = session("1", 2_800_000_000_000, 2_800_000_030_000)
+    reset_session["zone_ids"] = [24]
+    reset_session["zone_cycle_boundaries"] = [{"zone_id": 24, "at_ms": reset_ms, "reason": "vendor_progress_reset"}]
+    Store.values["navimower_sessions_entry-beta18-repair"] = {
+        "sn": "TEST", "sequence": 1, "active_id": None,
+        "sessions": [history._metadata(reset_session)],
+        "zone_history": {
+            "13": {"id": 13, "last_completed_at": history._iso(2_800_000_010_000)},
+            "24": {"id": 24, "last_completed_at": history._iso(reset_ms), "last_completed_progress": 98},
+            "42": {"id": 42, "last_completed_at": history._iso(2_799_000_000_000), "last_completed_progress": 97},
         },
     }
-    options["error"]["schedule_same_time"] = (
-        "Start and end must be different when Allowed mowing time is Time window."
-    )
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    Store.values["navimower_session_entry-beta18-repair_1"] = reset_session
+    manager = history.NavimowerHistory(FakeHass(), "entry-beta18-repair", "TEST")
+    await manager.async_load()
+    repaired = manager.zone_history()
+    assert "last_completed_at" not in repaired["13"]
+    assert "last_completed_at" not in repaired["24"]
+    assert repaired["42"]["last_completed_progress"] == 97
+    assert repaired["42"]["last_completed_at"]
 
+asyncio.run(beta18_persisted_false_completion_repair_test())
+print("beta18 completion safety tests passed")
+'''))
 
-# Historical beta identity remains historical; beta16 owns the current manifest assertion.
-beta15_test = ROOT / "tests" / "test_v043_beta15.py"
-replace_once(
-    beta15_test,
-    '''def test_beta15_identity():\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta15"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta15.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta15")\n''',
-    '''def test_beta15_identity():\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta15.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta15")\n''',
-    "beta15 historical identity test",
-)
-
-write(ROOT / "tests" / "test_v043_beta16.py", r'''
-import importlib.util
+beta17_path = ROOT / "tests" / "test_v043_beta17.py"
+replace_once(beta17_path,
+    '''def test_beta17_identity():\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta17"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta17.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta17")\n''',
+    '''def test_beta17_release_notes_remain_available():\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta17.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta17")\n''',
+    "beta17 historical identity")
+write(ROOT / "tests" / "test_v043_beta18.py", r'''
 import json
 from pathlib import Path
 
@@ -415,133 +259,49 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def _schedule_logic():
-    spec = importlib.util.spec_from_file_location(
-        "navimower_schedule_logic_beta16", COMPONENT / "schedule_logic.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_beta16_identity():
+def test_beta18_identity():
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta16"
-    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")
-    assert notes.startswith("title: Navimower 0.4.3-beta16")
+    assert manifest["version"] == "0.4.3-beta18"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta18.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta18")
 
 
-def test_uncompleted_zone_is_not_eligible_or_ranked_first():
-    logic = _schedule_logic()
-    zones = [
-        {"id": 1, "name": "Never completed", "last_completed_at": None},
-        {"id": 2, "name": "Proven", "last_completed_at": "2026-08-17T10:00:00+00:00"},
-    ]
-    eligible = logic.filter_schedule_zones(zones, [1, 2])
-    assert [row["id"] for row in eligible] == [2]
-    assert logic.select_oldest_zone(zones)["id"] == 2
-
-
-def test_schedule_time_parser_accepts_time_selector_seconds():
-    logic = _schedule_logic()
-    assert logic.format_hhmm(logic.parse_hhmm("09:30:00", "10:00")) == "09:30"
-
-
-def test_options_flow_exposes_multi_zone_and_24_hour_configuration():
-    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
-    strings = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
-    assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in source
-    assert "multiple=True" in source
-    assert '"24 hours"' in source
-    assert '"unavailable_zones": self._schedule_unavailable_text()' in source
-    step = strings["options"]["step"]["navimower_schedule"]
-    assert step["data"]["navimower_schedule_zone_ids"] == "Automatic mowing zones"
-    assert "fully completed manually once" in step["description"]
-
-
-def test_scheduler_filters_allowlist_and_has_continuous_rounds():
-    source = (COMPONENT / "navimower_schedule.py").read_text(encoding="utf-8")
-    assert "def _eligible_zones" in source
-    assert "filter_schedule_zones(" in source
-    assert 'return True, "continuous"' in source
-    assert "eligible_ids.issubset(completed)" in source
-    assert 'self._runtime["round_index"]' in source
-    assert "Configure at least one successfully completed automatic mowing zone first" in source
-
-
-def test_existing_enabled_beta_scheduler_gets_one_time_explicit_allowlist_migration():
-    source = (COMPONENT / "navimower_schedule.py").read_text(encoding="utf-8")
-    assert "_legacy_selection_migration_allowed" in source
-    assert "def _maybe_migrate_legacy_zone_selection" in source
-    assert "OPT_SCHEDULE_ZONE_IDS: [str(value) for value in sorted(proven)]" in source
-    assert "future zones" in source
+def test_completion_is_current_cycle_confirmed():
+    coordinator = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")
+    history = (COMPONENT / "history.py").read_text(encoding="utf-8")
+    assert '"vendor_completed_at": (' in coordinator
+    assert '"last_completed_at": None' in coordinator
+    assert '"task_zone_seen_incomplete"' in history
+    assert '"task_zone_completion_confirmed"' in history
+    assert "_async_repair_unverified_zone_completions" in history
+    start = history.index("    def prepare_cycle(\n")
+    end = history.index("    def cycle_diagnostics", start)
+    assert '"last_completed_at"' not in history[start:end]
 ''')
-
-
-notes = '''
-title: Navimower 0.4.3-beta16
-
-Managed-scheduler configuration beta.
-
-### Added
-- Add a dedicated **Navimower Schedule** page under the integration Configure/gear options flow.
-- Add a multi-select **Automatic mowing zones** allowlist using stable zone IDs.
-- List mapped zones that are not yet eligible and explain that each must be fully completed manually once before it can be selected.
-- Add **Time window** and **24 hours** managed-schedule modes. Time window continues to use the existing Start/End controls; 24 hours never closes the managed window and starts a new oldest-zone round after all selected zones complete.
-
-### Safety
-- A zone with no confirmed `last_completed_at` is never an automatic scheduler candidate.
-- New zones are never automatically added to the allowlist after configuration.
-- Turning Navimower Schedule on is refused until at least one selected zone has a confirmed successful completion; the native schedule is left untouched on that failed enable attempt.
-- Already-enabled beta13-beta15 schedulers receive a one-time allowlist containing only currently proven zones, preserving existing field setups without auto-enrolling future zones.
-
-### Unchanged
-- The Navimower Schedule switch remains the runtime on/off control and native/managed schedules remain mutually exclusive.
-- Existing Start/End time entities remain available for dashboards and automations.
-- Maintenance and Mowing Reports discovery remains paused.
-'''
-write(ROOT / ".github" / "release-notes" / "0.4.3-beta16.md", notes)
 
 changelog_path = ROOT / "CHANGELOG.md"
 changelog = changelog_path.read_text(encoding="utf-8")
-marker = "# Changelog\n"
+marker = "# Changelog\n\n\n"
 if not changelog.startswith(marker):
-    raise SystemExit("changelog heading missing")
-entry = '''
+    raise SystemExit("Unexpected changelog header")
+section = '''## 0.4.3-beta18\n\nConfirmed per-zone completion tracking.\n\n### Fixed\n\n- Do not advance zone `last_completed` when a task starts with stale high progress and then immediately fails/returns to the dock.\n- Do not stamp `last_completed` at a vendor progress-reset/new-cycle boundary; that timestamp is the next cycle start, not the previous cycle completion.\n- Stop treating private-cloud `end_time + >=95%` as authoritative completion evidence.\n- Repair persisted beta-era completion timestamps that were unverified vendor values or matched a recorded reset boundary.\n\n### Safety\n\n- Completion requires current-cycle evidence: the zone must first be observed below the completion threshold and later at or above the existing 95% threshold.\n- Failed/error returns can close the route session without making an unconfirmed zone eligible for Navimower Schedule.\n\n\n'''
+changelog_path.write_text(marker + section + changelog[len(marker):], encoding="utf-8")
+write(ROOT / ".github" / "release-notes" / "0.4.3-beta18.md", r'''
+title: Navimower 0.4.3-beta18
 
-## 0.4.3-beta16
+Confirmed per-zone completion tracking.
 
-Configure the integration-owned scheduler from the Navimower gear/options flow.
-
-### Added
-
-- Add multi-zone Automatic mowing zones selection using stable zone IDs.
-- Show never-completed zones as unavailable until one confirmed manual completion exists.
-- Add Time window and 24 hours modes; continuous mode rolls into a new oldest-zone round after all selected zones finish.
+### Fixed
+- Zone **Last completed** no longer advances when a new task inherits stale high/100% progress and then immediately fails or returns to the dock.
+- A vendor progress reset/new-cycle start is only a cycle boundary; its start timestamp is no longer written as the previous cycle's completion.
+- Private-cloud `end_time + >=95%` remains diagnostic evidence but is no longer authoritative by itself.
+- On load, beta-era completion timestamps are removed when they were unverified vendor values or matched a recorded reset boundary.
 
 ### Safety
+- Completion requires current-cycle evidence: Navimower must first observe the zone below the completion threshold and later at or above the existing **95%** threshold.
+- Error/failed returns cannot make an unconfirmed zone eligible for **Navimower Schedule**.
 
-- Never schedule a zone without a confirmed successful completion.
-- Never auto-enroll newly created zones.
-- Refuse enabling the managed scheduler when no proven selected zone exists.
-- Migrate already-enabled beta schedulers once to an explicit allowlist of currently proven zones.
-'''
-changelog_path.write_text(
-    marker + dedent(entry) + changelog[len(marker):],
-    encoding="utf-8",
-)
-
-
-# Builder-level smoke checks before the full repository suite.
-config_source = config_flow_path.read_text(encoding="utf-8")
-schedule_source = schedule_path.read_text(encoding="utf-8")
-logic_source = schedule_logic_path.read_text(encoding="utf-8")
-assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in config_source
-assert "multiple=True" in config_source
-assert '"24 hours"' in config_source
-assert "def filter_schedule_zones" in logic_source
-assert "if parsed is None:\n            continue" in logic_source
-assert 'return True, "continuous"' in schedule_source
-assert "eligible_ids.issubset(completed)" in schedule_source
-assert "Configure at least one successfully completed automatic mowing zone first" in schedule_source
+### Unchanged
+- Navimower Schedule still requires explicit user selection and a confirmed successful completion before automatic mowing.
+- Maintenance / Mowing Reports and Clear and resume / Reboot command discovery remain unchanged/read-only.
+''')
