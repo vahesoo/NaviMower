@@ -45,7 +45,7 @@ def test_options_flow_exposes_multi_zone_and_24_hour_configuration():
     assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in source
     assert "multiple=True" in source
     assert '"24 hours"' in source
-    assert '"unavailable_zones": self._schedule_unavailable_text()' in source
+    assert '"unavailable_note": self._schedule_unavailable_text()' in source
     step = strings["options"]["step"]["navimower_schedule"]
     assert step["data"]["navimower_schedule_zone_ids"] == "Automatic mowing zones"
     assert "fully completed manually once" in step["description"]
