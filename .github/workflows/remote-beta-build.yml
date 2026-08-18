@@ -11,16 +11,16 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA16 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA17 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta16
+      BUILD_BRANCH: release/0.4.3-beta17
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: release/0.4.3-beta17
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -38,46 +38,139 @@ jobs:
           set -o pipefail
           exec > >(tee /tmp/remote-beta-build.log) 2>&1
           set -euo pipefail
-          git checkout -B "${BUILD_BRANCH}" origin/main
-          python .github/scripts/remote_beta_builder.py
+          git fetch origin main
           python - <<'PY'
+          from __future__ import annotations
+
+          import json
           from pathlib import Path
 
-          path = Path("tests/test_navimower_schedule_logic.py")
-          text = path.read_text(encoding="utf-8")
-          old = '''completion_advanced = logic.completion_advanced\nselect_oldest_zone = logic.select_oldest_zone\nwindow_state = logic.window_state\n'''
-          new = '''completion_advanced = logic.completion_advanced\nfilter_schedule_zones = logic.filter_schedule_zones\nselect_oldest_zone = logic.select_oldest_zone\nwindow_state = logic.window_state\n'''
-          if text.count(old) != 1:
-              raise SystemExit("schedule logic test import marker changed")
-          text = text.replace(old, new, 1)
-          old_test = '''    assert select_oldest_zone(zones)["id"] == 3\n    assert select_oldest_zone(zones, completed_in_window={3})["id"] == 2\n    assert select_oldest_zone(zones, completed_in_window={3}, just_completed_zone_id=2)["id"] == 1\n'''
-          new_test = '''    assert select_oldest_zone(zones)["id"] == 2\n    assert select_oldest_zone(zones, completed_in_window={2})["id"] == 1\n    assert select_oldest_zone(zones, completed_in_window={2}, just_completed_zone_id=1) is None\n    assert [row["id"] for row in filter_schedule_zones(zones, [1, 2, 3])] == [1, 2]\n'''
-          if text.count(old_test) != 1:
-              raise SystemExit("schedule logic oldest-zone test marker changed")
-          path.write_text(text.replace(old_test, new_test, 1), encoding="utf-8")
+          ROOT = Path.cwd()
+          COMPONENT = ROOT / "custom_components" / "navimower"
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one marker, found {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          manifest_path = COMPONENT / "manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("version") != "0.4.3-beta16":
+              raise SystemExit(f"Expected beta16 base, got {manifest.get('version')!r}")
+          manifest["version"] = "0.4.3-beta17"
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+          config_path = COMPONENT / "config_flow.py"
+          config = config_path.read_text(encoding="utf-8")
+          replace_once(
+              config_path,
+              """    def __init__(self) -> None:\n        self._gate_index: int | None = None\n        self._channel_index: int | None = None\n""",
+              """    def __init__(self) -> None:\n        self._gate_index: int | None = None\n        self._channel_index: int | None = None\n        self._schedule_pending_zone_ids: list[str] | None = None\n""",
+              "options flow scheduler pending state",
+          )
+          config = config_path.read_text(encoding="utf-8")
+          start = config.index("    def _schedule_unavailable_text(self) -> str:\n")
+          end = config.index("    def _gates(self) -> list[NavimowerGate]:\n", start)
+          unavailable = '''    def _schedule_unavailable_text(self) -> str:\n        rows: list[str] = []\n        for row in self._schedule_zone_rows():\n            if row.get("last_completed_at"):\n                continue\n            name = str(row.get("name") or f"Zone {row.get('id')}")\n            rows.append(f"- {name} — Never completed")\n        if not rows:\n            return ""\n        return (\n            "Not yet available for automatic mowing:\\n"\n            "These zones must be fully completed manually once before they can be selected:\\n"\n            + "\\n".join(rows)\n        )\n\n'''
+          config_path.write_text(config[:start] + unavailable + config[end:], encoding="utf-8")
+
+          config = config_path.read_text(encoding="utf-8")
+          start = config.index("    async def async_step_navimower_schedule(\n")
+          end = config.index("    async def async_step_gates(\n", start)
+          schedule_steps = '''    async def async_step_navimower_schedule(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        options = self._options()\n        choices = self._schedule_zone_choices()\n        if user_input is not None:\n            selected = [\n                str(value)\n                for value in user_input.get(OPT_SCHEDULE_ZONE_IDS, []) or []\n                if str(value) in choices\n            ]\n            mode = str(user_input.get(OPT_SCHEDULE_MODE) or DEFAULT_SCHEDULE_MODE)\n            if mode == SCHEDULE_MODE_CONTINUOUS:\n                self._schedule_pending_zone_ids = None\n                return self._save(\n                    **{\n                        OPT_SCHEDULE_ZONE_IDS: selected,\n                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_CONTINUOUS,\n                    }\n                )\n            self._schedule_pending_zone_ids = selected\n            return await self.async_step_navimower_schedule_window()\n\n        selected_default = [\n            str(value)\n            for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []\n            if str(value) in choices\n        ]\n        mode_default = str(options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))\n        if mode_default not in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS}:\n            mode_default = DEFAULT_SCHEDULE_MODE\n        return self.async_show_form(\n            step_id="navimower_schedule",\n            data_schema=vol.Schema(\n                {\n                    vol.Required(\n                        OPT_SCHEDULE_ZONE_IDS,\n                        default=selected_default,\n                    ): SelectSelector(\n                        SelectSelectorConfig(\n                            options=[\n                                {"value": value, "label": label}\n                                for value, label in choices.items()\n                            ],\n                            multiple=True,\n                            mode=SelectSelectorMode.LIST,\n                        )\n                    ),\n                    vol.Required(\n                        OPT_SCHEDULE_MODE,\n                        default=mode_default,\n                    ): SelectSelector(\n                        SelectSelectorConfig(\n                            options=[\n                                {"value": SCHEDULE_MODE_WINDOW, "label": "Time window"},\n                                {"value": SCHEDULE_MODE_CONTINUOUS, "label": "24 hours"},\n                            ],\n                            mode=SelectSelectorMode.LIST,\n                        )\n                    ),\n                }\n            ),\n            description_placeholders={\n                "unavailable_note": self._schedule_unavailable_text(),\n            },\n        )\n\n    async def async_step_navimower_schedule_window(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        options = self._options()\n        errors: dict[str, str] = {}\n        selected = self._schedule_pending_zone_ids\n        if selected is None:\n            choices = self._schedule_zone_choices()\n            selected = [\n                str(value)\n                for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []\n                if str(value) in choices\n            ]\n        if user_input is not None:\n            start = format_hhmm(\n                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)\n            )\n            end = format_hhmm(\n                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)\n            )\n            if start == end:\n                errors["base"] = "schedule_same_time"\n            else:\n                self._schedule_pending_zone_ids = None\n                return self._save(\n                    **{\n                        OPT_SCHEDULE_ZONE_IDS: selected,\n                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_WINDOW,\n                        OPT_SCHEDULE_START: start,\n                        OPT_SCHEDULE_END: end,\n                    }\n                )\n\n        return self.async_show_form(\n            step_id="navimower_schedule_window",\n            data_schema=vol.Schema(\n                {\n                    vol.Required(\n                        OPT_SCHEDULE_START,\n                        default=str(options.get(OPT_SCHEDULE_START, DEFAULT_SCHEDULE_START)),\n                    ): TimeSelector(),\n                    vol.Required(\n                        OPT_SCHEDULE_END,\n                        default=str(options.get(OPT_SCHEDULE_END, DEFAULT_SCHEDULE_END)),\n                    ): TimeSelector(),\n                }\n            ),\n            errors=errors,\n        )\n\n'''
+          config_path.write_text(config[:start] + schedule_steps + config[end:], encoding="utf-8")
+
+          for translation_path in (
+              COMPONENT / "strings.json",
+              COMPONENT / "translations" / "en.json",
+          ):
+              data = json.loads(translation_path.read_text(encoding="utf-8"))
+              steps = data["options"]["step"]
+              steps["navimower_schedule"] = {
+                  "title": "Navimower Schedule",
+                  "description": (
+                      "Choose which proven zones the integration may mow automatically and when it may work. "
+                      "Only zones with at least one confirmed successful completion can be selected. "
+                      "A new or difficult zone must first be fully completed manually once; completing it does not select it automatically.\n\n"
+                      "{unavailable_note}"
+                  ),
+                  "data": {
+                      "navimower_schedule_zone_ids": "Automatic mowing zones",
+                      "navimower_schedule_mode": "Allowed mowing time",
+                  },
+                  "data_description": {
+                      "navimower_schedule_zone_ids": "The scheduler only dispatches zones selected here. New zones are never added automatically.",
+                      "navimower_schedule_mode": "Time window asks for daily start and end times on the next screen. 24 hours keeps the managed scheduler available continuously and starts a new round after every selected zone has completed.",
+                  },
+              }
+              steps["navimower_schedule_window"] = {
+                  "title": "Navimower Schedule — Time window",
+                  "description": "Set the daily time window during which Navimower Schedule may mow. Outside this window the managed scheduler returns the mower home and preserves unfinished work for the next window.",
+                  "data": {
+                      "navimower_schedule_start": "Start",
+                      "navimower_schedule_end": "End",
+                  },
+                  "data_description": {
+                      "navimower_schedule_start": "Daily managed mowing start time.",
+                      "navimower_schedule_end": "Daily managed mowing end time.",
+                  },
+              }
+              translation_path.write_text(
+                  json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                  encoding="utf-8",
+              )
+
+          changelog_path = ROOT / "CHANGELOG.md"
+          changelog = changelog_path.read_text(encoding="utf-8")
+          section = '''## 0.4.3-beta17\n\nScheduler options polish and docked physical-area stabilization.\n\n### Fixed\n\n- Show a confirmed docked or charging mower as the virtual `Dock` physical area instead of a stale lawn zone or `Outside mapped zones`.\n- Hide Start/End controls completely in 24-hour Navimower Schedule mode by moving Time window clocks to a dedicated second step.\n- Render the scheduler availability note with real line breaks and omit the `None` placeholder when every mapped zone is already eligible.\n\n### Safety\n\n- The Dock display override is suppressed while a local activity command is pending so a stale docked flag cannot mask a mower that has just been dispatched.\n- Dock remains a virtual physical area only (`zone_id: null`) and never participates in mowing progress or zone completion.\n\n\n'''
+          marker = "# Changelog\n\n\n"
+          if not changelog.startswith(marker):
+              raise SystemExit("Unexpected changelog header")
+          changelog_path.write_text(marker + section + changelog[len(marker):], encoding="utf-8")
+
+          notes_path = ROOT / ".github" / "release-notes" / "0.4.3-beta17.md"
+          notes_path.write_text('''title: Navimower 0.4.3-beta17\n\nScheduler options polish and docked physical-area stabilization.\n\n### Fixed\n- A mower that is confirmed Docked/Charging now reports the virtual **Dock** physical area even when MQTT/private-cloud pose is stale, unavailable or falls outside the mowing polygons.\n- **24 hours** mode no longer shows irrelevant Start/End controls; selecting **Time window** opens a dedicated second step for those times.\n- The unavailable-zone explanation now uses real line breaks and disappears when there are no unavailable zones.\n\n### Safety\n- Dock is display/presence context only: it has no mowing-zone ID and does not affect zone progress or completion.\n- A pending mower activity command suppresses the dock override so dispatch away from the station is not hidden by a stale docked flag.\n\n### Unchanged\n- Automatic mowing still requires both an explicit user-selected zone and a confirmed prior successful completion.\n- Maintenance / Mowing Reports and Clear and resume / Reboot command discovery remain paused/read-only.\n''', encoding="utf-8")
+
+          beta16_path = ROOT / "tests" / "test_v043_beta16.py"
+          beta16 = beta16_path.read_text(encoding="utf-8")
+          old = '''def test_beta16_identity():\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta16"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta16")\n'''
+          new = '''def test_beta16_release_notes_remain_available():\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta16")\n'''
+          if beta16.count(old) != 1:
+              raise SystemExit("beta16 historical identity marker changed")
+          beta16_path.write_text(beta16.replace(old, new, 1), encoding="utf-8")
+
+          beta17_path = ROOT / "tests" / "test_v043_beta17.py"
+          beta17_path.write_text('''import importlib.util\nimport json\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[1]\nCOMPONENT = ROOT / "custom_components" / "navimower"\n\n\ndef _position_fallback():\n    spec = importlib.util.spec_from_file_location(\n        "navimower_position_fallback_beta17", COMPONENT / "position_fallback.py"\n    )\n    assert spec is not None and spec.loader is not None\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ndef test_beta17_identity():\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta17"\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta17.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta17")\n\n\ndef test_docked_display_is_virtual_dock_even_from_outside_state():\n    helper = _position_fallback().apply_docked_display_override\n    result = {\n        "current_physical_zone": "Outside mapped zones",\n        "current_physical_zone_id": None,\n        "current_physical_zone_source": "pose_unavailable",\n        "current_physical_zone_stale": True,\n    }\n    assert helper(result, docked=True, pending_activity=None) is True\n    assert result["current_physical_zone"] == "Dock"\n    assert result["current_physical_zone_id"] is None\n    assert result["current_physical_zone_source"] == "docked_state"\n    assert result["current_physical_zone_position_source"] == "state"\n    assert result["current_physical_zone_stale"] is False\n    assert result["current_channel"] == "Not in channel"\n\n\ndef test_pending_activity_suppresses_stale_dock_override():\n    helper = _position_fallback().apply_docked_display_override\n    result = {"current_physical_zone": "Yard"}\n    assert helper(result, docked=True, pending_activity="mowing") is False\n    assert result["current_physical_zone"] == "Yard"\n\n\ndef test_24_hour_schedule_form_has_no_time_selectors():\n    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")\n    first = source.index("    async def async_step_navimower_schedule(\\n")\n    second = source.index("    async def async_step_navimower_schedule_window(\\n", first)\n    main_step = source[first:second]\n    window_step = source[second:source.index("    async def async_step_gates(\\n", second)]\n    assert "TimeSelector()" not in main_step\n    assert "SCHEDULE_MODE_CONTINUOUS" in main_step\n    assert "TimeSelector()" in window_step\n\n\ndef test_scheduler_description_has_no_literal_backslash_newlines_or_none():\n    strings = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))\n    step = strings["options"]["step"]["navimower_schedule"]\n    assert "\\\\n" not in step["description"]\n    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")\n    assert 'if not rows:\\n            return ""' in source\n    assert '"unavailable_note": self._schedule_unavailable_text()' in source\n\n\ndef test_navigation_fallback_uses_dock_override_before_pose_decoration():\n    source = (COMPONENT / "navigation_fallback.py").read_text(encoding="utf-8")\n    assert "apply_docked_display_override" in source\n    assert 'docked=snapshot.get("docked") is True' in source\n    assert 'state["position_source"] = "state"' in source\n''', encoding="utf-8")
           PY
+
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
+
           python - <<'PY'
           from pathlib import Path
           import subprocess
 
           expected = {
-              ".github/release-notes/0.4.3-beta16.md",
+              ".github/release-notes/0.4.3-beta17.md",
               "CHANGELOG.md",
               "custom_components/navimower/config_flow.py",
-              "custom_components/navimower/const.py",
               "custom_components/navimower/manifest.json",
-              "custom_components/navimower/navimower_schedule.py",
-              "custom_components/navimower/schedule_logic.py",
+              "custom_components/navimower/navigation_fallback.py",
+              "custom_components/navimower/position_fallback.py",
               "custom_components/navimower/strings.json",
               "custom_components/navimower/translations/en.json",
-              "tests/test_navimower_schedule_logic.py",
-              "tests/test_v043_beta15.py",
               "tests/test_v043_beta16.py",
+              "tests/test_v043_beta17.py",
           }
-          tracked = set(
+          committed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only", "origin/main...HEAD"], text=True
+              ).splitlines()
+          )
+          unstaged = set(
               subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
           )
           untracked = set(
@@ -85,45 +178,37 @@ jobs:
                   ["git", "ls-files", "--others", "--exclude-standard"], text=True
               ).splitlines()
           )
-          changed = tracked | untracked
+          changed = committed | unstaged | untracked
           if changed != expected:
-              raise SystemExit(f"Unexpected beta16 diff scope: {sorted(changed)}")
+              raise SystemExit(f"Unexpected beta17 diff scope: {sorted(changed)}")
 
-          config = Path("custom_components/navimower/config_flow.py").read_text(encoding="utf-8")
-          schedule = Path("custom_components/navimower/navimower_schedule.py").read_text(encoding="utf-8")
-          logic = Path("custom_components/navimower/schedule_logic.py").read_text(encoding="utf-8")
-          assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in config
-          assert "multiple=True" in config
-          assert '"24 hours"' in config
-          assert "def filter_schedule_zones" in logic
-          assert 'return True, "continuous"' in schedule
-          assert "eligible_ids.issubset(completed)" in schedule
-          assert "Configure at least one successfully completed automatic mowing zone first" in schedule
+          nav = Path("custom_components/navimower/navigation_fallback.py").read_text(encoding="utf-8")
+          pos = Path("custom_components/navimower/position_fallback.py").read_text(encoding="utf-8")
+          cfg = Path("custom_components/navimower/config_flow.py").read_text(encoding="utf-8")
+          assert "apply_docked_display_override" in nav
+          assert '"current_physical_zone": "Dock"' in pos
+          assert "async_step_navimower_schedule_window" in cfg
           PY
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-notes/0.4.3-beta16.md \
+          git add .github/release-notes/0.4.3-beta17.md \
                   CHANGELOG.md \
                   custom_components/navimower/config_flow.py \
-                  custom_components/navimower/const.py \
                   custom_components/navimower/manifest.json \
-                  custom_components/navimower/navimower_schedule.py \
-                  custom_components/navimower/schedule_logic.py \
                   custom_components/navimower/strings.json \
                   custom_components/navimower/translations/en.json \
-                  tests/test_navimower_schedule_logic.py \
-                  tests/test_v043_beta15.py \
-                  tests/test_v043_beta16.py
-          git commit -m "Prepare Navimower 0.4.3-beta16 schedule options"
-          git push --force-with-lease origin "${BUILD_BRANCH}"
+                  tests/test_v043_beta16.py \
+                  tests/test_v043_beta17.py
+          git commit -m "Prepare Navimower 0.4.3-beta17 field fixes"
+          git push origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Comment success
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta16 remote build succeeded. Full tests, compileall, diff-check, exact diff-scope and scheduler-options smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta17 remote build succeeded. Full tests, compileall, diff-check, exact diff-scope and focused scheduler/dock smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
           gh issue close "${{ github.event.issue.number }}" --reason completed
 
       - name: Comment failure
@@ -132,7 +217,7 @@ jobs:
         run: |
           tail -n 240 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta16 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta17 remote build failed before publishing the completed release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
