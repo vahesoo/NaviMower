@@ -16,9 +16,7 @@ def _schedule_logic():
     return module
 
 
-def test_beta16_identity():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta16"
+def test_beta16_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta16")
 
@@ -45,7 +43,7 @@ def test_options_flow_exposes_multi_zone_and_24_hour_configuration():
     assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in source
     assert "multiple=True" in source
     assert '"24 hours"' in source
-    assert '"unavailable_zones": self._schedule_unavailable_text()' in source
+    assert '"unavailable_note": self._schedule_unavailable_text()' in source
     step = strings["options"]["step"]["navimower_schedule"]
     assert step["data"]["navimower_schedule_zone_ids"] == "Automatic mowing zones"
     assert "fully completed manually once" in step["description"]

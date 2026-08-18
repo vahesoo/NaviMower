@@ -520,6 +520,7 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
     def __init__(self) -> None:
         self._gate_index: int | None = None
         self._channel_index: int | None = None
+        self._schedule_pending_zone_ids: list[str] | None = None
 
     def _options(self) -> dict[str, Any]:
         return dict(self.config_entry.options)
@@ -578,7 +579,13 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                 continue
             name = str(row.get("name") or f"Zone {row.get('id')}")
             rows.append(f"- {name} — Never completed")
-        return "\n".join(rows) if rows else "None"
+        if not rows:
+            return ""
+        return (
+            "Not yet available for automatic mowing:\n"
+            "These zones must be fully completed manually once before they can be selected:\n"
+            + "\n".join(rows)
+        )
 
     def _gates(self) -> list[NavimowerGate]:
         return parse_gates(self.config_entry.options.get(OPT_GATES))
@@ -654,7 +661,6 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         options = self._options()
         choices = self._schedule_zone_choices()
-        errors: dict[str, str] = {}
         if user_input is not None:
             selected = [
                 str(value)
@@ -662,23 +668,16 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                 if str(value) in choices
             ]
             mode = str(user_input.get(OPT_SCHEDULE_MODE) or DEFAULT_SCHEDULE_MODE)
-            start = format_hhmm(
-                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
-            )
-            end = format_hhmm(
-                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
-            )
-            if mode == SCHEDULE_MODE_WINDOW and start == end:
-                errors["base"] = "schedule_same_time"
-            else:
+            if mode == SCHEDULE_MODE_CONTINUOUS:
+                self._schedule_pending_zone_ids = None
                 return self._save(
                     **{
                         OPT_SCHEDULE_ZONE_IDS: selected,
-                        OPT_SCHEDULE_MODE: mode,
-                        OPT_SCHEDULE_START: start,
-                        OPT_SCHEDULE_END: end,
+                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_CONTINUOUS,
                     }
                 )
+            self._schedule_pending_zone_ids = selected
+            return await self.async_step_navimower_schedule_window()
 
         selected_default = [
             str(value)
@@ -717,6 +716,50 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
+                }
+            ),
+            description_placeholders={
+                "unavailable_note": self._schedule_unavailable_text(),
+            },
+        )
+
+    async def async_step_navimower_schedule_window(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        options = self._options()
+        errors: dict[str, str] = {}
+        selected = self._schedule_pending_zone_ids
+        if selected is None:
+            choices = self._schedule_zone_choices()
+            selected = [
+                str(value)
+                for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []
+                if str(value) in choices
+            ]
+        if user_input is not None:
+            start = format_hhmm(
+                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
+            )
+            end = format_hhmm(
+                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
+            )
+            if start == end:
+                errors["base"] = "schedule_same_time"
+            else:
+                self._schedule_pending_zone_ids = None
+                return self._save(
+                    **{
+                        OPT_SCHEDULE_ZONE_IDS: selected,
+                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_WINDOW,
+                        OPT_SCHEDULE_START: start,
+                        OPT_SCHEDULE_END: end,
+                    }
+                )
+
+        return self.async_show_form(
+            step_id="navimower_schedule_window",
+            data_schema=vol.Schema(
+                {
                     vol.Required(
                         OPT_SCHEDULE_START,
                         default=str(options.get(OPT_SCHEDULE_START, DEFAULT_SCHEDULE_START)),
@@ -728,9 +771,6 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                 }
             ),
             errors=errors,
-            description_placeholders={
-                "unavailable_zones": self._schedule_unavailable_text(),
-            },
         )
 
     async def async_step_gates(
