@@ -27,7 +27,15 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+    TimeSelector,
+)
 
 from .account import shared_private_device_id
 from .api import NavimowCloudClient, NavimowError, PassportAuthError, PassportError
@@ -49,17 +57,27 @@ from .const import (
     CONF_VEHICLE_TYPE,
     DEFAULT_INCLUDE_RETURN_TRAIL,
     DEFAULT_LANGUAGE,
+    DEFAULT_SCHEDULE_END,
+    DEFAULT_SCHEDULE_MODE,
+    DEFAULT_SCHEDULE_START,
     DEFAULT_TRAIL_RETENTION_DAYS,
     DOMAIN,
     OPT_CHANNELS,
     OPT_GATES,
     OPT_INCLUDE_RETURN_TRAIL,
+    OPT_SCHEDULE_END,
+    OPT_SCHEDULE_MODE,
+    OPT_SCHEDULE_START,
+    OPT_SCHEDULE_ZONE_IDS,
     OPT_TRAIL_RETENTION_DAYS,
     OPT_ZONES,
+    SCHEDULE_MODE_CONTINUOUS,
+    SCHEDULE_MODE_WINDOW,
     TRAIL_RETENTION_OPTIONS,
 )
 from .gate import NavimowerGate, parse_gates
 from .oauth import async_register_oauth_implementation
+from .schedule_logic import format_hhmm, parse_hhmm
 
 _LOGGER = logging.getLogger(__name__)
 _USER_SCHEMA = vol.Schema(
@@ -497,7 +515,7 @@ class NavimowConfigFlow(
 
 
 class NavimowOptionsFlow(OptionsFlowWithReload):
-    """Manage general history, user-friendly gates and local channels."""
+    """Manage history, the managed scheduler, gates and local channels."""
 
     def __init__(self) -> None:
         self._gate_index: int | None = None
@@ -531,6 +549,37 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                 choices.setdefault(str(zone_id), f"Zone {zone_id} (ID {zone_id})")
         return choices
 
+    def _schedule_zone_rows(self) -> list[dict[str, Any]]:
+        coordinator = self._coordinator()
+        data = getattr(coordinator, "data", None) or {}
+        rows = data.get("zone_states") or []
+        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+
+    def _schedule_zone_choices(self) -> dict[str, str]:
+        choices: dict[str, str] = {}
+        for row in self._schedule_zone_rows():
+            if not row.get("last_completed_at"):
+                continue
+            try:
+                zone_id = str(int(row["id"]))
+            except (TypeError, ValueError):
+                continue
+            choices[zone_id] = str(row.get("name") or f"Zone {zone_id}")
+        for value in self._options().get(OPT_SCHEDULE_ZONE_IDS, []) or []:
+            text = str(value)
+            if text.isdigit():
+                choices.setdefault(text, f"Zone {text} (saved)")
+        return choices
+
+    def _schedule_unavailable_text(self) -> str:
+        rows: list[str] = []
+        for row in self._schedule_zone_rows():
+            if row.get("last_completed_at"):
+                continue
+            name = str(row.get("name") or f"Zone {row.get('id')}")
+            rows.append(f"- {name} — Never completed")
+        return "\n".join(rows) if rows else "None"
+
     def _gates(self) -> list[NavimowerGate]:
         return parse_gates(self.config_entry.options.get(OPT_GATES))
 
@@ -551,7 +600,7 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
         del user_input
         return self.async_show_menu(
             step_id="init",
-            menu_options=["general", "gates", "channels"],
+            menu_options=["general", "navimower_schedule", "gates", "channels"],
         )
 
     async def async_step_general(
@@ -598,6 +647,90 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
                     ): bool,
                 }
             ),
+        )
+
+    async def async_step_navimower_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        options = self._options()
+        choices = self._schedule_zone_choices()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected = [
+                str(value)
+                for value in user_input.get(OPT_SCHEDULE_ZONE_IDS, []) or []
+                if str(value) in choices
+            ]
+            mode = str(user_input.get(OPT_SCHEDULE_MODE) or DEFAULT_SCHEDULE_MODE)
+            start = format_hhmm(
+                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
+            )
+            end = format_hhmm(
+                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
+            )
+            if mode == SCHEDULE_MODE_WINDOW and start == end:
+                errors["base"] = "schedule_same_time"
+            else:
+                return self._save(
+                    **{
+                        OPT_SCHEDULE_ZONE_IDS: selected,
+                        OPT_SCHEDULE_MODE: mode,
+                        OPT_SCHEDULE_START: start,
+                        OPT_SCHEDULE_END: end,
+                    }
+                )
+
+        selected_default = [
+            str(value)
+            for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []
+            if str(value) in choices
+        ]
+        mode_default = str(options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))
+        if mode_default not in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS}:
+            mode_default = DEFAULT_SCHEDULE_MODE
+        return self.async_show_form(
+            step_id="navimower_schedule",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        OPT_SCHEDULE_ZONE_IDS,
+                        default=selected_default,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": value, "label": label}
+                                for value, label in choices.items()
+                            ],
+                            multiple=True,
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
+                    vol.Required(
+                        OPT_SCHEDULE_MODE,
+                        default=mode_default,
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": SCHEDULE_MODE_WINDOW, "label": "Time window"},
+                                {"value": SCHEDULE_MODE_CONTINUOUS, "label": "24 hours"},
+                            ],
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
+                    vol.Required(
+                        OPT_SCHEDULE_START,
+                        default=str(options.get(OPT_SCHEDULE_START, DEFAULT_SCHEDULE_START)),
+                    ): TimeSelector(),
+                    vol.Required(
+                        OPT_SCHEDULE_END,
+                        default=str(options.get(OPT_SCHEDULE_END, DEFAULT_SCHEDULE_END)),
+                    ): TimeSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "unavailable_zones": self._schedule_unavailable_text(),
+            },
         )
 
     async def async_step_gates(

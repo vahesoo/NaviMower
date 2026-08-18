@@ -6,13 +6,15 @@ from typing import Any, Iterable
 
 
 def parse_hhmm(value: Any, default: str) -> time:
-    """Return a local wall-clock time from ``HH:MM`` or a time object."""
+    """Return a local wall-clock time from ``HH:MM[:SS]`` or a time object."""
     if isinstance(value, time):
         return value.replace(second=0, microsecond=0)
     text = str(value or default).strip()
     try:
-        hour_s, minute_s = text.split(":", 1)
-        hour, minute = int(hour_s), int(minute_s)
+        parts = text.split(":")
+        if len(parts) < 2:
+            raise ValueError
+        hour, minute = int(parts[0]), int(parts[1])
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except (TypeError, ValueError):
@@ -75,8 +77,35 @@ def completion_advanced(current: Any, baseline: Any, dispatched_at: Any) -> bool
     return baseline_dt is None or current_dt > baseline_dt
 
 
-def _minimum_aware_datetime() -> datetime:
-    return datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo)
+def filter_schedule_zones(
+    zones: Iterable[dict[str, Any]],
+    selected_zone_ids: Iterable[int],
+    *,
+    scheduler_completed_at: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return only user-selected zones with a confirmed successful completion."""
+    selected: set[int] = set()
+    for value in selected_zone_ids or []:
+        try:
+            selected.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    confirmed = scheduler_completed_at or {}
+    result: list[dict[str, Any]] = []
+    for row in zones or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            zone_id = int(row.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if zone_id not in selected:
+            continue
+        effective = later_iso(row.get("last_completed_at"), confirmed.get(str(zone_id)))
+        if parse_iso(effective) is None:
+            continue
+        result.append(row)
+    return result
 
 
 def select_oldest_zone(
@@ -101,8 +130,9 @@ def select_oldest_zone(
             continue
         effective = later_iso(row.get("last_completed_at"), confirmed.get(str(zone_id)))
         parsed = parse_iso(effective)
-        key = (0, _minimum_aware_datetime()) if parsed is None else (1, parsed)
-        candidates.append(((key[0], key[1], zone_id), row))
+        if parsed is None:
+            continue
+        candidates.append(((parsed, zone_id), row))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])

@@ -38,6 +38,17 @@ OPT_TRAIL_RETENTION_DAYS: Final = "trail_retention_days"
 OPT_INCLUDE_RETURN_TRAIL: Final = "include_return_trail"
 OPT_DIAGNOSTICS_DETAIL: Final = "diagnostics_detail"
 OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"
+OPT_SCHEDULE_ENABLED: Final = "navimower_schedule_enabled"
+OPT_SCHEDULE_START: Final = "navimower_schedule_start"
+OPT_SCHEDULE_END: Final = "navimower_schedule_end"
+OPT_SCHEDULE_MODE: Final = "navimower_schedule_mode"
+OPT_SCHEDULE_ZONE_IDS: Final = "navimower_schedule_zone_ids"
+
+SCHEDULE_MODE_WINDOW: Final = "window"
+SCHEDULE_MODE_CONTINUOUS: Final = "continuous"
+DEFAULT_SCHEDULE_MODE: Final = SCHEDULE_MODE_WINDOW
+DEFAULT_SCHEDULE_START: Final = "10:00"
+DEFAULT_SCHEDULE_END: Final = "20:00"
 
 DEFAULT_TRAIL_RETENTION_DAYS: Final = 7
 TRAIL_RETENTION_OPTIONS: Final[tuple[int, ...]] = (3, 7, 14, 30, 0)  # 0 = unlimited

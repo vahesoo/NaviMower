@@ -1,6 +1,24 @@
 # Changelog
 
 
+## 0.4.3-beta16
+
+Configure the integration-owned scheduler from the Navimower gear/options flow.
+
+### Added
+
+- Add multi-zone Automatic mowing zones selection using stable zone IDs.
+- Show never-completed zones as unavailable until one confirmed manual completion exists.
+- Add Time window and 24 hours modes; continuous mode rolls into a new oldest-zone round after all selected zones finish.
+
+### Safety
+
+- Never schedule a zone without a confirmed successful completion.
+- Never auto-enroll newly created zones.
+- Refuse enabling the managed scheduler when no proven selected zone exists.
+- Migrate already-enabled beta schedulers once to an explicit allowlist of currently proven zones.
+
+
 ## 0.4.3-beta15
 
 Schedule-aware night-pause and resume notification attribution.

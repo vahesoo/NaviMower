@@ -8,6 +8,7 @@ assert spec and spec.loader
 logic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(logic)
 completion_advanced = logic.completion_advanced
+filter_schedule_zones = logic.filter_schedule_zones
 select_oldest_zone = logic.select_oldest_zone
 window_state = logic.window_state
 
@@ -29,9 +30,10 @@ def test_oldest_zone_and_guards():
         {"id": 2, "last_completed_at": "2026-08-13T10:00:00+00:00"},
         {"id": 3, "last_completed_at": None},
     ]
-    assert select_oldest_zone(zones)["id"] == 3
-    assert select_oldest_zone(zones, completed_in_window={3})["id"] == 2
-    assert select_oldest_zone(zones, completed_in_window={3}, just_completed_zone_id=2)["id"] == 1
+    assert select_oldest_zone(zones)["id"] == 2
+    assert select_oldest_zone(zones, completed_in_window={2})["id"] == 1
+    assert select_oldest_zone(zones, completed_in_window={2}, just_completed_zone_id=1) is None
+    assert [row["id"] for row in filter_schedule_zones(zones, [1, 2, 3])] == [1, 2]
 
 
 def test_scheduler_confirmed_completion_beats_stale_cloud_value():

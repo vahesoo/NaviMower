@@ -18,13 +18,24 @@ from .const import (
     ACTIVITY_MOWING,
     ACTIVITY_PAUSED,
     ACTIVITY_RETURNING,
+    DEFAULT_SCHEDULE_END,
+    DEFAULT_SCHEDULE_MODE,
+    DEFAULT_SCHEDULE_START,
     DOMAIN,
+    OPT_SCHEDULE_ENABLED,
+    OPT_SCHEDULE_END,
+    OPT_SCHEDULE_MODE,
+    OPT_SCHEDULE_START,
+    OPT_SCHEDULE_ZONE_IDS,
+    SCHEDULE_MODE_CONTINUOUS,
+    SCHEDULE_MODE_WINDOW,
     encode_partition_ids,
     mow_setup,
 )
 from .resume import async_resume_task
 from .schedule_logic import (
     completion_advanced,
+    filter_schedule_zones,
     format_hhmm,
     later_iso,
     parse_hhmm,
@@ -35,12 +46,6 @@ from .schedule_logic import (
 from .setting_write import async_write_settings
 
 _LOGGER = logging.getLogger(__name__)
-
-OPT_SCHEDULE_ENABLED = "navimower_schedule_enabled"
-OPT_SCHEDULE_START = "navimower_schedule_start"
-OPT_SCHEDULE_END = "navimower_schedule_end"
-DEFAULT_SCHEDULE_START = "10:00"
-DEFAULT_SCHEDULE_END = "20:00"
 
 _STORE_VERSION = 1
 _TICK_SECONDS = 20
@@ -78,8 +83,13 @@ class NavimowerScheduleController:
         self.coordinator = coordinator
         self._store = schedule_store(hass, entry.entry_id)
         self._enabled = bool(entry.options.get(OPT_SCHEDULE_ENABLED, False))
+        mode = str(entry.options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))
+        self._mode = mode if mode in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS} else DEFAULT_SCHEDULE_MODE
         self._start = parse_hhmm(entry.options.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
         self._end = parse_hhmm(entry.options.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
+        self._selection_configured = OPT_SCHEDULE_ZONE_IDS in entry.options
+        self._selected_zone_ids = self._normalize_zone_ids(entry.options.get(OPT_SCHEDULE_ZONE_IDS, []))
+        self._legacy_selection_migration_allowed = self._enabled and not self._selection_configured
         self._runtime: dict[str, Any] = self._empty_runtime()
         self._unsub = None
         self._tick_task: asyncio.Task | None = None
@@ -88,9 +98,25 @@ class NavimowerScheduleController:
         self._stopped = False
 
     @staticmethod
+    def _normalize_zone_ids(values: Any) -> set[int]:
+        if not isinstance(values, (list, tuple, set)):
+            values = [] if values in (None, "") else [values]
+        result: set[int] = set()
+        for value in values:
+            try:
+                zone_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if zone_id > 0:
+                result.add(zone_id)
+        return result
+
+    @staticmethod
     def _empty_runtime() -> dict[str, Any]:
         return {
             "window_token": None,
+            "round_index": 1,
+            "round_started_at": None,
             "completed_zone_ids_in_window": [],
             "active_zone_id": None,
             "active_cycle_id": None,
@@ -115,6 +141,14 @@ class NavimowerScheduleController:
         return self._enabled
 
     @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def selected_zone_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._selected_zone_ids))
+
+    @property
     def start_time(self) -> time:
         return self._start
 
@@ -131,6 +165,7 @@ class NavimowerScheduleController:
             restored = self._empty_runtime()
             restored.update({key: deepcopy(value) for key, value in saved.items() if key in restored})
             self._runtime = restored
+        self._maybe_migrate_legacy_zone_selection()
         self._unsub = self.coordinator.async_add_listener(self._handle_update)
         self._tick_task = self.hass.async_create_background_task(
             self._tick_loop(),
@@ -161,11 +196,17 @@ class NavimowerScheduleController:
 
     def diagnostics(self) -> dict[str, Any]:
         now = dt_util.now()
-        open_now, token = window_state(now, self._start, self._end)
+        open_now, token = self._window_state(now)
+        eligible = self._eligible_zones()
+        eligible_ids = sorted(int(row["id"]) for row in eligible if row.get("id") is not None)
         return {
             "enabled": self._enabled,
+            "mode": self._mode,
             "start": format_hhmm(self._start),
             "end": format_hhmm(self._end),
+            "selected_zone_ids": sorted(self._selected_zone_ids),
+            "eligible_zone_ids": eligible_ids,
+            "zone_selection_configured": self._selection_configured,
             "window_open": open_now,
             "window_token_now": token,
             **deepcopy(self._runtime),
@@ -176,8 +217,11 @@ class NavimowerScheduleController:
         return {
             key: row.get(key)
             for key in (
+                "mode",
                 "start",
                 "end",
+                "selected_zone_ids",
+                "eligible_zone_ids",
                 "window_open",
                 "active_zone_id",
                 "resume_pending",
@@ -193,6 +237,10 @@ class NavimowerScheduleController:
         if enabled == self._enabled:
             return
         if enabled:
+            if not self._eligible_zones():
+                raise RuntimeError(
+                    "Configure at least one successfully completed automatic mowing zone first"
+                )
             native = (self.coordinator.data or {}).get("settings", {}).get("schedule_enabled")
             if native is None:
                 raise RuntimeError("Native mowing schedule state is not available yet")
@@ -208,6 +256,7 @@ class NavimowerScheduleController:
             self._runtime["last_command"] = f"disabled:{reason}"
             self._runtime["last_command_at"] = _utc_now()
         self._enabled = enabled
+        self._legacy_selection_migration_allowed = False
         self._update_options(**{OPT_SCHEDULE_ENABLED: enabled})
         await self._save()
         if enabled:
@@ -285,6 +334,47 @@ class NavimowerScheduleController:
     def _zones(self) -> list[dict[str, Any]]:
         return [row for row in (self.coordinator.data or {}).get("zone_states") or [] if isinstance(row, dict)]
 
+    def _maybe_migrate_legacy_zone_selection(self) -> None:
+        """Preserve an already-enabled beta scheduler without auto-enrolling future zones."""
+        if not self._legacy_selection_migration_allowed or self._selection_configured:
+            return
+        zones = self._zones()
+        if not zones:
+            return
+        proven: set[int] = set()
+        for row in zones:
+            try:
+                zone_id = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if zone_id > 0 and parse_iso(row.get("last_completed_at")) is not None:
+                proven.add(zone_id)
+        self._selected_zone_ids = proven
+        self._selection_configured = True
+        self._legacy_selection_migration_allowed = False
+        self._update_options(
+            **{
+                OPT_SCHEDULE_ZONE_IDS: [str(value) for value in sorted(proven)],
+                OPT_SCHEDULE_MODE: self._mode,
+            }
+        )
+        _LOGGER.info(
+            "Migrated the enabled beta Navimower schedule to an explicit allowlist of %s proven zones",
+            len(proven),
+        )
+
+    def _eligible_zones(self) -> list[dict[str, Any]]:
+        return filter_schedule_zones(
+            self._zones(),
+            self._selected_zone_ids,
+            scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
+        )
+
+    def _window_state(self, now: datetime) -> tuple[bool, str | None]:
+        if self._mode == SCHEDULE_MODE_CONTINUOUS:
+            return True, "continuous"
+        return window_state(now, self._start, self._end)
+
     def _zone(self, zone_id: int | None) -> dict[str, Any] | None:
         if zone_id is None:
             return None
@@ -340,15 +430,18 @@ class NavimowerScheduleController:
         if not self._enabled:
             return
         data = self.coordinator.data or {}
+        self._maybe_migrate_legacy_zone_selection()
         settings = data.get("settings") or {}
         if settings.get("schedule_enabled") is True:
             await self.async_set_enabled(False, reason="native_schedule_enabled")
             return
 
         now = dt_util.now()
-        in_window, token = window_state(now, self._start, self._end)
+        in_window, token = self._window_state(now)
         if in_window and token and token != self._runtime.get("window_token"):
             self._runtime["window_token"] = token
+            self._runtime["round_index"] = 1
+            self._runtime["round_started_at"] = _utc_now()
             self._runtime["completed_zone_ids_in_window"] = []
             self._runtime["just_completed_zone_id"] = None
             self._runtime["suspended_reason"] = None
@@ -390,12 +483,27 @@ class NavimowerScheduleController:
             return
 
         completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
+        eligible = self._eligible_zones()
         candidate = select_oldest_zone(
-            self._zones(),
+            eligible,
             completed_in_window=completed,
             just_completed_zone_id=self._runtime.get("just_completed_zone_id"),
             scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
         )
+        if candidate is None and self._mode == SCHEDULE_MODE_CONTINUOUS and eligible:
+            eligible_ids = {int(row["id"]) for row in eligible if row.get("id") is not None}
+            if eligible_ids and eligible_ids.issubset(completed):
+                self._runtime["completed_zone_ids_in_window"] = []
+                self._runtime["just_completed_zone_id"] = None
+                self._runtime["round_index"] = int(self._runtime.get("round_index") or 1) + 1
+                self._runtime["round_started_at"] = _utc_now()
+                await self._save()
+                candidate = select_oldest_zone(
+                    eligible,
+                    completed_in_window=set(),
+                    just_completed_zone_id=None,
+                    scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
+                )
         if candidate is None:
             return
         try:
