@@ -40,8 +40,8 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
 
-          # Retry corrections are intentionally applied only to the build helper.
-          # Historical test-contract changes live on main; generated release scope stays clean.
+          # Keep the beta18 retry correction build-local: generated methods must
+          # retain their class indentation. The helper is restored before scope checks.
           python - <<'PY'
           from pathlib import Path
 
@@ -51,15 +51,24 @@ jobs:
           new = 'path.write_text(text[:a] + replacement.lstrip("\\n") + text[b:], encoding="utf-8")'
           if text.count(old) != 1:
               raise SystemExit("beta18 replace_section retry marker changed")
-          text = text.replace(old, new, 1)
-          old = '''        await self._async_merge_adjacent_sessions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_repair_unverified_zone_completions()\n        await self._async_migrate_legacy_store()\n'''
-          new = '''        await self._async_merge_adjacent_sessions()\n        await self._async_repair_unverified_zone_completions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_migrate_legacy_store()\n'''
-          if text.count(old) != 1:
-              raise SystemExit("beta18 completion repair order marker changed")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
 
           python .github/scripts/remote_beta_builder.py
+
+          # Preserve reset-boundary evidence until completion cleanup has used it.
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("custom_components/navimower/history.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        await self._async_merge_adjacent_sessions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_repair_unverified_zone_completions()\n        await self._async_migrate_legacy_store()\n'''
+          new = '''        await self._async_merge_adjacent_sessions()\n        await self._async_repair_unverified_zone_completions()\n        await self._async_remove_empty_completed_sessions()\n        await self._async_migrate_legacy_store()\n'''
+          if text.count(old) != 1:
+              raise SystemExit("beta18 generated completion repair order marker changed")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
           git checkout -- .github/scripts/remote_beta_builder.py
           python -m pytest -q
           python -m compileall -q custom_components/navimower
