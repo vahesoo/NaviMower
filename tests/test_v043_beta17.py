@@ -16,9 +16,7 @@ def _position_fallback():
     return module
 
 
-def test_beta17_identity():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta17"
+def test_beta17_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta17.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta17")
 

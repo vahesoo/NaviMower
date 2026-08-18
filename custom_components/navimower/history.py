@@ -116,6 +116,18 @@ def _iso(ms: int | None) -> str | None:
         return None
 
 
+def _iso_ms(value: Any) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.timestamp() * 1000)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def _metadata(session: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": session.get("id"),
@@ -305,6 +317,15 @@ def _merge_session_records(
         previous.get("cycle_reset_zone_ids"),
         continuation.get("cycle_reset_zone_ids"),
     )
+    task_progress = dict(previous.get("task_zone_progress") or {})
+    task_progress.update(continuation.get("task_zone_progress") or {})
+    merged["task_zone_progress"] = task_progress
+    merged["task_zone_seen_incomplete"] = _unique_ints(
+        previous.get("task_zone_seen_incomplete"), continuation.get("task_zone_seen_incomplete")
+    )
+    merged["task_zone_completion_confirmed"] = _unique_ints(
+        previous.get("task_zone_completion_confirmed"), continuation.get("task_zone_completion_confirmed")
+    )
     merged["zone_cycle_boundaries"] = sorted(
         [dict(item) for item in [
             *(previous.get("zone_cycle_boundaries") or []),
@@ -466,6 +487,7 @@ class NavimowerHistory:
                 await self._index_store.async_save(self._index_data())
 
         await self._async_merge_adjacent_sessions()
+        await self._async_repair_unverified_zone_completions()
         await self._async_remove_empty_completed_sessions()
         await self._async_migrate_legacy_store()
         with self._lock:
@@ -598,6 +620,41 @@ class NavimowerHistory:
             self._session_stores.pop(session_id, None)
         await self._index_store.async_save(self._index_data())
         _LOGGER.info("Removed %d empty Navimower session stub(s)", len(removable))
+
+    async def _async_repair_unverified_zone_completions(self) -> None:
+        """Remove beta-era raw-vendor/reset-boundary completion timestamps."""
+        repaired = 0
+        with self._lock:
+            reset_boundaries: dict[int, list[int]] = {}
+            for session in self._cache.values():
+                for item in (session or {}).get("zone_cycle_boundaries") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    zone_id, at_ms = _as_int(item.get("zone_id")), _as_int(item.get("at_ms"))
+                    if zone_id is not None and at_ms is not None:
+                        reset_boundaries.setdefault(zone_id, []).append(at_ms)
+            for key, original in list(self._zone_history.items()):
+                record = dict(original)
+                completed_ms = _iso_ms(record.get("last_completed_at"))
+                if completed_ms is None:
+                    continue
+                zone_id = _as_int(record.get("id")) or _as_int(key)
+                unverified = _as_int(record.get("last_completed_progress")) is None
+                reset_stamp = bool(
+                    zone_id is not None and any(
+                        abs(completed_ms - boundary) <= 60_000
+                        for boundary in reset_boundaries.get(zone_id, [])
+                    )
+                )
+                if not (unverified or reset_stamp):
+                    continue
+                record.pop("last_completed_at", None)
+                record.pop("last_completed_progress", None)
+                self._zone_history[str(key)] = record
+                repaired += 1
+        if repaired:
+            await self._index_store.async_save(self._index_data())
+            _LOGGER.info("Removed %d unverified Navimower zone completion timestamp(s)", repaired)
 
     async def _async_migrate_legacy_store(self) -> None:
         if self._sessions or self._active_id:
@@ -785,6 +842,10 @@ class NavimowerHistory:
             if mode and not active.get("mode"):
                 active["mode"] = mode
             if completed is not None:
+                if completed is True:
+                    selected = set(_unique_ints(active.get("zone_ids")))
+                    confirmed = set(_unique_ints(active.get("task_zone_completion_confirmed")))
+                    completed = bool(selected) and selected.issubset(confirmed)
                 active["completed"] = completed
 
             # Once a mowing session exists, preserve transit and pause positions.
@@ -884,6 +945,8 @@ class NavimowerHistory:
             "cycle_reset_zone_ids": cycle_reset_zone_ids,
             "visited_zone_ids": [],
             "task_zone_progress": {str(value): 0 for value in zone_ids},
+            "task_zone_seen_incomplete": [],
+            "task_zone_completion_confirmed": [],
             "segment_starts_ms": [start_ms],
             "points": [],
         }
@@ -926,6 +989,8 @@ class NavimowerHistory:
         previous["final_progress"] = {}
         previous.setdefault("visited_zone_ids", [])
         previous.setdefault("task_zone_progress", {})
+        previous.setdefault("task_zone_seen_incomplete", [])
+        previous.setdefault("task_zone_completion_confirmed", [])
         previous["zone_ids"] = _unique_ints(
             previous.get("zone_ids"), zone_ids
         )
@@ -1137,7 +1202,6 @@ class NavimowerHistory:
             active_zones = _unique_ints((active or {}).get("zone_ids") or [])
             relevant = active_zones or requested
             final_progress: dict[str, int] = {}
-            known_progress: list[int] = []
             for zone_id in relevant:
                 state = self._zone_progress_state.get(str(zone_id)) or {}
                 progress = _as_int(state.get("peak_progress"))
@@ -1145,10 +1209,8 @@ class NavimowerHistory:
                     progress = _as_int(state.get("progress"))
                 if progress is not None:
                     final_progress[str(zone_id)] = progress
-                    known_progress.append(progress)
-            completed = bool(known_progress) and all(
-                value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known_progress
-            )
+            confirmed = set(_unique_ints((active or {}).get("task_zone_completion_confirmed")))
+            completed = bool(relevant) and set(relevant).issubset(confirmed)
             if active is not None:
                 completed = bool(active.get("completed") is True or completed)
                 active["completed"] = completed
@@ -1159,17 +1221,6 @@ class NavimowerHistory:
                     self._discard_active_locked()
                 else:
                     self._finish_active_locked(boundary_ms)
-            if completed:
-                for zone_id in relevant:
-                    progress = final_progress.get(str(zone_id))
-                    record = dict(self._zone_history.get(str(zone_id)) or {})
-                    record.update({
-                        "id": zone_id,
-                        "name": record.get("name") or f"Zone {zone_id}",
-                        "last_completed_at": _iso(boundary_ms),
-                        "last_completed_progress": progress,
-                    })
-                    self._zone_history[str(zone_id)] = record
             self._force_new_session_once = True
             self._force_new_cycle_zone_ids = list(relevant)
             self._last_cycle_event = {
@@ -1227,6 +1278,7 @@ class NavimowerHistory:
                 final_progress: dict[str, int] = {}
                 completed_flags: list[bool] = []
                 boundaries = active.setdefault("zone_cycle_boundaries", [])
+                confirmed_before = set(_unique_ints(active.get("task_zone_completion_confirmed")))
                 for _previous, row, previous_peak in reset_rows:
                     zone_id = _as_int(row.get("id"))
                     if zone_id is None:
@@ -1238,12 +1290,24 @@ class NavimowerHistory:
                         boundaries.append({"zone_id": zone_id, "at_ms": at_ms, "at": _iso(at_ms), "reason": "vendor_progress_reset", "previous_peak": previous_peak})
                     reset_zone_ids.append(zone_id)
                     final_progress[str(zone_id)] = previous_peak
-                    completed_zone = previous_peak >= VENDOR_COMPLETION_PROGRESS_MIN
+                    completed_zone = zone_id in confirmed_before
                     completed_flags.append(completed_zone)
-                    if completed_zone:
-                        record = dict(self._zone_history.get(str(zone_id)) or {})
-                        record.update({"id": zone_id, "name": row.get("name") or record.get("name") or f"Zone {zone_id}", "last_completed_at": _iso(at_ms), "last_completed_progress": previous_peak})
-                        self._zone_history[str(zone_id)] = record
+                reset_set = set(reset_zone_ids)
+                active["task_zone_seen_incomplete"] = [
+                    value for value in _unique_ints(active.get("task_zone_seen_incomplete"))
+                    if value not in reset_set
+                ]
+                active["task_zone_completion_confirmed"] = [
+                    value for value in _unique_ints(active.get("task_zone_completion_confirmed"))
+                    if value not in reset_set
+                ]
+                task_progress = active.setdefault("task_zone_progress", {})
+                for zone_id in reset_set:
+                    task_progress[str(zone_id)] = 0
+                if active.get("completion_reason") == "vendor_progress":
+                    active["completed"] = None
+                    active["completion_reason"] = None
+                    active["final_progress"] = {}
                 self._update_active_metadata_locked(active)
                 self._last_cycle_event = {"reason": "vendor_zone_cycle_reset", "at_ms": boundary_ms, "at": _iso(boundary_ms), "zone_ids": _unique_ints(reset_zone_ids), "completed": bool(completed_flags) and all(completed_flags), "final_progress": final_progress, "source": "vendor_progress"}
                 self._trail_revision += 1
@@ -1327,7 +1391,6 @@ class NavimowerHistory:
                 for key in (
                     "last_started_at",
                     "last_mowed_at",
-                    "last_completed_at",
                 ):
                     value = detail.get(key)
                     if value:
@@ -1346,6 +1409,8 @@ class NavimowerHistory:
                 task_progress = active.setdefault("task_zone_progress", {})
                 for zone_id in active.get("zone_ids") or []:
                     task_progress.setdefault(str(zone_id), 0)
+                seen_incomplete = set(_unique_ints(active.get("task_zone_seen_incomplete")))
+                completion_confirmed = set(_unique_ints(active.get("task_zone_completion_confirmed")))
                 active_zone_id = _as_int(active_progress_zone_id)
                 if active_zone_id is not None:
                     active_detail = next(
@@ -1369,6 +1434,11 @@ class NavimowerHistory:
                                 else active_detail.get("percentage")
                             )
                         if progress is not None:
+                            if progress < VENDOR_COMPLETION_PROGRESS_MIN:
+                                seen_incomplete.add(active_zone_id)
+                                completion_confirmed.discard(active_zone_id)
+                            elif active_zone_id in seen_incomplete:
+                                completion_confirmed.add(active_zone_id)
                             previous_progress = _as_int(
                                 task_progress.get(str(active_zone_id))
                             )
@@ -1398,6 +1468,8 @@ class NavimowerHistory:
                                 task_progress[str(active_zone_id)] = max(
                                     previous_progress or 0, progress
                                 )
+                active["task_zone_seen_incomplete"] = sorted(seen_incomplete)
+                active["task_zone_completion_confirmed"] = sorted(completion_confirmed)
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])
                     candidates = [
@@ -1408,15 +1480,10 @@ class NavimowerHistory:
                     known = [value for value in candidates if value is not None]
                     if len(set(known)) == 1:
                         active["cutting_height_mm"] = known[0]
-                percentages = [
-                    _as_int(task_progress.get(str(zone_id)))
-                    for zone_id in active.get("zone_ids") or []
-                    if _as_int(task_progress.get(str(zone_id))) is not None
-                ]
+                selected_zone_ids = _unique_ints(active.get("zone_ids"))
                 if (
-                    percentages
-                    and len(percentages) == len(active.get("zone_ids") or [])
-                    and all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in percentages)
+                    selected_zone_ids
+                    and set(selected_zone_ids).issubset(completion_confirmed)
                 ):
                     active["completed"] = True
                     active["completion_reason"] = (

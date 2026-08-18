@@ -1472,43 +1472,22 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["active_cycle_id"] = (self.history.active_session or {}).get("id")
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
+        """Return success only for zones confirmed inside this observed cycle."""
+        del snapshot
         active = self.history.active_session
         if not active:
             return None
         selected = {
-            parsed
-            for value in active.get("zone_ids") or []
-            if (parsed := _as_int(value)) is not None
+            value for raw in active.get("zone_ids") or []
+            if (value := _as_int(raw)) is not None
         }
-        task_progress = active.get("task_zone_progress") or {}
-        if selected and task_progress:
-            values = [_progress_percent(task_progress.get(str(zone_id))) for zone_id in selected]
-            known = [value for value in values if value is not None]
-            if len(known) == len(selected):
-                return all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known)
-        percentages = {
-            _as_int(item.get("id")): _progress_percent(
-                item.get("progress")
-                if item.get("progress") is not None
-                else item.get("percentage")
-            )
-            for item in snapshot.get("zone_details") or []
-            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        if not selected:
+            return None
+        confirmed = {
+            value for raw in active.get("task_zone_completion_confirmed") or []
+            if (value := _as_int(raw)) is not None
         }
-        for item in (snapshot.get("coverage") or {}).get("zones") or []:
-            if not isinstance(item, dict):
-                continue
-            zone_id = _as_int(item.get("id"))
-            if zone_id is None or percentages.get(zone_id) is not None:
-                continue
-            percentages[zone_id] = _progress_percent(item.get("pct"))
-        relevant = (
-            [percentages.get(zone_id) for zone_id in selected]
-            if selected
-            else list(percentages.values())
-        )
-        known = [value for value in relevant if value is not None]
-        return all(value >= VENDOR_COMPLETION_PROGRESS_MIN for value in known) if known else None
+        return selected.issubset(confirmed)
 
     def _active_cutting_height(self, snapshot: dict[str, Any]) -> int | None:
         if snapshot.get("cutting_height_supported") is False:
@@ -2031,12 +2010,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                         if (end_time or start_time)
                         else None
                     ),
-                    "last_completed_at": (
+                    "vendor_start_time": start_time,
+                    "vendor_end_time": end_time,
+                    "vendor_completed_at": (
                         dt_util.utc_from_timestamp(end_time).isoformat()
                         if end_time
                         and (percentage or 0) >= VENDOR_COMPLETION_PROGRESS_MIN
                         else None
                     ),
+                    "last_completed_at": None,
                     "cutting_height_supported": cutting_height_supported,
                     "configured_height_raw": raw_height,
                     "configured_height_mm": configured_height,
