@@ -1,6 +1,18 @@
 # Changelog
 
 
+## 0.4.3-beta15
+
+Schedule-aware night-pause and resume notification attribution.
+
+### Changed
+
+- Distinguish the two gates for native scheduled night resumes: an active schedule window and daylight.
+- Attribute a retained scheduled resume to the schedule window when sunrise was already past, or to sunrise when the schedule window opened before daylight.
+- Keep retained non-scheduled/one-time mowing independent from the native mowing schedule after a night pause.
+- Preserve the resolved resume gate in task diagnostics.
+
+
 ## 0.4.3-beta14
 
 Stabilization for task attribution, observed manual mowing state and transient private-cloud failures.
