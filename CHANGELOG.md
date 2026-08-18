@@ -1,6 +1,23 @@
 # Changelog
 
 
+## 0.4.3-beta18
+
+Confirmed per-zone completion tracking.
+
+### Fixed
+
+- Do not advance zone `last_completed` when a task starts with stale high progress and then immediately fails/returns to the dock.
+- Do not stamp `last_completed` at a vendor progress-reset/new-cycle boundary; that timestamp is the next cycle start, not the previous cycle completion.
+- Stop treating private-cloud `end_time + >=95%` as authoritative completion evidence.
+- Repair persisted beta-era completion timestamps that were unverified vendor values or matched a recorded reset boundary.
+
+### Safety
+
+- Completion requires current-cycle evidence: the zone must first be observed below the completion threshold and later at or above the existing 95% threshold.
+- Failed/error returns can close the route session without making an unconfirmed zone eligible for Navimower Schedule.
+
+
 ## 0.4.3-beta17
 
 Scheduler options polish and docked physical-area stabilization.

@@ -358,9 +358,9 @@ async def cycle_reset_split_test() -> None:
     assert len(boundaries) == 1
     assert boundaries[0]["zone_id"] == 24
     assert boundaries[0]["previous_peak"] == 98
-    zone_history = manager.zone_history()["24"]
-    assert zone_history["last_completed_progress"] == 98
-    assert zone_history["last_completed_at"]
+    zone_history = manager.zone_history().get("24", {})
+    assert "last_completed_progress" not in zone_history
+    assert "last_completed_at" not in zone_history
 
     if hass.tasks:
         await asyncio.gather(*hass.tasks)
@@ -435,6 +435,12 @@ def practical_completion_threshold_test() -> None:
         physical_zone_id=13,
     )
     manager.update_zone_history(
+        {"zones": [{"id": 13, "pct": 40}]},
+        [{"id": 13, "name": "Street", "percentage": 40}],
+        active_zone_progress=40,
+        active_progress_zone_id=13,
+    )
+    manager.update_zone_history(
         {"zones": [{"id": 13, "pct": 97}]},
         [{"id": 13, "name": "Street", "percentage": 97}],
         active_zone_progress=97,
@@ -464,6 +470,12 @@ async def dock_completion_history_test() -> None:
         returning=False,
         zone_ids=[24],
         physical_zone_id=24,
+    )
+    manager.update_zone_history(
+        {"zones": [{"id": 24, "pct": 23}]},
+        [{"id": 24, "name": "Yard", "progress": 23, "percentage": 23}],
+        active_zone_progress=23,
+        active_progress_zone_id=24,
     )
     manager.update_zone_history(
         {"zones": [{"id": 24, "pct": 97}]},
@@ -624,3 +636,55 @@ async def vendor_partial_reset_test() -> None:
 
 asyncio.run(vendor_partial_reset_test())
 print("explicit and vendor partial reset tests passed")
+
+
+async def beta18_stale_high_error_return_test() -> None:
+    Store.values.clear()
+    hass = FakeHass()
+    manager = history.NavimowerHistory(hass, "entry-beta18-error", "TEST")
+    manager.process_pose(position={"x": 5.0, "y": 5.0}, pose_time=2_700_000_000, heading=0.0,
+        activity="mowing", cutting=True, docked=False, returning=False, zone_ids=[24], physical_zone_id=24)
+    manager.update_zone_history(
+        {"zones": [{"id": 24, "pct": 98}]},
+        [{"id": 24, "name": "Yard", "progress": 98, "percentage": 98,
+          "last_completed_at": history._iso(2_700_000_010_000)}],
+        active_zone_progress=98, active_progress_zone_id=24)
+    active = manager.active_session
+    assert active and active["completed"] is not True
+    assert active["task_zone_completion_confirmed"] == []
+    assert "last_completed_at" not in manager.zone_history()["24"]
+    manager.process_pose(position={"x": 5.1, "y": 5.1}, pose_time=2_700_000_020, heading=0.0,
+        activity="docked", cutting=False, docked=True, returning=False, zone_ids=[24], completed=True)
+    assert "last_completed_at" not in manager.zone_history()["24"]
+    assert manager.session_summaries(include_points=True)[-1]["completed"] is False
+    if hass.tasks:
+        await asyncio.gather(*hass.tasks)
+
+asyncio.run(beta18_stale_high_error_return_test())
+
+async def beta18_persisted_false_completion_repair_test() -> None:
+    Store.values.clear()
+    reset_ms = 2_800_000_020_000
+    reset_session = session("1", 2_800_000_000_000, 2_800_000_030_000)
+    reset_session["zone_ids"] = [24]
+    reset_session["zone_cycle_boundaries"] = [{"zone_id": 24, "at_ms": reset_ms, "reason": "vendor_progress_reset"}]
+    Store.values["navimower_sessions_entry-beta18-repair"] = {
+        "sn": "TEST", "sequence": 1, "active_id": None,
+        "sessions": [history._metadata(reset_session)],
+        "zone_history": {
+            "13": {"id": 13, "last_completed_at": history._iso(2_800_000_010_000)},
+            "24": {"id": 24, "last_completed_at": history._iso(reset_ms), "last_completed_progress": 98},
+            "42": {"id": 42, "last_completed_at": history._iso(2_799_000_000_000), "last_completed_progress": 97},
+        },
+    }
+    Store.values["navimower_session_entry-beta18-repair_1"] = reset_session
+    manager = history.NavimowerHistory(FakeHass(), "entry-beta18-repair", "TEST")
+    await manager.async_load()
+    repaired = manager.zone_history()
+    assert "last_completed_at" not in repaired["13"]
+    assert "last_completed_at" not in repaired["24"]
+    assert repaired["42"]["last_completed_progress"] == 97
+    assert repaired["42"]["last_completed_at"]
+
+asyncio.run(beta18_persisted_false_completion_repair_test())
+print("beta18 completion safety tests passed")
