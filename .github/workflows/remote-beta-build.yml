@@ -40,6 +40,22 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
           python .github/scripts/remote_beta_builder.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_navimower_schedule_logic.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''completion_advanced = logic.completion_advanced\nselect_oldest_zone = logic.select_oldest_zone\nwindow_state = logic.window_state\n'''
+          new = '''completion_advanced = logic.completion_advanced\nfilter_schedule_zones = logic.filter_schedule_zones\nselect_oldest_zone = logic.select_oldest_zone\nwindow_state = logic.window_state\n'''
+          if text.count(old) != 1:
+              raise SystemExit("schedule logic test import marker changed")
+          text = text.replace(old, new, 1)
+          old_test = '''    assert select_oldest_zone(zones)["id"] == 3\n    assert select_oldest_zone(zones, completed_in_window={3})["id"] == 2\n    assert select_oldest_zone(zones, completed_in_window={3}, just_completed_zone_id=2)["id"] == 1\n'''
+          new_test = '''    assert select_oldest_zone(zones)["id"] == 2\n    assert select_oldest_zone(zones, completed_in_window={2})["id"] == 1\n    assert select_oldest_zone(zones, completed_in_window={2}, just_completed_zone_id=1) is None\n    assert [row["id"] for row in filter_schedule_zones(zones, [1, 2, 3])] == [1, 2]\n'''
+          if text.count(old_test) != 1:
+              raise SystemExit("schedule logic oldest-zone test marker changed")
+          path.write_text(text.replace(old_test, new_test, 1), encoding="utf-8")
+          PY
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
@@ -57,6 +73,7 @@ jobs:
               "custom_components/navimower/schedule_logic.py",
               "custom_components/navimower/strings.json",
               "custom_components/navimower/translations/en.json",
+              "tests/test_navimower_schedule_logic.py",
               "tests/test_v043_beta15.py",
               "tests/test_v043_beta16.py",
           }
@@ -95,6 +112,7 @@ jobs:
                   custom_components/navimower/schedule_logic.py \
                   custom_components/navimower/strings.json \
                   custom_components/navimower/translations/en.json \
+                  tests/test_navimower_schedule_logic.py \
                   tests/test_v043_beta15.py \
                   tests/test_v043_beta16.py
           git commit -m "Prepare Navimower 0.4.3-beta16 schedule options"
