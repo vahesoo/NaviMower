@@ -1,6 +1,23 @@
 # Changelog
 
 
+## 0.4.3-beta19
+
+Navimower Schedule window/restart hardening.
+
+### Fixed
+
+- Prevent a stale unconfirmed new-zone `mow` command from blocking Navimower Schedule forever after Home Assistant restarts or loses the immediate state transition.
+- After 120 seconds without a confirmed Mowing state, clear the stale pending command and suspend safely instead of automatically repeating a `reset=true` start.
+- Recover automatically if the mower later confirms that same active-zone mowing start.
+
+### Safety
+
+- Keep Time window as the hard outer gate: an observed Mowing/Paused state outside the window is sent Dock/Home while the interrupted zone and progress are retained for resume.
+- Keep 24 hours mode independent from the mower's Night mowing setting; sunset/sunrise pauses remain the mower/user setting's responsibility.
+- A Home Assistant restart during already-confirmed mowing restores scheduler runtime without starting a new mowing cycle.
+
+
 ## 0.4.3-beta18
 
 Confirmed per-zone completion tracking.
