@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA14 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA15 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta14
+      BUILD_BRANCH: release/0.4.3-beta15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,241 +39,45 @@ jobs:
           exec > >(tee /tmp/remote-beta-build.log) 2>&1
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
-          python - <<'PY'
-          from __future__ import annotations
-
-          import json
-          from pathlib import Path
-          from textwrap import dedent
-
-          ROOT = Path.cwd()
-          COMPONENT = ROOT / "custom_components" / "navimower"
-
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected exactly one marker, found {count}")
-              path.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          def write(path: Path, text: str) -> None:
-              path.parent.mkdir(parents=True, exist_ok=True)
-              path.write_text(dedent(text).lstrip(), encoding="utf-8")
-
-          manifest_path = COMPONENT / "manifest.json"
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          if manifest.get("version") != "0.4.3-beta13":
-              raise SystemExit(f"Expected beta13 base, got {manifest.get('version')!r}")
-          manifest["version"] = "0.4.3-beta14"
-          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-          const_path = COMPONENT / "const.py"
-          replace_once(
-              const_path,
-              'STATE_MOWING: Final = "0210"\nSTATE_PAUSED: Final = "0211"\n',
-              'STATE_MOWING: Final = "0210"\nSTATE_MOWING_MANUAL: Final = "0212"\nSTATE_PAUSED: Final = "0211"\n',
-              "manual mowing state constant",
-          )
-          replace_once(
-              const_path,
-              '    STATE_MOWING: ACTIVITY_MOWING,\n    STATE_PAUSED: ACTIVITY_PAUSED,\n',
-              '    STATE_MOWING: ACTIVITY_MOWING,\n    STATE_MOWING_MANUAL: ACTIVITY_MOWING,\n    STATE_PAUSED: ACTIVITY_PAUSED,\n',
-              "manual mowing activity mapping",
-          )
-          replace_once(
-              const_path,
-              '    STATE_MOWING: "Mowing",\n    STATE_PAUSED: "Paused",\n',
-              '    STATE_MOWING: "Mowing",\n    STATE_MOWING_MANUAL: "Manual mowing",\n    STATE_PAUSED: "Paused",\n',
-              "manual mowing state label",
-          )
-          replace_once(
-              const_path,
-              'ACTIVE_STATES: Final = {STATE_MOWING, STATE_RETURNING}\n',
-              'ACTIVE_STATES: Final = {STATE_MOWING, STATE_MOWING_MANUAL, STATE_RETURNING}\n',
-              "manual mowing active state",
-          )
-
-          coordinator_path = COMPONENT / "coordinator.py"
-          replace_once(
-              coordinator_path,
-              '                "failures": 0,\n                "last_attempt_mono": None,\n',
-              '                "failures": 0,\n                "consecutive_failures": 0,\n                "last_attempt_mono": None,\n',
-              "endpoint consecutive failure counter",
-          )
-          replace_once(
-              coordinator_path,
-              '''        except Exception as err:  # noqa: BLE001 - preserve cache and continue.\n            previous_error = status.get("last_error")\n            status["failures"] += 1\n            status["last_error"] = str(err)\n            status["last_error_utc"] = datetime.now(UTC).isoformat()\n            if previous_error != str(err) or status["failures"] in {1, 10, 25}:\n                _LOGGER.warning(\n                    "Navimower private endpoint %s failed; keeping last-good "\n                    "data (failure %s): %s",\n                    key,\n                    status["failures"],\n                    err,\n                )\n            return False\n\n        recovered = bool(status.get("last_error"))\n        raw[key] = value\n        status["successes"] += 1\n        status["last_success_mono"] = now\n        status["last_success_utc"] = datetime.now(UTC).isoformat()\n        status["last_error"] = None\n        status["last_error_utc"] = None\n        status["last_result_type"] = type(value).__name__\n        if recovered:\n            _LOGGER.info("Navimower private endpoint %s recovered", key)\n        return True\n''',
-              '''        except Exception as err:  # noqa: BLE001 - preserve cache and continue.\n            status["failures"] += 1\n            consecutive = int(status.get("consecutive_failures") or 0) + 1\n            status["consecutive_failures"] = consecutive\n            status["last_error"] = str(err)\n            status["last_error_utc"] = datetime.now(UTC).isoformat()\n            if consecutive in {3, 10, 25}:\n                _LOGGER.warning(\n                    "Navimower private endpoint %s failed repeatedly; keeping last-good "\n                    "data (consecutive failure %s): %s",\n                    key,\n                    consecutive,\n                    err,\n                )\n            else:\n                _LOGGER.debug(\n                    "Navimower private endpoint %s transient failure %s; keeping last-good data: %s",\n                    key,\n                    consecutive,\n                    err,\n                )\n            return False\n\n        consecutive_failures = int(status.get("consecutive_failures") or 0)\n        raw[key] = value\n        status["successes"] += 1\n        status["last_success_mono"] = now\n        status["last_success_utc"] = datetime.now(UTC).isoformat()\n        status["last_error"] = None\n        status["last_error_utc"] = None\n        status["consecutive_failures"] = 0\n        status["last_result_type"] = type(value).__name__\n        if consecutive_failures >= 3:\n            _LOGGER.info("Navimower private endpoint %s recovered", key)\n        elif consecutive_failures:\n            _LOGGER.debug("Navimower private endpoint %s recovered after a transient failure", key)\n        return True\n''',
-              "private endpoint warning threshold",
-          )
-          replace_once(
-              coordinator_path,
-              '                "failures": status.get("failures", 0),\n                "last_attempt_utc": status.get("last_attempt_utc"),\n',
-              '                "failures": status.get("failures", 0),\n                "consecutive_failures": status.get("consecutive_failures", 0),\n                "last_attempt_utc": status.get("last_attempt_utc"),\n',
-              "polling diagnostics consecutive failures",
-          )
-
-          notifications_path = COMPONENT / "notification_center.py"
-          replace_once(
-              notifications_path,
-              '''        # 100% is intentionally strict here. Vendor history may accept lower\n        # practical completion percentages, but a local user-facing "completed"\n        # notification should not be invented from an ambiguous 95-99% return.\n        if progress is not None and progress >= 100:\n            names = list((self._active_task or {}).get("zone_names") or [])\n            content = "Completed the mowing task"\n            if names:\n                content += f" in {_zone_phrase(names)}"\n            content += "."\n            item = self._emit(\n                "NM1009",\n                "Mowing task completed",\n                content,\n                kind="mowing_completed",\n                confidence="confirmed_100_percent_transition",\n                event_key=self._task_token(),\n            )\n            self._active_task = None\n            self._interrupted_reason = None\n            return item is not None\n''',
-              '''        # Vendor notifications already report completed one-time/scheduled tasks.\n        # Keep the local task context correct, but do not duplicate the vendor\n        # completion with a second Navimower-local notification.\n        if progress is not None and progress >= 100:\n            self._active_task = None\n            self._interrupted_reason = None\n            return False\n''',
-              "remove duplicate local completion notification",
-          )
-          helper_marker = '    def _next_schedule_start_today(\n'
-          helper = '''    def _schedule_period_containing_now(\n        self, snapshot: dict[str, Any], now_local: datetime\n    ) -> dict[str, Any] | None:\n        """Return the active native schedule period even after its start grace."""\n        settings = snapshot.get("settings") or {}\n        if settings.get("schedule_enabled") is False:\n            return None\n        weekday = (now_local.weekday() + 1) % 7 + 1\n        minutes = now_local.hour * 60 + now_local.minute\n        day_start = dt_util.start_of_local_day(now_local)\n        for row in snapshot.get("schedule") or []:\n            if not isinstance(row, dict) or not row.get("enabled"):\n                continue\n            if _as_int(row.get("day")) != weekday:\n                continue\n            for period in row.get("periods") or []:\n                if not isinstance(period, dict):\n                    continue\n                start_min = _as_int(period.get("start_min"))\n                end_min = _as_int(period.get("end_min"))\n                if start_min is None or end_min is None or end_min <= start_min:\n                    continue\n                if start_min <= minutes < end_min:\n                    return {\n                        **period,\n                        "start_min": start_min,\n                        "end_min": end_min,\n                        "start_dt": day_start + timedelta(minutes=start_min),\n                        "end_dt": day_start + timedelta(minutes=end_min),\n                    }\n        return None\n\n'''
-          replace_once(
-              notifications_path,
-              helper_marker,
-              helper + helper_marker,
-              "active native schedule helper",
-          )
-          replace_once(
-              notifications_path,
-              '''        ids = self._observed_task_zone_ids(snapshot)\n        names_by_id = _zone_names(snapshot)\n        names = [names_by_id.get(value, f"Zone {value}") for value in ids]\n        content = "Started an external mowing task"\n''',
-              '''        active_schedule_period = self._schedule_period_containing_now(snapshot, now_local)\n        if active_schedule_period is not None:\n            ids = _dedupe_ints(active_schedule_period.get("zone_ids"))\n            if not ids:\n                ids = self._observed_task_zone_ids(snapshot)\n            names = list(active_schedule_period.get("zone_names") or [])\n            if not names:\n                names_by_id = _zone_names(snapshot)\n                names = [names_by_id.get(value, f"Zone {value}") for value in ids]\n            start_dt = active_schedule_period["start_dt"]\n            end_dt = active_schedule_period["end_dt"]\n            self._active_task = {\n                "task_id": f"schedule-observed-{now_local.date().isoformat()}-{active_schedule_period['start_min']}",\n                "origin": "schedule",\n                "trigger": "schedule_window_observed_late",\n                "zone_ids": ids,\n                "zone_names": names,\n                "ordered": False,\n                "started_at": datetime.now(UTC).isoformat(),\n                "schedule_start": start_dt.isoformat(),\n                "schedule_end": end_dt.isoformat(),\n                "night_mowing": (snapshot.get("settings") or {}).get("night_mow"),\n            }\n            self._interrupted_reason = None\n            return False\n\n        ids = self._observed_task_zone_ids(snapshot)\n        names_by_id = _zone_names(snapshot)\n        names = [names_by_id.get(value, f"Zone {value}") for value in ids]\n        content = "Started an external mowing task"\n''',
-              "avoid native schedule external misclassification",
-          )
-
-          beta13_test = ROOT / "tests" / "test_v043_beta13.py"
-          replace_once(
-              beta13_test,
-              '''def test_beta13_identity_and_schedule_modules():\n    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))\n    assert manifest["version"] == "0.4.3-beta13"\n    assert (COMPONENT / "navimower_schedule.py").exists()\n    assert (COMPONENT / "schedule_logic.py").exists()\n''',
-              '''def test_beta13_identity_and_schedule_modules():\n    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta13.md").read_text(encoding="utf-8")\n    assert notes.startswith("title: Navimower 0.4.3-beta13")\n    assert (COMPONENT / "navimower_schedule.py").exists()\n    assert (COMPONENT / "schedule_logic.py").exists()\n''',
-              "beta13 historical identity test",
-          )
-
-          write(ROOT / "tests" / "test_v043_beta14.py", r'''
-          import json
-          from pathlib import Path
-
-          ROOT = Path(__file__).resolve().parents[1]
-          COMPONENT = ROOT / "custom_components" / "navimower"
-
-
-          def test_beta14_identity():
-              manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-              assert manifest["version"] == "0.4.3-beta14"
-              notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta14.md").read_text(encoding="utf-8")
-              assert notes.startswith("title: Navimower 0.4.3-beta14")
-
-
-          def test_manual_mowing_state_is_confirmed_work():
-              source = (COMPONENT / "const.py").read_text(encoding="utf-8")
-              assert 'STATE_MOWING_MANUAL: Final = "0212"' in source
-              assert 'STATE_MOWING_MANUAL: ACTIVITY_MOWING' in source
-              assert 'STATE_MOWING_MANUAL: "Manual mowing"' in source
-              assert 'STATE_MOWING_MANUAL, STATE_RETURNING' in source
-
-
-          def test_local_completion_notification_is_not_duplicated():
-              source = (COMPONENT / "notification_center.py").read_text(encoding="utf-8")
-              assert '"NM1009"' not in source
-              assert 'Vendor notifications already report completed one-time/scheduled tasks.' in source
-
-
-          def test_native_schedule_late_start_is_not_external():
-              source = (COMPONENT / "notification_center.py").read_text(encoding="utf-8")
-              assert 'def _schedule_period_containing_now' in source
-              assert '"trigger": "schedule_window_observed_late"' in source
-              assert 'active_schedule_period = self._schedule_period_containing_now(snapshot, now_local)' in source
-
-
-          def test_transient_private_endpoint_failures_are_quiet():
-              source = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")
-              assert '"consecutive_failures": 0' in source
-              assert 'if consecutive in {3, 10, 25}:' in source
-              assert 'transient failure %s; keeping last-good data' in source
-              assert 'status["consecutive_failures"] = 0' in source
-
-
-          def test_discovery_scope_is_unchanged():
-              diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-              error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-              assert 'ERROR_DISCOVERY_TIMEOUT_SECONDS' in diagnostics
-              assert 'MAX_PROBE_SECONDS = 24.0' in error_discovery
-          ''')
-
-          notes = '''
-          title: Navimower 0.4.3-beta14
-
-          Stabilization beta for notifications, state semantics and private-cloud log noise.
-
-          ### Changed
-          - Stop creating the duplicate local `Mowing task completed` notification when the vendor already reports task completion.
-          - Treat a mowing transition observed inside an active native schedule period as native schedule context instead of incorrectly calling it an external mowing task.
-          - Map observed private-cloud state `0212` as `Manual mowing` and keep it in the active polling profile.
-          - Keep one-off private-cloud transport failures at debug level; warn only after 3 consecutive failures (then again at 10/25) while continuing to retain last-good data.
-
-          ### Unchanged
-          - Navimower Schedule orchestration from beta13 is unchanged.
-          - Maintenance and Mowing Reports discovery remains paused.
-          - Clear and resume / Reboot Mower discovery remains unchanged and read-only while waiting for a useful live error diagnostic.
-          '''
-          write(ROOT / ".github" / "release-notes" / "0.4.3-beta14.md", notes)
-
-          changelog_path = ROOT / "CHANGELOG.md"
-          changelog = changelog_path.read_text(encoding="utf-8")
-          marker = "# Changelog\n"
-          if not changelog.startswith(marker):
-              raise SystemExit("changelog heading missing")
-          entry = '''
-
-          ## 0.4.3-beta14
-
-          Stabilization for task attribution, observed manual mowing state and transient private-cloud failures.
-
-          ### Changed
-
-          - Remove the duplicate local mowing-completed notification and rely on the vendor completion notification.
-          - Preserve native schedule attribution for mowing transitions observed inside an active native schedule period instead of labelling them External.
-          - Map private state `0212` as Manual mowing and treat it as active work.
-          - Warn about private endpoint failures only after repeated consecutive failures while preserving last-good values.
-          '''
-          changelog_path.write_text(marker + dedent(entry) + changelog[len(marker):], encoding="utf-8")
-          PY
-          python -m compileall -q custom_components/navimower
+          python .github/scripts/remote_beta_builder.py
           python -m pytest -q
+          python -m compileall -q custom_components/navimower
           git diff --check
           python - <<'PY'
           from pathlib import Path
           import subprocess
 
           expected = {
-              ".github/release-notes/0.4.3-beta14.md",
+              ".github/release-notes/0.4.3-beta15.md",
               "CHANGELOG.md",
-              "custom_components/navimower/const.py",
-              "custom_components/navimower/coordinator.py",
               "custom_components/navimower/manifest.json",
               "custom_components/navimower/notification_center.py",
-              "tests/test_v043_beta13.py",
               "tests/test_v043_beta14.py",
+              "tests/test_v043_beta15.py",
           }
-          tracked = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
-          untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], text=True).splitlines()
-          actual = set([*tracked, *untracked])
-          if actual != expected:
-              raise SystemExit(f"Unexpected beta14 diff. Missing={sorted(expected-actual)} extra={sorted(actual-expected)}")
+          changed = set(
+              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(f"Unexpected beta15 diff scope: {sorted(changed)}")
 
-          const = Path("custom_components/navimower/const.py").read_text(encoding="utf-8")
-          coordinator = Path("custom_components/navimower/coordinator.py").read_text(encoding="utf-8")
-          notifications = Path("custom_components/navimower/notification_center.py").read_text(encoding="utf-8")
-          assert 'STATE_MOWING_MANUAL: Final = "0212"' in const
-          assert 'if consecutive in {3, 10, 25}:' in coordinator
-          assert '"NM1009"' not in notifications
-          assert 'schedule_window_observed_late' in notifications
+          source = Path("custom_components/navimower/notification_center.py").read_text(encoding="utf-8")
+          assert "def _scheduled_night_resume_gate" in source
+          assert 'return "sunrise", period' in source
+          assert 'return "schedule_window", period' in source
+          assert 'kind="scheduled_night_resume"' in source
+          assert "the native mowing schedule does not gate this resume" in source
           PY
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-notes/0.4.3-beta14.md \
+          git add .github/release-notes/0.4.3-beta15.md \
                   CHANGELOG.md \
-                  custom_components/navimower/const.py \
-                  custom_components/navimower/coordinator.py \
                   custom_components/navimower/manifest.json \
                   custom_components/navimower/notification_center.py \
-                  tests/test_v043_beta13.py \
-                  tests/test_v043_beta14.py
-          git commit -m "Prepare Navimower 0.4.3-beta14 stabilization"
+                  tests/test_v043_beta14.py \
+                  tests/test_v043_beta15.py
+          git commit -m "Prepare Navimower 0.4.3-beta15 notification gates"
           git push --force-with-lease origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -281,7 +85,7 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta14 remote build succeeded. Full tests, compileall, diff-check and stabilization smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta15 remote build succeeded. Full tests, compileall, diff-check and notification-gate smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
           gh issue close "${{ github.event.issue.number }}" --reason completed
 
       - name: Comment failure
@@ -290,14 +94,11 @@ jobs:
         run: |
           tail -n 220 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta14 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta15 remote build failed before publishing the release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
             echo '```'
           } > /tmp/failure-comment.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/failure-comment.md
-
-      - name: Fail if build failed
-        if: steps.build.outcome != 'success'
-        run: exit 1
+          exit 1
