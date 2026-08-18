@@ -309,8 +309,9 @@ def test_scheduled_resume_wording_uses_actual_last_gate():
 
 def test_retained_non_schedule_task_is_not_gated_by_native_schedule():
     source = (COMPONENT / "notification_center.py").read_text(encoding="utf-8")
-    assert "the native mowing schedule does not gate this resume" in source
-    assert "The native mowing schedule does not gate this retained task" in source
+    assert "mowing schedule does not gate this resume." in source
+    assert "The native mowing schedule does not gate this " in source
+    assert "retained task." in source
 
 
 def test_night_pause_message_explains_native_schedule_gate():
@@ -367,4 +368,4 @@ assert "def _scheduled_night_resume_gate" in source
 assert 'return "sunrise", period' in source
 assert 'return "schedule_window", period' in source
 assert 'kind="scheduled_night_resume"' in source
-assert "the native mowing schedule does not gate this resume" in source
+assert "mowing schedule does not gate this resume." in source
