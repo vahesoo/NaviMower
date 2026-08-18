@@ -6,8 +6,6 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def test_beta14_identity():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta14"
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta14.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta14")
 

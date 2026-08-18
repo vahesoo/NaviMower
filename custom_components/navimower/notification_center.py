@@ -441,24 +441,73 @@ class NavimowerNotificationCenter:
             return item is not None
 
         if self._active_task is not None and self._interrupted_reason == "night":
+            names = list(self._active_task.get("zone_names") or [])
+            origin = str(self._active_task.get("origin") or "")
             sunrise = self._sun_event_local(SUN_EVENT_SUNRISE, now_local.date())
+
+            if origin == "schedule":
+                resolved = self._scheduled_night_resume_gate(snapshot, now_local)
+                if resolved is None:
+                    # A retained native-schedule task must not be attributed to
+                    # sunrise alone. Wait until a real schedule/daylight gate is
+                    # observable instead of inventing an External start.
+                    return False
+                gate, period = resolved
+                start_dt = period["start_dt"]
+                end_dt = period["end_dt"]
+                if gate == "sunrise":
+                    content = "Resumed the unfinished scheduled mowing task after sunrise"
+                    if names:
+                        content += f" in {_zone_phrase(names)}"
+                    content += (
+                        f". The scheduled mowing window opened at {start_dt.strftime('%H:%M')}, "
+                        "but Night mowing is disabled, so daylight was the last remaining gate."
+                    )
+                    if sunrise is not None:
+                        content += f" Sunrise was around {sunrise.strftime('%H:%M')}."
+                    title = "Unfinished scheduled mowing resumed after sunrise"
+                else:
+                    content = "Resumed the unfinished scheduled mowing task"
+                    if names:
+                        content += f" in {_zone_phrase(names)}"
+                    content += (
+                        f" when the scheduled mowing window opened at {start_dt.strftime('%H:%M')}."
+                    )
+                    if sunrise is not None and sunrise <= start_dt:
+                        content += (
+                            f" Daylight was already available after sunrise around "
+                            f"{sunrise.strftime('%H:%M')}."
+                        )
+                    title = "Unfinished scheduled mowing resumed"
+
+                item = self._emit(
+                    "NM1005",
+                    title,
+                    content,
+                    kind="scheduled_night_resume",
+                    confidence="inferred_from_retained_schedule_and_daylight_gate",
+                    event_key=(
+                        f"{self._task_token()}-{now_local.date().isoformat()}-"
+                        f"{period['start_min']}-{gate}"
+                    ),
+                )
+                self._active_task["schedule_start"] = start_dt.isoformat()
+                self._active_task["schedule_end"] = end_dt.isoformat()
+                self._active_task["last_resume_gate"] = gate
+                self._active_task["last_resumed_at"] = datetime.now(UTC).isoformat()
+                self._interrupted_reason = None
+                return item is not None
+
             if sunrise is not None and sunrise <= now_local <= sunrise + timedelta(
                 hours=_SUNRISE_RESUME_WINDOW_HOURS
             ):
-                names = list(self._active_task.get("zone_names") or [])
                 content = "Resumed the unfinished mowing task after sunrise"
                 if names:
                     content += f" in {_zone_phrase(names)}"
-                content += "."
-                if self._active_task.get("origin") != "schedule":
-                    next_start = self._next_schedule_start_today(snapshot, now_local)
-                    if next_start:
-                        content += (
-                            " This is a continuation of the previous task; today's "
-                            f"scheduled mowing starts at {next_start}."
-                        )
-                    else:
-                        content += " This is a continuation of the previous task."
+                content += (
+                    ". This is a continuation of the retained task; the native "
+                    "mowing schedule does not gate this resume."
+                )
                 item = self._emit(
                     "NM1005",
                     "Unfinished mowing resumed after sunrise",
@@ -467,6 +516,7 @@ class NavimowerNotificationCenter:
                     confidence="inferred_from_retained_task_and_sunrise",
                     event_key=f"{self._task_token()}-{now_local.date().isoformat()}",
                 )
+                self._active_task["last_resume_gate"] = "sunrise"
                 self._active_task["last_resumed_at"] = datetime.now(UTC).isoformat()
                 self._interrupted_reason = None
                 return item is not None
@@ -643,12 +693,30 @@ class NavimowerNotificationCenter:
             schedule_end is None or night_candidate < schedule_end - timedelta(minutes=5)
         ):
             names = list((self._active_task or {}).get("zone_names") or [])
-            content = "The unfinished mowing task started returning to the charging station around sunset because Night mowing is disabled"
+            scheduled = (self._active_task or {}).get("origin") == "schedule"
+            content = (
+                "The unfinished scheduled mowing task started returning to the charging "
+                "station around sunset because Night mowing is disabled"
+                if scheduled
+                else "The unfinished mowing task started returning to the charging station "
+                "around sunset because Night mowing is disabled"
+            )
             if names:
                 content += f" while mowing {_zone_phrase(names)}"
             if progress is not None:
                 content += f" at {progress:g}% progress"
-            content += ". It may resume after sunrise when the mower retains the task and charging allows."
+            if scheduled:
+                content += (
+                    ". It can resume when a native mowing window is open and daylight "
+                    "is available; whichever condition becomes available later is the "
+                    "effective resume gate."
+                )
+            else:
+                content += (
+                    ". It may resume after sunrise when the mower retains the task and "
+                    "charging allows. The native mowing schedule does not gate this "
+                    "retained task."
+                )
             item = self._emit(
                 "NM1004",
                 "Mowing paused for night",
@@ -660,6 +728,9 @@ class NavimowerNotificationCenter:
             self._interrupted_reason = "night"
             if self._active_task is not None:
                 self._active_task["night_paused_at"] = datetime.now(UTC).isoformat()
+                self._active_task["night_pause_context"] = (
+                    "native_schedule" if scheduled else "retained_task"
+                )
             return item is not None
 
         if schedule_end is not None:
@@ -807,6 +878,28 @@ class NavimowerNotificationCenter:
                         "end_dt": day_start + timedelta(minutes=end_min),
                     }
         return None
+
+    def _scheduled_night_resume_gate(
+        self, snapshot: dict[str, Any], now_local: datetime
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Resolve the last gate for a retained native-schedule night pause."""
+        period = self._schedule_period_containing_now(snapshot, now_local)
+        if period is None:
+            return None
+        if (snapshot.get("settings") or {}).get("night_mow") is not False:
+            return "schedule_window", period
+
+        sunrise = self._sun_event_local(SUN_EVENT_SUNRISE, now_local.date())
+        sunset = self._sun_event_local(SUN_EVENT_SUNSET, now_local.date())
+        if sunrise is not None and now_local < sunrise:
+            return None
+        if sunset is not None and now_local >= sunset:
+            return None
+
+        start_dt = period["start_dt"]
+        if sunrise is not None and start_dt < sunrise <= now_local:
+            return "sunrise", period
+        return "schedule_window", period
 
     def _next_schedule_start_today(
         self, snapshot: dict[str, Any], now_local: datetime
