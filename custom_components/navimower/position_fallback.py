@@ -70,3 +70,40 @@ def choose_position(
         "stale": True,
         "gate_usable": False,
     }
+
+
+def apply_docked_display_override(
+    result: dict[str, Any],
+    *,
+    docked: bool,
+    pending_activity: Any,
+) -> bool:
+    """Expose a confirmed docked mower as the virtual Dock physical area.
+
+    Dock/charging state is stronger evidence for physical-area display than a
+    stale, unavailable or boundary-flapping pose. A pending local mowing,
+    pause or return command suppresses the override so the old docked flag
+    cannot mask a mower that has just been dispatched.
+    """
+    if not docked or pending_activity is not None:
+        return False
+
+    result.update(
+        {
+            "current_physical_zone": "Dock",
+            "current_physical_zone_id": None,
+            "current_physical_zone_source": "docked_state",
+            "current_physical_zone_position_source": "state",
+            "current_physical_zone_position_age": None,
+            "current_physical_zone_stale": False,
+            "current_channel": "Not in channel",
+            "current_channel_id": None,
+            "current_channel_connection": [],
+            "current_channel_distance": None,
+            "current_channel_source": "docked_state",
+            "current_channel_pose_age": None,
+            "current_channel_stale": False,
+            "current_channel_pose_valid": False,
+        }
+    )
+    return True
