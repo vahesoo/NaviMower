@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA15 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA16 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta15
+      BUILD_BRANCH: release/0.4.3-beta16
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,12 +48,17 @@ jobs:
           import subprocess
 
           expected = {
-              ".github/release-notes/0.4.3-beta15.md",
+              ".github/release-notes/0.4.3-beta16.md",
               "CHANGELOG.md",
+              "custom_components/navimower/config_flow.py",
+              "custom_components/navimower/const.py",
               "custom_components/navimower/manifest.json",
-              "custom_components/navimower/notification_center.py",
-              "tests/test_v043_beta14.py",
+              "custom_components/navimower/navimower_schedule.py",
+              "custom_components/navimower/schedule_logic.py",
+              "custom_components/navimower/strings.json",
+              "custom_components/navimower/translations/en.json",
               "tests/test_v043_beta15.py",
+              "tests/test_v043_beta16.py",
           }
           tracked = set(
               subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
@@ -65,25 +70,34 @@ jobs:
           )
           changed = tracked | untracked
           if changed != expected:
-              raise SystemExit(f"Unexpected beta15 diff scope: {sorted(changed)}")
+              raise SystemExit(f"Unexpected beta16 diff scope: {sorted(changed)}")
 
-          source = Path("custom_components/navimower/notification_center.py").read_text(encoding="utf-8")
-          assert "def _scheduled_night_resume_gate" in source
-          assert 'return "sunrise", period' in source
-          assert 'return "schedule_window", period' in source
-          assert 'kind="scheduled_night_resume"' in source
-          assert "mowing schedule does not gate this resume." in source
+          config = Path("custom_components/navimower/config_flow.py").read_text(encoding="utf-8")
+          schedule = Path("custom_components/navimower/navimower_schedule.py").read_text(encoding="utf-8")
+          logic = Path("custom_components/navimower/schedule_logic.py").read_text(encoding="utf-8")
+          assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in config
+          assert "multiple=True" in config
+          assert '"24 hours"' in config
+          assert "def filter_schedule_zones" in logic
+          assert 'return True, "continuous"' in schedule
+          assert "eligible_ids.issubset(completed)" in schedule
+          assert "Configure at least one successfully completed automatic mowing zone first" in schedule
           PY
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-notes/0.4.3-beta15.md \
+          git add .github/release-notes/0.4.3-beta16.md \
                   CHANGELOG.md \
+                  custom_components/navimower/config_flow.py \
+                  custom_components/navimower/const.py \
                   custom_components/navimower/manifest.json \
-                  custom_components/navimower/notification_center.py \
-                  tests/test_v043_beta14.py \
-                  tests/test_v043_beta15.py
-          git commit -m "Prepare Navimower 0.4.3-beta15 notification gates"
+                  custom_components/navimower/navimower_schedule.py \
+                  custom_components/navimower/schedule_logic.py \
+                  custom_components/navimower/strings.json \
+                  custom_components/navimower/translations/en.json \
+                  tests/test_v043_beta15.py \
+                  tests/test_v043_beta16.py
+          git commit -m "Prepare Navimower 0.4.3-beta16 schedule options"
           git push --force-with-lease origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -91,16 +105,16 @@ jobs:
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta15 remote build succeeded. Full tests, compileall, diff-check and notification-gate smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta16 remote build succeeded. Full tests, compileall, diff-check, exact diff-scope and scheduler-options smoke checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
           gh issue close "${{ github.event.issue.number }}" --reason completed
 
       - name: Comment failure
         if: steps.build.outcome != 'success'
         shell: bash
         run: |
-          tail -n 220 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
+          tail -n 240 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta15 remote build failed before publishing the release branch.'
+            echo '0.4.3-beta16 remote build failed before publishing the release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
