@@ -66,7 +66,7 @@ jobs:
           assert 'return "sunrise", period' in source
           assert 'return "schedule_window", period' in source
           assert 'kind="scheduled_night_resume"' in source
-          assert "the native mowing schedule does not gate this resume" in source
+          assert "mowing schedule does not gate this resume." in source
           PY
 
           git config user.name "github-actions[bot]"
