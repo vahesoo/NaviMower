@@ -55,9 +55,15 @@ jobs:
               "tests/test_v043_beta14.py",
               "tests/test_v043_beta15.py",
           }
-          changed = set(
+          tracked = set(
               subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
           )
+          untracked = set(
+              subprocess.check_output(
+                  ["git", "ls-files", "--others", "--exclude-standard"], text=True
+              ).splitlines()
+          )
+          changed = tracked | untracked
           if changed != expected:
               raise SystemExit(f"Unexpected beta15 diff scope: {sorted(changed)}")
 
