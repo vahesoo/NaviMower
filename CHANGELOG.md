@@ -1,6 +1,22 @@
 # Changelog
 
 
+## 0.4.3-beta17
+
+Scheduler options polish and docked physical-area stabilization.
+
+### Fixed
+
+- Show a confirmed docked or charging mower as the virtual `Dock` physical area instead of a stale lawn zone or `Outside mapped zones`.
+- Hide Start/End controls completely in 24-hour Navimower Schedule mode by moving Time window clocks to a dedicated second step.
+- Render the scheduler availability note with real line breaks and omit the `None` placeholder when every mapped zone is already eligible.
+
+### Safety
+
+- The Dock display override is suppressed while a local activity command is pending so a stale docked flag cannot mask a mower that has just been dispatched.
+- Dock remains a virtual physical area only (`zone_id: null`) and never participates in mowing progress or zone completion.
+
+
 ## 0.4.3-beta16
 
 Configure the integration-owned scheduler from the Navimower gear/options flow.

@@ -181,18 +181,26 @@
       },
       "navimower_schedule": {
         "title": "Navimower Schedule",
-        "description": "Choose which proven zones the integration may mow automatically and when it may work. Only zones with at least one confirmed successful completion can be selected. A new or difficult zone must first be fully completed manually once; completing it does not select it automatically. Start and end are used only in Time window mode.\\n\\nNot yet available for automatic mowing:\\n{unavailable_zones}",
+        "description": "Choose which proven zones the integration may mow automatically and when it may work. Only zones with at least one confirmed successful completion can be selected. A new or difficult zone must first be fully completed manually once; completing it does not select it automatically.\n\n{unavailable_note}",
         "data": {
           "navimower_schedule_zone_ids": "Automatic mowing zones",
-          "navimower_schedule_mode": "Allowed mowing time",
+          "navimower_schedule_mode": "Allowed mowing time"
+        },
+        "data_description": {
+          "navimower_schedule_zone_ids": "The scheduler only dispatches zones selected here. New zones are never added automatically.",
+          "navimower_schedule_mode": "Time window asks for daily start and end times on the next screen. 24 hours keeps the managed scheduler available continuously and starts a new round after every selected zone has completed."
+        }
+      },
+      "navimower_schedule_window": {
+        "title": "Navimower Schedule — Time window",
+        "description": "Set the daily time window during which Navimower Schedule may mow. Outside this window the managed scheduler returns the mower home and preserves unfinished work for the next window.",
+        "data": {
           "navimower_schedule_start": "Start",
           "navimower_schedule_end": "End"
         },
         "data_description": {
-          "navimower_schedule_zone_ids": "The scheduler only dispatches zones selected here. New zones are never added automatically.",
-          "navimower_schedule_mode": "Time window stops managed mowing outside the configured hours. 24 hours keeps the managed scheduler available continuously and starts a new round after every selected zone has completed.",
-          "navimower_schedule_start": "Used only in Time window mode.",
-          "navimower_schedule_end": "Used only in Time window mode."
+          "navimower_schedule_start": "Daily managed mowing start time.",
+          "navimower_schedule_end": "Daily managed mowing end time."
         }
       }
     },

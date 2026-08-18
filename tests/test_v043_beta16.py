@@ -16,9 +16,7 @@ def _schedule_logic():
     return module
 
 
-def test_beta16_identity():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta16"
+def test_beta16_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta16")
 
