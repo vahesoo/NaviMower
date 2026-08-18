@@ -51,6 +51,7 @@ _STORE_VERSION = 1
 _TICK_SECONDS = 20
 _RESUME_CONFIRM_SECONDS = 90
 _CONTINUE_CONFIRM_SECONDS = 120
+_MOW_CONFIRM_SECONDS = 120
 _DOCK_RETRY_SECONDS = 60
 _RETRY_NEW_MOW_SECONDS = 30
 
@@ -408,6 +409,35 @@ class NavimowerScheduleController:
         pending = self._runtime.get("pending_command")
         return _age_seconds(pending.get("sent_at")) if isinstance(pending, dict) else None
 
+    async def _reconcile_unconfirmed_mow_start(self, activity: Any) -> None:
+        """Recover safely when a new-zone start confirmation is lost across restart."""
+        pending = self._runtime.get("pending_command")
+        if isinstance(pending, dict) and pending.get("kind") == "mow":
+            age = self._pending_age()
+            if age is not None and age >= _MOW_CONFIRM_SECONDS and activity != ACTIVITY_MOWING:
+                zone_id = pending.get("zone_id") or self._runtime.get("active_zone_id")
+                self._runtime["pending_command"] = None
+                self._runtime["suspended_reason"] = "mow_start_not_confirmed"
+                self._runtime["last_error"] = (
+                    "New-zone mowing start was not confirmed; automatic reset retry was refused"
+                )
+                self._runtime["last_command"] = f"mow_start_unconfirmed:{zone_id}"
+                self._runtime["last_command_at"] = _utc_now()
+                await self._save()
+                return
+
+        if (
+            self._runtime.get("suspended_reason") == "mow_start_not_confirmed"
+            and activity == ACTIVITY_MOWING
+            and self._runtime.get("active_zone_id") is not None
+        ):
+            zone_id = self._runtime.get("active_zone_id")
+            self._runtime["suspended_reason"] = None
+            self._runtime["last_error"] = None
+            self._runtime["last_command"] = f"late_mow_confirmed:{zone_id}"
+            self._runtime["last_command_at"] = _utc_now()
+            await self._save()
+
     def _retry_ready(self) -> bool:
         stamp = self._runtime.get("retry_not_before")
         parsed = parse_iso(stamp)
@@ -451,6 +481,7 @@ class NavimowerScheduleController:
         completed_now = await self._confirm_active_completion()
         activity = data.get("activity")
         await self._confirm_pending(activity)
+        await self._reconcile_unconfirmed_mow_start(activity)
 
         if not in_window:
             await self._enforce_closed_window(activity)
