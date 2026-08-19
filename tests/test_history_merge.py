@@ -420,249 +420,182 @@ async def provisional_cycle_reset_stub_test() -> None:
 asyncio.run(provisional_cycle_reset_stub_test())
 
 
-def practical_completion_threshold_test() -> None:
+
+def _coverage_snapshot(zone_rows, *, target, physical, activity="mowing", age=0):
+    return {
+        "coverage": {"zones": zone_rows},
+        "zone_details": [
+            {
+                "id": row["id"],
+                "name": row.get("name", f"Zone {row['id']}"),
+                "percentage": row.get("pct"),
+                "vendor_percentage": row.get("pct"),
+                "vendor_start_time": row.get("start_time"),
+                "vendor_end_time": row.get("end_time"),
+            }
+            for row in zone_rows
+        ],
+        "coverage_source_age": age,
+        "active_zone_progress_zone_id": target,
+        "current_physical_zone_id": physical,
+        "activity": activity,
+    }
+
+
+def vendor_coverage_completion_test() -> None:
     Store.values.clear()
-    manager = history.NavimowerHistory(FakeHass(), "entry-threshold", "TEST")
+    manager = history.NavimowerHistory(FakeHass(), "entry-coverage", "TEST")
     manager.process_pose(
-        position={"x": 0.0, "y": 0.0},
-        pose_time=2_300_000_000,
-        heading=0.0,
-        activity="mowing",
-        cutting=True,
-        docked=False,
-        returning=False,
-        zone_ids=[13],
-        physical_zone_id=13,
+        position={"x": 0.0, "y": 0.0}, pose_time=2_300_000_000,
+        heading=0.0, activity="mowing", cutting=True, docked=False,
+        returning=False, zone_ids=[13], physical_zone_id=13,
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 90}]},
-        [{"id": 13, "name": "Street", "percentage": 90}],
-        active_zone_progress=90,
-        active_progress_zone_id=13,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0,
-        target_zone_ids=[13],
-        physical_zone_id=13,
-        activity="mowing",
-        observed_at=2_300_000_010,
+    low = _coverage_snapshot(
+        [{"id": 13, "name": "Street", "pct": 90,
+          "start_time": 2_300_000_000, "end_time": 2_300_000_010}],
+        target=13, physical=13,
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 100}]},
-        [{"id": 13, "name": "Street", "percentage": 100}],
-        active_zone_progress=100,
-        active_progress_zone_id=13,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0,
-        target_zone_ids=[13],
-        physical_zone_id=13,
-        activity="mowing",
-        observed_at=2_300_000_020,
-    )
+    manager.prepare_cycle(low, pose_time=2_300_000_010)
+    manager.update_from_snapshot(low)
     assert "last_completed_at" not in manager.zone_history()["13"]
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 100}]},
-        [{"id": 13, "name": "Street", "percentage": 100}],
-        active_zone_progress=100,
-        active_progress_zone_id=13,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0,
-        target_zone_ids=[13],
-        physical_zone_id=13,
-        activity="mowing",
-        observed_at=2_300_000_030,
+
+    done = _coverage_snapshot(
+        [{"id": 13, "name": "Street", "pct": 100,
+          "start_time": 2_300_000_000, "end_time": 2_300_000_020}],
+        target=13, physical=13,
     )
+    manager.prepare_cycle(done, pose_time=2_300_000_020)
+    manager.update_from_snapshot(done)
     active = manager.active_session
     assert active is not None
     assert active["completed"] is True
-    assert active["completion_reason"] == "vendor_progress"
+    assert active["completion_reason"] == "vendor_coverage"
     zone = manager.zone_history()["13"]
     assert zone["last_completed_progress"] == 100
-    assert zone["last_completed_source"] == "mqtt_map_work_position"
-    assert zone["last_completed_confirmation"] == "second_fresh_sample"
+    assert zone["last_completed_source"] == "private_zone_coverage"
+    assert zone["last_completed_confirmation"] == "coverage_100_after_incomplete"
 
 
-practical_completion_threshold_test()
-print("cycle tracking tests passed")
+vendor_coverage_completion_test()
 
 
-async def live_completion_before_dock_test() -> None:
+def private_live_100_never_completes_test() -> None:
     Store.values.clear()
-    hass = FakeHass()
-    manager = history.NavimowerHistory(hass, "entry-live-complete", "TEST")
-    manager.process_pose(
-        position={"x": 0.0, "y": 0.0}, pose_time=2_400_000_000,
-        heading=0.0, activity="mowing", cutting=True, docked=False,
-        returning=False, zone_ids=[24], physical_zone_id=24,
-    )
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 91}]},
-        [{"id": 24, "name": "Yard", "progress": 91, "percentage": 91}],
-        active_zone_progress=91, active_progress_zone_id=24,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_400_000_010,
-    )
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 100}]},
-        [{"id": 24, "name": "Yard", "progress": 100, "percentage": 91}],
-        active_zone_progress=100, active_progress_zone_id=24,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_400_000_020,
-    )
-    assert "last_completed_at" not in manager.zone_history()["24"]
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 100}]},
-        [{"id": 24, "name": "Yard", "progress": 100, "percentage": 91}],
-        active_zone_progress=100, active_progress_zone_id=24,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_400_000_030,
-    )
-    zone_before_dock = manager.zone_history()["24"]
-    completed_at = zone_before_dock["last_completed_at"]
-    assert zone_before_dock["last_completed_progress"] == 100
-    assert manager.active_session["task_zone_completion_confirmed"] == [24]
-
-    manager.process_pose(
-        position={"x": 0.1, "y": 0.1}, pose_time=2_400_000_040,
-        heading=0.0, activity="docked", cutting=False, docked=True,
-        returning=False, zone_ids=[24], completed=None,
-    )
-    assert manager.zone_history()["24"]["last_completed_at"] == completed_at
-    assert manager._active_id is None
-    if hass.tasks:
-        await asyncio.gather(*hass.tasks)
-
-
-asyncio.run(live_completion_before_dock_test())
-
-
-def guarded_source_jump_test() -> None:
-    Store.values.clear()
-    manager = history.NavimowerHistory(FakeHass(), "entry-source-jump", "TEST")
+    manager = history.NavimowerHistory(FakeHass(), "entry-live-private", "TEST")
     manager.process_pose(
         position={"x": 1.0, "y": 1.0}, pose_time=2_410_000_000,
         heading=0.0, activity="mowing", cutting=True, docked=False,
         returning=False, zone_ids=[24], physical_zone_id=24,
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 25}]},
-        [{"id": 24, "name": "Yard", "percentage": 25}],
-        active_zone_progress=25, active_progress_zone_id=24,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_410_000_010,
+    partial = _coverage_snapshot(
+        [{"id": 24, "name": "Yard", "pct": 25,
+          "start_time": 2_410_000_000, "end_time": 2_410_000_010}],
+        target=24, physical=24,
     )
-    # A sudden fresh 100 from another source becomes a candidate, not completion.
+    manager.prepare_cycle(partial, pose_time=2_410_000_010)
+    manager.update_from_snapshot(partial)
     manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 25}]},
-        [{"id": 24, "name": "Yard", "percentage": 25}],
+        partial["coverage"], partial["zone_details"],
         active_zone_progress=100, active_progress_zone_id=24,
         active_zone_progress_source="private_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_410_000_020,
-    )
-    assert "last_completed_at" not in manager.zone_history()["24"]
-    diag = manager.cycle_diagnostics()["active_completion"]
-    assert diag["candidates"]["24"]["progress"] == 100
-
-    # Re-reading the same cached private sample must still not complete it.
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 25}]},
-        [{"id": 24, "name": "Yard", "percentage": 25}],
-        active_zone_progress=100, active_progress_zone_id=24,
-        active_zone_progress_source="private_map_work_position",
-        active_zone_progress_source_age=5, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_410_000_025,
+        active_zone_progress_source_age=0,
+        task_progress=100, task_progress_source="mqtt_task_percentage",
+        task_progress_source_age=0, target_zone_ids=[24],
+        physical_zone_id=24, coverage_source_age=0,
+        activity="mowing", observed_at=2_410_000_020,
     )
     assert "last_completed_at" not in manager.zone_history()["24"]
 
-    # A genuinely newer high sample confirms the guarded candidate.
-    manager.update_zone_history(
-        {"zones": [{"id": 24, "pct": 25}]},
-        [{"id": 24, "name": "Yard", "percentage": 25}],
-        active_zone_progress=100, active_progress_zone_id=24,
-        active_zone_progress_source="private_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[24],
-        physical_zone_id=24, activity="mowing", observed_at=2_410_000_030,
-    )
-    zone = manager.zone_history()["24"]
-    assert zone["last_completed_source"] == "private_map_work_position"
-    assert zone["last_completed_confirmation"] == "second_fresh_sample"
+
+private_live_100_never_completes_test()
 
 
-guarded_source_jump_test()
-
-
-def stale_last_known_never_completes_test() -> None:
+def stale_coverage_100_never_completes_test() -> None:
     Store.values.clear()
-    manager = history.NavimowerHistory(FakeHass(), "entry-last-known", "TEST")
+    manager = history.NavimowerHistory(FakeHass(), "entry-stale-coverage", "TEST")
     manager.process_pose(
         position={"x": 2.0, "y": 2.0}, pose_time=2_420_000_000,
         heading=0.0, activity="mowing", cutting=True, docked=False,
         returning=False, zone_ids=[13], physical_zone_id=13,
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 50}]},
-        [{"id": 13, "name": "Street", "percentage": 50}],
-        active_zone_progress=50, active_progress_zone_id=13,
-        active_zone_progress_source="mqtt_map_work_position",
-        active_zone_progress_source_age=0, target_zone_ids=[13],
-        physical_zone_id=13, activity="mowing", observed_at=2_420_000_010,
+    stale = _coverage_snapshot(
+        [{"id": 13, "name": "Street", "pct": 100,
+          "start_time": 2_200_000_000, "end_time": 2_200_000_100}],
+        target=13, physical=13,
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 50}]},
-        [{"id": 13, "name": "Street", "percentage": 50}],
-        active_zone_progress=100, active_progress_zone_id=13,
-        active_zone_progress_source="last_known_zone",
-        active_zone_progress_source_age=None,
-        task_progress=100, task_progress_source="last_known",
-        task_progress_source_age=None, target_zone_ids=[13],
-        physical_zone_id=13, activity="returning", observed_at=2_420_000_020,
-    )
+    manager.prepare_cycle(stale, pose_time=2_420_000_010)
+    manager.update_from_snapshot(stale)
     assert "last_completed_at" not in manager.zone_history()["13"]
+    diag = manager.cycle_diagnostics()["active_completion"]
+    assert diag["candidates"]["13"]["reason"] == "coverage_100_without_current_cycle_evidence"
 
 
-stale_last_known_never_completes_test()
+stale_coverage_100_never_completes_test()
 
 
-def current_cycle_cloud_fallback_test() -> None:
+def multi_zone_target_transition_completion_test() -> None:
     Store.values.clear()
-    manager = history.NavimowerHistory(FakeHass(), "entry-cloud-fallback", "TEST")
+    manager = history.NavimowerHistory(FakeHass(), "entry-multi-zone", "TEST")
     manager.process_pose(
         position={"x": 3.0, "y": 3.0}, pose_time=2_430_000_000,
         heading=0.0, activity="mowing", cutting=True, docked=False,
+        returning=False, zone_ids=[24, 13], physical_zone_id=24,
+    )
+    first = _coverage_snapshot(
+        [
+            {"id": 24, "name": "Yard", "pct": 97,
+             "start_time": 2_430_000_000, "end_time": 2_430_000_010},
+            {"id": 13, "name": "Street", "pct": 0,
+             "start_time": 2_430_000_000, "end_time": 0},
+        ],
+        target=24, physical=24,
+    )
+    manager.prepare_cycle(first, pose_time=2_430_000_010)
+    manager.update_from_snapshot(first)
+    assert "last_completed_at" not in manager.zone_history()["24"]
+
+    second = _coverage_snapshot(
+        [
+            {"id": 24, "name": "Yard", "pct": 100,
+             "start_time": 2_430_000_000, "end_time": 2_430_000_020},
+            {"id": 13, "name": "Street", "pct": 20,
+             "start_time": 2_430_000_015, "end_time": 2_430_000_020},
+        ],
+        target=13, physical=13,
+    )
+    manager.prepare_cycle(second, pose_time=2_430_000_020)
+    manager.update_from_snapshot(second)
+    zone = manager.zone_history()["24"]
+    assert zone["last_completed_progress"] == 100
+    assert zone["last_completed_source"] == "private_zone_coverage"
+    diag = manager.cycle_diagnostics()["active_completion"]
+    assert 24 in diag["confirmed"]
+    assert 13 in diag["seen_incomplete"]
+
+
+multi_zone_target_transition_completion_test()
+
+
+def end_time_below_100_never_completes_test() -> None:
+    Store.values.clear()
+    manager = history.NavimowerHistory(FakeHass(), "entry-end-time", "TEST")
+    manager.process_pose(
+        position={"x": 4.0, "y": 4.0}, pose_time=2_440_000_000,
+        heading=0.0, activity="mowing", cutting=True, docked=False,
         returning=False, zone_ids=[13], physical_zone_id=13,
     )
-    start = 2_430_000_000
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 40, "start_time": start}]},
-        [{"id": 13, "name": "Street", "percentage": 40,
-          "vendor_start_time": start, "vendor_end_time": None}],
-        active_zone_progress=None, active_progress_zone_id=13,
-        target_zone_ids=[13], physical_zone_id=13,
-        coverage_source_age=0, activity="mowing", observed_at=2_430_000_010,
+    partial = _coverage_snapshot(
+        [{"id": 13, "name": "Street", "pct": 97,
+          "start_time": 2_440_000_000, "end_time": 2_440_000_020}],
+        target=13, physical=13, activity="returning",
     )
-    manager.update_zone_history(
-        {"zones": [{"id": 13, "pct": 97, "start_time": start,
-                    "end_time": 2_430_000_020}]},
-        [{"id": 13, "name": "Street", "percentage": 97,
-          "vendor_start_time": start, "vendor_end_time": 2_430_000_020}],
-        active_zone_progress=None, active_progress_zone_id=13,
-        target_zone_ids=[13], physical_zone_id=13,
-        coverage_source_age=0, activity="returning", observed_at=2_430_000_021,
-    )
-    zone = manager.zone_history()["13"]
-    assert zone["last_completed_progress"] == 97
-    assert zone["last_completed_source"] == "private_zone_coverage"
-    assert zone["last_completed_confirmation"] == "current_cycle_cloud_end"
+    manager.prepare_cycle(partial, pose_time=2_440_000_021)
+    manager.update_from_snapshot(partial)
+    assert "last_completed_at" not in manager.zone_history()["13"]
 
 
-current_cycle_cloud_fallback_test()
-print("beta20 completion arbitration tests passed")
-
-
+end_time_below_100_never_completes_test()
+print("beta21 coverage completion tests passed")
 
 
 async def explicit_partial_reset_test() -> None:

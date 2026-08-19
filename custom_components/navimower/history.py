@@ -37,23 +37,12 @@ _INDEX_VERSION = 1
 _SESSION_VERSION = 1
 _LEGACY_TRAIL_VERSION = 1
 
-# Completion is deliberately stricter than display telemetry. Last-known values
-# can keep sensors stable but can never create a completion event. Fresh MQTT or
-# private-cloud evidence must belong to the current zone/cycle.
+# Completion is stricter than display telemetry. Live work/task counters are
+# useful progress signals, but only fresh vendor per-zone coverage is allowed to
+# advance ``last_completed_at``. This avoids stale mapWorkPosition/task values
+# falsely completing a zone after rain, charging or another interruption.
 _COMPLETION_EVIDENCE_MAX_AGE_SECONDS = 30.0
-_COMPLETION_SAMPLE_ADVANCE_MS = 1000
-_COMPLETION_JUMP_GUARD_PERCENT = 25
-_COMPLETION_CYCLE_START_TOLERANCE_MS = 30_000
-_ACTIVE_ZONE_COMPLETION_SOURCES = frozenset(
-    {
-        "mqtt_map_work_position",
-        "mqtt_route_progress",
-        "private_map_work_position",
-    }
-)
-_SINGLE_ZONE_TASK_COMPLETION_SOURCES = frozenset(
-    {"mqtt_task_percentage", "private_task_percentage"}
-)
+_COMPLETION_VENDOR_EVENT_TOLERANCE_MS = 120_000
 
 SESSION_DETAIL_POINT_FORMAT = [
     "timestamp_ms",
@@ -342,6 +331,12 @@ def _merge_session_records(
     merged["task_zone_seen_incomplete"] = _unique_ints(
         previous.get("task_zone_seen_incomplete"), continuation.get("task_zone_seen_incomplete")
     )
+    merged["task_zone_seen_target"] = _unique_ints(
+        previous.get("task_zone_seen_target"), continuation.get("task_zone_seen_target")
+    )
+    coverage_state = dict(previous.get("task_zone_coverage_state") or {})
+    coverage_state.update(continuation.get("task_zone_coverage_state") or {})
+    merged["task_zone_coverage_state"] = coverage_state
     merged["task_zone_completion_confirmed"] = _unique_ints(
         previous.get("task_zone_completion_confirmed"), continuation.get("task_zone_completion_confirmed")
     )
@@ -942,6 +937,8 @@ class NavimowerHistory:
             "visited_zone_ids": [],
             "task_zone_progress": {str(value): 0 for value in zone_ids},
             "task_zone_seen_incomplete": [],
+            "task_zone_seen_target": [],
+            "task_zone_coverage_state": {},
             "task_zone_completion_confirmed": [],
             "task_zone_last_evidence": {},
             "task_zone_completion_candidates": {},
@@ -989,6 +986,8 @@ class NavimowerHistory:
         previous.setdefault("visited_zone_ids", [])
         previous.setdefault("task_zone_progress", {})
         previous.setdefault("task_zone_seen_incomplete", [])
+        previous.setdefault("task_zone_seen_target", [])
+        previous.setdefault("task_zone_coverage_state", {})
         previous.setdefault("task_zone_completion_confirmed", [])
         previous.setdefault("task_zone_last_evidence", {})
         previous.setdefault("task_zone_completion_candidates", {})
@@ -1305,12 +1304,14 @@ class NavimowerHistory:
                 ]
                 task_progress = active.setdefault("task_zone_progress", {})
                 last_evidence = active.setdefault("task_zone_last_evidence", {})
+                coverage_state = active.setdefault("task_zone_coverage_state", {})
                 completion_candidates = active.setdefault(
                     "task_zone_completion_candidates", {}
                 )
                 for zone_id in reset_set:
                     task_progress[str(zone_id)] = 0
                     last_evidence.pop(str(zone_id), None)
+                    coverage_state.pop(str(zone_id), None)
                     completion_candidates.pop(str(zone_id), None)
                 if active.get("completion_reason") == "vendor_progress":
                     active["completed"] = None
@@ -1336,8 +1337,222 @@ class NavimowerHistory:
                     known = [value for value in (previous_peak, progress) if value is not None]
                     peak = max(known) if known else None
                 self._zone_progress_state[str(zone_id)] = {"progress": progress, "peak_progress": peak, "start_time": _as_int(row.get("start_time")), "end_time": _as_int(row.get("end_time")), "observed_at_ms": _timestamp_ms(pose_time)}
+            self._confirm_coverage_completions_locked(snapshot, pose_time)
         self._schedule_index_save()
         return bool(reset_rows)
+
+    def _confirm_coverage_completions_locked(
+        self, snapshot: dict[str, Any], pose_time: Any
+    ) -> None:
+        """Confirm per-zone completion only from fresh vendor coverage reaching 100%."""
+        active = self._cache.get(self._active_id or "")
+        if active is None:
+            return
+
+        coverage_age = _as_float(snapshot.get("coverage_source_age"))
+        if (
+            coverage_age is None
+            or coverage_age < 0
+            or coverage_age > _COMPLETION_EVIDENCE_MAX_AGE_SECONDS
+        ):
+            return
+
+        coverage_rows = {
+            _as_int(item.get("id")): item
+            for item in (snapshot.get("coverage") or {}).get("zones") or []
+            if isinstance(item, dict) and _as_int(item.get("id")) is not None
+        }
+        if not coverage_rows:
+            return
+
+        now_ms = _timestamp_ms(pose_time)
+        current_target = _as_int(snapshot.get("active_zone_progress_zone_id"))
+        physical_zone = _as_int(snapshot.get("current_physical_zone_id"))
+        activity_name = str(snapshot.get("activity") or "").lower()
+
+        seen_target = set(_unique_ints(active.get("task_zone_seen_target")))
+        if current_target is not None:
+            seen_target.add(current_target)
+        if activity_name == "mowing" and physical_zone is not None:
+            seen_target.add(physical_zone)
+
+        seen_incomplete = set(
+            _unique_ints(active.get("task_zone_seen_incomplete"))
+        )
+        confirmed = set(
+            _unique_ints(active.get("task_zone_completion_confirmed"))
+        )
+        coverage_state = active.setdefault("task_zone_coverage_state", {})
+        last_evidence = active.setdefault("task_zone_last_evidence", {})
+        completion_candidates = active.setdefault(
+            "task_zone_completion_candidates", {}
+        )
+
+        relevant = sorted(seen_target | seen_incomplete)
+        for zone_id in relevant:
+            row = coverage_rows.get(zone_id)
+            if not isinstance(row, dict):
+                continue
+            progress = _as_int(row.get("pct"))
+            if progress is None or progress < 0 or progress > 100:
+                continue
+
+            zone_key = str(zone_id)
+            previous = dict(coverage_state.get(zone_key) or {})
+            previous_progress = _as_int(previous.get("progress"))
+            previous_start = _as_int(previous.get("start_time"))
+            previous_end = _as_int(previous.get("end_time"))
+            vendor_start = _as_int(row.get("start_time"))
+            vendor_end = _as_int(row.get("end_time"))
+            vendor_start_ms = _timestamp_ms(vendor_start) if vendor_start else None
+            vendor_end_ms = _timestamp_ms(vendor_end) if vendor_end else None
+            sample_ms = now_ms - int(max(0.0, coverage_age) * 1000)
+            evidence = {
+                "progress": progress,
+                "source": "private_zone_coverage",
+                "source_age_s": round(coverage_age, 3),
+                "sample_ms": sample_ms,
+                "observed_at": _iso(now_ms),
+                "start_time": vendor_start,
+                "end_time": vendor_end,
+            }
+
+            if progress < 100:
+                seen_incomplete.add(zone_id)
+                completion_candidates.pop(zone_key, None)
+                active["last_completion_rejection"] = None
+                last_evidence[zone_key] = evidence
+                coverage_state[zone_key] = {
+                    "progress": progress,
+                    "start_time": vendor_start,
+                    "end_time": vendor_end,
+                    "observed_at_ms": now_ms,
+                }
+                continue
+
+            if zone_id in confirmed:
+                coverage_state[zone_key] = {
+                    "progress": progress,
+                    "start_time": vendor_start,
+                    "end_time": vendor_end,
+                    "observed_at_ms": now_ms,
+                }
+                last_evidence[zone_key] = evidence
+                continue
+
+            transitioned_to_100 = bool(
+                previous_progress is not None and previous_progress < 100
+            )
+            vendor_cycle_changed = bool(
+                (
+                    vendor_start is not None
+                    and previous_start is not None
+                    and vendor_start > previous_start
+                )
+                or (
+                    vendor_end is not None
+                    and previous_end is not None
+                    and vendor_end > previous_end
+                    and previous_progress is not None
+                    and previous_progress < 100
+                )
+            )
+
+            zone_record = dict(self._zone_history.get(zone_key) or {})
+            previous_completed_ms = _iso_ms(zone_record.get("last_completed_at"))
+            recent_vendor_cycle = bool(
+                zone_id in seen_target
+                and vendor_start_ms is not None
+                and vendor_end_ms is not None
+                and vendor_end_ms >= vendor_start_ms
+                and vendor_start_ms
+                >= now_ms - _COMPLETION_VENDOR_EVENT_TOLERANCE_MS
+                and vendor_end_ms
+                <= now_ms + _COMPLETION_VENDOR_EVENT_TOLERANCE_MS
+                and (
+                    previous_completed_ms is None
+                    or vendor_end_ms > previous_completed_ms + 1000
+                )
+            )
+
+            if zone_id in seen_incomplete:
+                confirmation = "coverage_100_after_incomplete"
+            elif transitioned_to_100 or vendor_cycle_changed:
+                confirmation = "coverage_100_transition"
+            elif recent_vendor_cycle:
+                confirmation = "coverage_100_recent_vendor_cycle"
+            else:
+                completion_candidates[zone_key] = {
+                    **evidence,
+                    "zone_id": zone_id,
+                    "reason": "coverage_100_without_current_cycle_evidence",
+                }
+                active["last_completion_rejection"] = dict(
+                    completion_candidates[zone_key]
+                )
+                coverage_state[zone_key] = {
+                    "progress": progress,
+                    "start_time": vendor_start,
+                    "end_time": vendor_end,
+                    "observed_at_ms": now_ms,
+                }
+                last_evidence[zone_key] = evidence
+                continue
+
+            completion_ms = now_ms
+            armed_sample_ms = _as_int(
+                (last_evidence.get(zone_key) or {}).get("sample_ms")
+            )
+            if (
+                vendor_end_ms is not None
+                and vendor_end_ms
+                <= now_ms + _COMPLETION_VENDOR_EVENT_TOLERANCE_MS
+                and (
+                    armed_sample_ms is None
+                    or vendor_end_ms
+                    >= armed_sample_ms - _COMPLETION_VENDOR_EVENT_TOLERANCE_MS
+                )
+            ):
+                completion_ms = vendor_end_ms
+
+            confirmed.add(zone_id)
+            completion_candidates.pop(zone_key, None)
+            active["last_completion_rejection"] = None
+            zone_record.update(
+                {
+                    "id": zone_id,
+                    "name": zone_record.get("name")
+                    or row.get("name")
+                    or f"Zone {zone_id}",
+                    "last_completed_at": _iso(completion_ms),
+                    "last_completed_progress": 100,
+                    "last_completed_source": "private_zone_coverage",
+                    "last_completed_confirmation": confirmation,
+                    "last_completed_cycle_id": active.get("id"),
+                }
+            )
+            self._zone_history[zone_key] = zone_record
+            active.setdefault("final_progress", {})[zone_key] = 100
+            coverage_state[zone_key] = {
+                "progress": progress,
+                "start_time": vendor_start,
+                "end_time": vendor_end,
+                "observed_at_ms": now_ms,
+            }
+            last_evidence[zone_key] = evidence
+
+        active["task_zone_seen_target"] = sorted(seen_target)
+        active["task_zone_seen_incomplete"] = sorted(seen_incomplete)
+        active["task_zone_completion_confirmed"] = sorted(confirmed)
+        selected = _unique_ints(active.get("zone_ids"))
+        if selected and set(selected).issubset(confirmed):
+            active["completed"] = True
+            active["completion_reason"] = "vendor_coverage"
+        elif active.get("completion_reason") == "vendor_coverage":
+            active["completed"] = None
+            active["completion_reason"] = None
+        self._update_active_metadata_locked(active)
+        self._schedule_active_save()
 
     def cycle_diagnostics(self) -> dict[str, Any]:
         """Return non-sensitive cycle and completion-arbitration state."""
@@ -1350,6 +1565,12 @@ class NavimowerHistory:
                     "zone_ids": _unique_ints(active.get("zone_ids")),
                     "seen_incomplete": _unique_ints(
                         active.get("task_zone_seen_incomplete")
+                    ),
+                    "seen_target": _unique_ints(
+                        active.get("task_zone_seen_target")
+                    ),
+                    "coverage_state": deepcopy(
+                        active.get("task_zone_coverage_state") or {}
                     ),
                     "confirmed": _unique_ints(
                         active.get("task_zone_completion_confirmed")
@@ -1392,28 +1613,13 @@ class NavimowerHistory:
         cycle_reset_pending: bool = False,
         observed_at: Any = None,
     ) -> None:
-        """Persist zone state and confirm completion from fresh current-cycle evidence.
-
-        Display telemetry may retain a last-known value through a source outage.
-        Completion is intentionally fail-closed: only fresh MQTT/private-cloud
-        counters tied to the active zone/cycle may advance ``last_completed_at``.
-        """
+        """Persist display state; completion is owned by vendor coverage arbitration."""
         coverage_by_id = {
             _as_int(item.get("id")): item
             for item in (coverage or {}).get("zones") or []
             if isinstance(item, dict) and _as_int(item.get("id")) is not None
         }
         changed = False
-        now_ms = _timestamp_ms(observed_at)
-
-        def fresh_age(value: Any) -> tuple[bool, float | None]:
-            age = _as_float(value)
-            return (
-                age is not None
-                and 0 <= age <= _COMPLETION_EVIDENCE_MAX_AGE_SECONDS,
-                age,
-            )
-
         with self._lock:
             for detail in zone_details:
                 if not isinstance(detail, dict):
@@ -1461,311 +1667,6 @@ class NavimowerHistory:
 
             active = self._cache.get(self._active_id or "")
             if active is not None:
-                progress_state = active.setdefault("task_zone_progress", {})
-                for zone_id in active.get("zone_ids") or []:
-                    progress_state.setdefault(str(zone_id), 0)
-                seen_incomplete = set(
-                    _unique_ints(active.get("task_zone_seen_incomplete"))
-                )
-                completion_confirmed = set(
-                    _unique_ints(active.get("task_zone_completion_confirmed"))
-                )
-                last_evidence = active.setdefault("task_zone_last_evidence", {})
-                completion_candidates = active.setdefault(
-                    "task_zone_completion_candidates", {}
-                )
-                active_zone_id = _as_int(active_progress_zone_id)
-
-                if active_zone_id is not None:
-                    active_detail = next(
-                        (
-                            item
-                            for item in zone_details
-                            if _as_int(item.get("id")) == active_zone_id
-                        ),
-                        None,
-                    )
-                    if active_detail is not None:
-                        zone_key = str(active_zone_id)
-                        zone_record = dict(
-                            self._zone_history.get(zone_key) or {}
-                        )
-                        target_ids = _unique_ints(target_zone_ids)
-                        single_zone_task = bool(
-                            len(target_ids) == 1
-                            and target_ids[0] == active_zone_id
-                        )
-                        physical_id = _as_int(physical_zone_id)
-
-                        # Private-cloud coverage is usable as a fallback only when
-                        # its start timestamp proves the row belongs to this cycle.
-                        vendor_progress = _as_int(
-                            active_detail.get("vendor_percentage")
-                            if active_detail.get("vendor_percentage") is not None
-                            else active_detail.get("percentage")
-                        )
-                        vendor_start = _as_int(
-                            active_detail.get("vendor_start_time")
-                        )
-                        vendor_end = _as_int(active_detail.get("vendor_end_time"))
-                        cloud_fresh, cloud_age = fresh_age(coverage_source_age)
-                        cycle_start_ms = _as_int(active.get("started_at_ms")) or now_ms
-                        for boundary in active.get("zone_cycle_boundaries") or []:
-                            if not isinstance(boundary, dict):
-                                continue
-                            if _as_int(boundary.get("zone_id")) != active_zone_id:
-                                continue
-                            boundary_ms = _as_int(boundary.get("at_ms"))
-                            if boundary_ms is not None:
-                                cycle_start_ms = max(cycle_start_ms, boundary_ms)
-                        vendor_start_ms = (
-                            _timestamp_ms(vendor_start) if vendor_start else None
-                        )
-                        vendor_end_ms = _timestamp_ms(vendor_end) if vendor_end else None
-                        cloud_current_cycle = bool(
-                            cloud_fresh
-                            and vendor_progress is not None
-                            and vendor_start_ms is not None
-                            and vendor_start_ms
-                            >= cycle_start_ms - _COMPLETION_CYCLE_START_TOLERANCE_MS
-                            and vendor_start_ms
-                            <= now_ms + _COMPLETION_CYCLE_START_TOLERANCE_MS
-                        )
-                        cloud_end_current_cycle = bool(
-                            cloud_current_cycle
-                            and vendor_end_ms is not None
-                            and vendor_end_ms >= cycle_start_ms
-                            and vendor_end_ms
-                            <= now_ms + _COMPLETION_CYCLE_START_TOLERANCE_MS
-                            and (vendor_progress or 0)
-                            >= VENDOR_COMPLETION_PROGRESS_MIN
-                        )
-
-                        source = str(active_zone_progress_source or "")
-                        source_fresh, source_age = fresh_age(
-                            active_zone_progress_source_age
-                        )
-                        progress = _as_int(active_zone_progress)
-                        route_zone_matches = not (
-                            source == "mqtt_route_progress"
-                            and physical_id is not None
-                            and physical_id != active_zone_id
-                        )
-
-                        task_source = str(task_progress_source or "")
-                        task_fresh, task_age = fresh_age(task_progress_source_age)
-                        task_value = _as_int(task_progress)
-                        task_evidence_fresh = bool(
-                            single_zone_task
-                            and task_source in _SINGLE_ZONE_TASK_COMPLETION_SOURCES
-                            and task_fresh
-                            and task_value is not None
-                        )
-
-                        evidence_progress = None
-                        evidence_source = None
-                        evidence_age = None
-                        if (
-                            source in _ACTIVE_ZONE_COMPLETION_SOURCES
-                            and source_fresh
-                            and progress is not None
-                            and route_zone_matches
-                        ):
-                            evidence_progress = progress
-                            evidence_source = source
-                            evidence_age = source_age
-                        elif task_evidence_fresh:
-                            evidence_progress = task_value
-                            evidence_source = f"{task_source}_single_zone"
-                            evidence_age = task_age
-                        elif cloud_current_cycle:
-                            evidence_progress = vendor_progress
-                            evidence_source = "private_zone_coverage"
-                            evidence_age = cloud_age
-
-                        if evidence_progress is not None and evidence_source:
-                            previous_progress = _as_int(progress_state.get(zone_key))
-                            same_cycle_persisted = (
-                                zone_record.get("last_completed_cycle_id")
-                                == active.get("id")
-                            )
-                            sample_ms = now_ms - int(
-                                max(0.0, float(evidence_age or 0.0)) * 1000
-                            )
-                            evidence_snapshot = {
-                                "progress": evidence_progress,
-                                "source": evidence_source,
-                                "source_age_s": (
-                                    round(float(evidence_age), 3)
-                                    if evidence_age is not None
-                                    else None
-                                ),
-                                "sample_ms": sample_ms,
-                                "observed_at": _iso(now_ms),
-                            }
-
-                            if evidence_progress < VENDOR_COMPLETION_PROGRESS_MIN:
-                                seen_incomplete.add(active_zone_id)
-                                completion_candidates.pop(zone_key, None)
-                                # Heal older optimistic in-memory state, but never
-                                # retract a beta20 completion already persisted for
-                                # this exact cycle because small vendor regressions
-                                # around 95% are legitimate.
-                                if (
-                                    active_zone_id in completion_confirmed
-                                    and not same_cycle_persisted
-                                ):
-                                    completion_confirmed.discard(active_zone_id)
-                                if (
-                                    previous_progress is not None
-                                    and previous_progress
-                                    >= VENDOR_COMPLETION_PROGRESS_MIN
-                                    and not same_cycle_persisted
-                                ):
-                                    progress_state[zone_key] = evidence_progress
-                                    if active.get("completion_reason") == "vendor_progress":
-                                        active["completed"] = None
-                                        active["completion_reason"] = None
-                                        active["final_progress"] = {}
-                                else:
-                                    progress_state[zone_key] = max(
-                                        previous_progress or 0, evidence_progress
-                                    )
-                                active["last_completion_rejection"] = None
-                            else:
-                                progress_state[zone_key] = max(
-                                    previous_progress or 0, evidence_progress
-                                )
-                                activity_name = str(activity or "").lower()
-                                finish_signals: list[str] = []
-                                if evidence_progress >= 100:
-                                    finish_signals.append("progress_100")
-                                if cloud_end_current_cycle:
-                                    finish_signals.append("current_cycle_cloud_end")
-                                if task_evidence_fresh and (task_value or 0) >= 100:
-                                    finish_signals.append("single_zone_task_100")
-
-                                if activity_name == ACTIVITY_ERROR:
-                                    active["last_completion_rejection"] = {
-                                        **evidence_snapshot,
-                                        "zone_id": active_zone_id,
-                                        "reason": "error_state",
-                                    }
-                                elif active_zone_id not in seen_incomplete:
-                                    active["last_completion_rejection"] = {
-                                        **evidence_snapshot,
-                                        "zone_id": active_zone_id,
-                                        "reason": "high_before_current_cycle_low",
-                                    }
-                                elif not finish_signals:
-                                    active["last_completion_rejection"] = {
-                                        **evidence_snapshot,
-                                        "zone_id": active_zone_id,
-                                        "reason": "awaiting_finish_signal",
-                                    }
-                                elif active_zone_id not in completion_confirmed:
-                                    previous_evidence = last_evidence.get(zone_key)
-                                    previous_evidence_progress = _as_int(
-                                        (previous_evidence or {}).get("progress")
-                                    )
-                                    sudden_jump = bool(
-                                        previous_evidence_progress is None
-                                        or evidence_progress
-                                        - previous_evidence_progress
-                                        > _COMPLETION_JUMP_GUARD_PERCENT
-                                    )
-                                    candidate = completion_candidates.get(zone_key)
-                                    candidate_sample = _as_int(
-                                        (candidate or {}).get("sample_ms")
-                                    )
-                                    second_fresh_sample = bool(
-                                        candidate_sample is not None
-                                        and sample_ms
-                                        >= candidate_sample
-                                        + _COMPLETION_SAMPLE_ADVANCE_MS
-                                    )
-                                    corroborated = bool(
-                                        cloud_end_current_cycle
-                                        or (
-                                            task_evidence_fresh
-                                            and (task_value or 0) >= 100
-                                            and not evidence_source.endswith(
-                                                "_single_zone"
-                                            )
-                                        )
-                                    )
-                                    if not corroborated and candidate is None:
-                                        completion_candidates[zone_key] = {
-                                            **evidence_snapshot,
-                                            "zone_id": active_zone_id,
-                                            "finish_signals": list(finish_signals),
-                                        }
-                                        active["last_completion_rejection"] = {
-                                            **evidence_snapshot,
-                                            "zone_id": active_zone_id,
-                                            "reason": (
-                                                "guarded_large_progress_jump"
-                                                if sudden_jump
-                                                else "awaiting_second_fresh_sample"
-                                            ),
-                                        }
-                                    elif (
-                                        candidate is not None
-                                        and not second_fresh_sample
-                                        and not corroborated
-                                    ):
-                                        active["last_completion_rejection"] = {
-                                            **evidence_snapshot,
-                                            "zone_id": active_zone_id,
-                                            "reason": "waiting_for_second_fresh_sample",
-                                        }
-                                    else:
-                                        confirmation = (
-                                            "current_cycle_cloud_end"
-                                            if cloud_end_current_cycle
-                                            else "single_zone_task_100"
-                                            if task_evidence_fresh
-                                            and (task_value or 0) >= 100
-                                            and not evidence_source.endswith("_single_zone")
-                                            else "second_fresh_sample"
-                                            if candidate is not None
-                                            else finish_signals[0]
-                                        )
-                                        completion_confirmed.add(active_zone_id)
-                                        completion_candidates.pop(zone_key, None)
-                                        active["last_completion_rejection"] = None
-                                        if not same_cycle_persisted:
-                                            completion_ms = (
-                                                vendor_end_ms
-                                                if cloud_end_current_cycle
-                                                and vendor_end_ms is not None
-                                                else now_ms
-                                            )
-                                            zone_record.update(
-                                                {
-                                                    "id": active_zone_id,
-                                                    "name": zone_record.get("name")
-                                                    or active_detail.get("name")
-                                                    or f"Zone {active_zone_id}",
-                                                    "last_completed_at": _iso(completion_ms),
-                                                    "last_completed_progress": evidence_progress,
-                                                    "last_completed_source": evidence_source,
-                                                    "last_completed_confirmation": confirmation,
-                                                    "last_completed_cycle_id": active.get("id"),
-                                                }
-                                            )
-                                            self._zone_history[zone_key] = zone_record
-                                        final_progress = active.setdefault(
-                                            "final_progress", {}
-                                        )
-                                        final_progress[zone_key] = evidence_progress
-
-                            last_evidence[zone_key] = evidence_snapshot
-
-                active["task_zone_seen_incomplete"] = sorted(seen_incomplete)
-                active["task_zone_completion_confirmed"] = sorted(
-                    completion_confirmed
-                )
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])
                     candidates = [
@@ -1776,19 +1677,6 @@ class NavimowerHistory:
                     known = [value for value in candidates if value is not None]
                     if len(set(known)) == 1:
                         active["cutting_height_mm"] = known[0]
-                selected_zone_ids = _unique_ints(active.get("zone_ids"))
-                if (
-                    selected_zone_ids
-                    and set(selected_zone_ids).issubset(completion_confirmed)
-                ):
-                    active["completed"] = True
-                    active["completion_reason"] = (
-                        active.get("completion_reason") or "vendor_progress"
-                    )
-                elif active.get("completion_reason") == "vendor_progress":
-                    active["completed"] = None
-                    active["completion_reason"] = None
-                    active["final_progress"] = {}
                 self._update_active_metadata_locked(active)
                 changed = True
 
