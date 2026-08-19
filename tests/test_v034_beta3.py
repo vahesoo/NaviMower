@@ -92,9 +92,9 @@ def test_completed_vendor_coverage_keeps_monotonic_task_value() -> None:
 
 def test_history_heals_stale_completion_and_false_completed_flag() -> None:
     source = (COMPONENT / "history.py").read_text()
-    assert "stale_completed_value = bool(" in source
-    assert "vendor_progress < VENDOR_COMPLETION_PROGRESS_MIN" in source
-    assert 'task_progress[str(active_zone_id)] = progress' in source
+    assert '"task_zone_last_evidence"' in source
+    assert '"task_zone_completion_candidates"' in source
+    assert "previous_progress" in source
     assert 'active.get("completion_reason") == "vendor_progress"' in source
     assert 'active["completed"] = None' in source
 

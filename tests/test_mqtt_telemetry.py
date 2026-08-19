@@ -27,6 +27,9 @@ first = parse(
 )
 assert first is not None
 assert first["_progress_updated"] is True
+assert first["_route_progress_updated"] is True
+assert first["_work_progress_updated"] is False
+assert first["_task_progress_updated"] is False
 assert first["_area_updated"] is True
 assert first["mow_progress"] == 8400
 
@@ -40,6 +43,9 @@ assert second is not None
 assert second["mow_progress"] == 8400
 assert second["_pose_updated"] is True
 assert second["_progress_updated"] is False
+assert second["_route_progress_updated"] is False
+assert second["_work_progress_updated"] is False
+assert second["_task_progress_updated"] is False
 assert second["_area_updated"] is False
 
 mqtt_source = MQTT.read_text(encoding="utf-8")
