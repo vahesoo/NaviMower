@@ -1,9 +1,0 @@
-from pathlib import Path
-
-path = Path("tests/test_v043_beta18.py")
-text = path.read_text(encoding="utf-8")
-old = '''def test_completion_is_current_cycle_confirmed():\n    coordinator = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")\n    history = (COMPONENT / "history.py").read_text(encoding="utf-8")\n    assert '\"vendor_completed_at\": (' in coordinator\n    assert '\"last_completed_at\": None' in coordinator\n    assert '\"task_zone_seen_incomplete\"' in history\n    assert '\"task_zone_completion_confirmed\"' in history\n    assert "_async_repair_unverified_zone_completions" in history\n    start = history.index("    def prepare_cycle(\\n")\n    end = history.index("    def cycle_diagnostics", start)\n    assert '\"last_completed_at\"' not in history[start:end]\n'''
-new = '''def test_completion_is_current_cycle_confirmed():\n    coordinator = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")\n    history = (COMPONENT / "history.py").read_text(encoding="utf-8")\n    assert '\"vendor_completed_at\": (' in coordinator\n    assert '\"last_completed_at\": None' in coordinator\n    assert '\"task_zone_seen_incomplete\"' in history\n    assert '\"task_zone_completion_confirmed\"' in history\n    assert "_async_repair_unverified_zone_completions" in history\n    start = history.index("    def _confirm_coverage_completions_locked")\n    end = history.index("    def cycle_diagnostics", start)\n    completion = history[start:end]\n    assert '\"private_zone_coverage\"' in completion\n    assert '\"coverage_100_without_current_cycle_evidence\"' in completion\n    assert "current_cycle_cloud_end" not in completion\n'''
-if text.count(old) != 1:
-    raise SystemExit("beta18 completion test marker not found")
-path.write_text(text.replace(old, new, 1), encoding="utf-8")
