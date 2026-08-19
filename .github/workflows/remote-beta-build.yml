@@ -54,6 +54,7 @@ jobs:
               "CHANGELOG.md",
               "custom_components/navimower/history.py",
               "custom_components/navimower/manifest.json",
+              "tests/test_history_merge.py",
               "tests/test_v043_beta20.py",
               "tests/test_v043_beta21.py",
           }
@@ -101,6 +102,7 @@ jobs:
                   CHANGELOG.md \
                   custom_components/navimower/history.py \
                   custom_components/navimower/manifest.json \
+                  tests/test_history_merge.py \
                   tests/test_v043_beta20.py \
                   tests/test_v043_beta21.py
           git commit -m "Prepare Navimower 0.4.3-beta21 coverage completion"
