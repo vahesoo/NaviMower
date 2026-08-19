@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
 
-          python .github/scripts/remote_beta_builder.py
+          python .github/scripts/remote_beta21_builder_fix.py
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
