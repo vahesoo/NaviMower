@@ -1066,6 +1066,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_battery: int | None = None
         self._mqtt_battery_last_update: float | None = None
         self._mqtt_progress_last_update: float | None = None
+        self._mqtt_route_progress_last_update: float | None = None
+        self._mqtt_work_progress_last_update: float | None = None
+        self._mqtt_task_progress_last_update: float | None = None
         self._mqtt_area_last_update: float | None = None
         self._mqtt_connected = False
         self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
@@ -1554,7 +1557,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             mqtt_vehicle_state=mqtt_state,
             mqtt_action=mqtt_action,
             physical_zone_id=_as_int(snapshot.get("current_physical_zone_id")),
-            completed=self._session_completed(snapshot) if docked else None,
+            # Zone completion is confirmed from current-cycle telemetry in
+            # history.update_from_snapshot(). Docking only closes the route session.
+            completed=None,
         )
 
     def _fetch_blocking(self) -> dict:
@@ -2199,9 +2204,21 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         today_plan = raw.get("today_plan") or {}
 
         state_code = str(index2.get("vehicle_state") or auth.get("vehicle_state") or "")
+        location_work_word = _find(
+            location, "map_work_position", "mapWorkPosition"
+        )
+        index2_work_word = _find(
+            index2, "map_work_position", "mapWorkPosition"
+        )
+        packed_work_endpoint = (
+            "location"
+            if location_work_word
+            else "index2"
+            if index2_work_word
+            else None
+        )
         packed_work = decode_map_work_position(
-            _find(location, "map_work_position", "mapWorkPosition")
-            or _find(index2, "map_work_position", "mapWorkPosition")
+            location_work_word or index2_work_word
         )
         private_battery = _as_int(
             index2.get("soc") if index2.get("soc") is not None else auth.get("soc")
@@ -2518,6 +2535,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "work_sub_action": _as_int((packed_work or {}).get("sub_action")),
             "work_mode": _as_int((packed_work or {}).get("mode")),
             "work_progress": work_progress,
+            "work_progress_source_age": (
+                self._private_endpoint_age(packed_work_endpoint)
+                if packed_work_endpoint is not None
+                else None
+            ),
             "mow_route_progress": mqtt_route_progress,
             # weekly mowing schedule (days -> periods -> zones)
             "schedule": _parse_schedule(set_list, zone_names),
@@ -2598,18 +2620,24 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return value if value is not None and 0 <= value <= 100 else None
 
     def _fresh_mqtt_progress_values(self) -> dict[str, int | None]:
-        age = self._age_since(self._mqtt_progress_last_update)
-        if age is None or age > MQTT_TELEMETRY_STALE_SECONDS:
-            return {
-                "mowing_percentage": None,
-                "work_progress": None,
-                "route_progress": None,
-            }
         mqtt = self._mqtt_location or {}
+
+        def fresh(key: str, updated_at: float | None) -> int | None:
+            age = self._age_since(updated_at)
+            if age is None or age > MQTT_TELEMETRY_STALE_SECONDS:
+                return None
+            return _progress_percent(mqtt.get(key))
+
         return {
-            "mowing_percentage": _progress_percent(mqtt.get("mowing_percentage")),
-            "work_progress": _progress_percent(mqtt.get("work_progress")),
-            "route_progress": _progress_percent(mqtt.get("mow_progress")),
+            "mowing_percentage": fresh(
+                "mowing_percentage", self._mqtt_task_progress_last_update
+            ),
+            "work_progress": fresh(
+                "work_progress", self._mqtt_work_progress_last_update
+            ),
+            "route_progress": fresh(
+                "mow_progress", self._mqtt_route_progress_last_update
+            ),
         }
 
     def _mark_display_cycle_reset(
@@ -2778,7 +2806,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["mowing_progress_source"] = progress_source
         snapshot["task_progress_source"] = progress_source
         snapshot["mowing_progress_source_age"] = (
-            self._age_since(self._mqtt_progress_last_update)
+            self._age_since(self._mqtt_task_progress_last_update)
             if progress_source == "mqtt_task_percentage"
             else self._private_endpoint_age("location")
             if progress_source == "private_task_percentage"
@@ -2848,9 +2876,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["active_zone_progress_source"] = active_zone_progress_source
         snapshot["active_zone_progress_zone_id"] = active_progress_zone
         snapshot["active_zone_progress_source_age"] = (
-            self._age_since(self._mqtt_progress_last_update)
-            if str(active_zone_progress_source or "").startswith("mqtt_")
-            else self._private_endpoint_age("location", "index2")
+            self._age_since(self._mqtt_work_progress_last_update)
+            if active_zone_progress_source == "mqtt_map_work_position"
+            else self._age_since(self._mqtt_route_progress_last_update)
+            if active_zone_progress_source == "mqtt_route_progress"
+            else _as_float(snapshot.get("work_progress_source_age"))
             if active_zone_progress_source == "private_map_work_position"
             else None
         )
@@ -2881,6 +2911,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             coverage = dict(previous_coverage)
         snapshot["coverage"] = coverage
         snapshot["coverage_source"] = "private_cloud" if coverage is not None else None
+        snapshot["coverage_source_age"] = (
+            self._private_endpoint_age("path_info_time")
+            if coverage is not None
+            else None
+        )
         self._coverage_reset_pending = False
 
         # Session area can arrive both in the official location stream and the
@@ -3903,7 +3938,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         now_monotonic = time.monotonic()
         self._mqtt_last_message_update = now_monotonic
 
-        merged = dict(self._mqtt_location or {})
+        previous_mqtt = dict(self._mqtt_location or {})
+        merged = dict(previous_mqtt)
         merged.update(location)
         self._mqtt_location = merged
 
@@ -3934,6 +3970,32 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             )
         ):
             self._mqtt_progress_last_update = now_monotonic
+
+        def counter_updated(flag: str, key: str, stamp: float | None) -> bool:
+            return bool(location.get(flag)) or bool(
+                key in location
+                and location.get(key) is not None
+                and (stamp is None or location.get(key) != previous_mqtt.get(key))
+            )
+
+        if counter_updated(
+            "_route_progress_updated",
+            "mow_progress",
+            self._mqtt_route_progress_last_update,
+        ):
+            self._mqtt_route_progress_last_update = now_monotonic
+        if counter_updated(
+            "_work_progress_updated",
+            "work_progress",
+            self._mqtt_work_progress_last_update,
+        ):
+            self._mqtt_work_progress_last_update = now_monotonic
+        if counter_updated(
+            "_task_progress_updated",
+            "mowing_percentage",
+            self._mqtt_task_progress_last_update,
+        ):
+            self._mqtt_task_progress_last_update = now_monotonic
         if bool(location.get("_area_updated")) or (
             self._mqtt_area_last_update is None
             and any(

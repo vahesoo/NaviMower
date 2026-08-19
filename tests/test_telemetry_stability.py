@@ -72,6 +72,9 @@ def mower() -> Any:
     item._mqtt_battery = None
     item._mqtt_battery_last_update = None
     item._mqtt_progress_last_update = None
+    item._mqtt_route_progress_last_update = None
+    item._mqtt_work_progress_last_update = None
+    item._mqtt_task_progress_last_update = None
     item._mqtt_area_last_update = None
     item._progress_reset_pending = False
     item._coverage_reset_pending = False
@@ -151,6 +154,7 @@ item._mqtt_location = {
     "subtotal_area": 105.36,
 }
 item._mqtt_progress_last_update = time.monotonic()
+item._mqtt_task_progress_last_update = item._mqtt_progress_last_update
 item._mqtt_area_last_update = time.monotonic()
 snapshot = {
     "activity": "mowing",

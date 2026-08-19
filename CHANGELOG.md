@@ -1,6 +1,28 @@
 # Changelog
 
 
+## 0.4.3-beta20
+
+Fresh current-cycle per-zone completion arbitration.
+
+### Fixed
+
+- Advance a zone's `last_completed` when the active zone is actually confirmed complete; docking is no longer the completion trigger.
+- Keep Navimower Schedule one-zone-at-a-time behavior: a confirmed `last_completed` can release the active zone and let the scheduler choose the next eligible zone without a dock round-trip.
+- Reject stale `last_known` progress as completion evidence and require a second fresh sample for uncorroborated single-source completion; current-cycle cloud/task corroboration can confirm immediately.
+
+### Fallbacks
+
+- Prefer fresh active-zone MQTT progress, then fresh private-cloud work progress, with the single-zone task percentage available only when exactly one target zone is active.
+- Accept private-cloud per-zone coverage as a fallback only when its `startTime` belongs to the current cycle; `endTime + >=95%` is useful only with that current-cycle proof.
+- A trusted active-zone 100% counter can finish the zone without waiting for Docked after the repeat/corroboration rule; Returning by itself is never completion evidence.
+
+### Diagnostics
+
+- Persist `last_completed_source`, confirmation reason, progress and cycle ID with each confirmed zone completion.
+- Expose completion candidates/rejections plus active-zone and coverage source ages in diagnostics.
+
+
 ## 0.4.3-beta19
 
 Navimower Schedule window/restart hardening.

@@ -285,6 +285,23 @@ def build_zone_model(
                     detail.get("last_completed_at")
                     or persisted.get("last_completed_at")
                 ),
+                "last_completed_progress": (
+                    detail.get("last_completed_progress")
+                    if detail.get("last_completed_progress") is not None
+                    else persisted.get("last_completed_progress")
+                ),
+                "last_completed_source": (
+                    detail.get("last_completed_source")
+                    or persisted.get("last_completed_source")
+                ),
+                "last_completed_confirmation": (
+                    detail.get("last_completed_confirmation")
+                    or persisted.get("last_completed_confirmation")
+                ),
+                "last_completed_cycle_id": (
+                    detail.get("last_completed_cycle_id")
+                    or persisted.get("last_completed_cycle_id")
+                ),
                 "progress_source": (
                     progress_source
                     or ("task_cycle" if task_override else "coverage")

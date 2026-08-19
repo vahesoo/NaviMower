@@ -145,6 +145,9 @@ def parse_location_payload(
     # fresh to gate logic or pose-age diagnostics.
     loc["_pose_updated"] = False
     loc["_progress_updated"] = False
+    loc["_route_progress_updated"] = False
+    loc["_work_progress_updated"] = False
+    loc["_task_progress_updated"] = False
     loc["_area_updated"] = False
     loc["_battery_updated"] = False
     changed = False
@@ -178,6 +181,7 @@ def parse_location_payload(
             if "currentMowProgress" in item:
                 loc["mow_progress"] = item.get("currentMowProgress")
                 loc["_progress_updated"] = True
+                loc["_route_progress_updated"] = True
             if "action" in item:
                 loc["action"] = item.get("action")
             if "subAction" in item:
@@ -192,6 +196,7 @@ def parse_location_payload(
                     loc["work_target_zone"] = decoded["target_zone"]
                     loc["work_progress"] = decoded["progress"]
                     loc["_progress_updated"] = True
+                    loc["_work_progress_updated"] = True
                     # Prefer explicit fields from this message; otherwise the
                     # packed words must replace a stale cached action during
                     # transit between selected zones.
@@ -204,6 +209,7 @@ def parse_location_payload(
             if "mowingPercentage" in item:
                 loc["mowing_percentage"] = item.get("mowingPercentage")
                 loc["_progress_updated"] = True
+                loc["_task_progress_updated"] = True
             if "subtotalArea" in item:
                 loc["subtotal_area"] = item.get("subtotalArea")
                 loc["_area_updated"] = True
