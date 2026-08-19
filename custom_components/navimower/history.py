@@ -1418,6 +1418,10 @@ class NavimowerHistory:
             }
 
             if progress < 100:
+                # Keep the per-zone session display cache aligned with fresh
+                # authoritative coverage. This cache is display state only; it
+                # never writes Last completed.
+                active.setdefault("task_zone_progress", {})[zone_key] = progress
                 seen_incomplete.add(zone_id)
                 completion_candidates.pop(zone_key, None)
                 active["last_completion_rejection"] = None
@@ -1431,6 +1435,7 @@ class NavimowerHistory:
                 continue
 
             if zone_id in confirmed:
+                active.setdefault("task_zone_progress", {})[zone_key] = 100
                 coverage_state[zone_key] = {
                     "progress": progress,
                     "start_time": vendor_start,
@@ -1533,6 +1538,7 @@ class NavimowerHistory:
             )
             self._zone_history[zone_key] = zone_record
             active.setdefault("final_progress", {})[zone_key] = 100
+            active.setdefault("task_zone_progress", {})[zone_key] = 100
             coverage_state[zone_key] = {
                 "progress": progress,
                 "start_time": vendor_start,
@@ -1667,6 +1673,32 @@ class NavimowerHistory:
 
             active = self._cache.get(self._active_id or "")
             if active is not None:
+                # Restore the dense per-zone display cache removed by beta21.
+                # Only truly fresh MQTT work/route counters are persisted here;
+                # private mapWorkPosition is intentionally excluded because a
+                # fresh HTTP poll can still carry an old semantic value after an
+                # interruption. Completion remains coverage-only above.
+                live_zone_id = _as_int(active_progress_zone_id)
+                live_progress = _as_int(active_zone_progress)
+                live_source = str(active_zone_progress_source or "")
+                live_age = _as_float(active_zone_progress_source_age)
+                fresh_live_zone_progress = bool(
+                    str(activity or "").lower() == "mowing"
+                    and live_source in {
+                        "mqtt_map_work_position",
+                        "mqtt_route_progress",
+                    }
+                    and live_zone_id is not None
+                    and live_progress is not None
+                    and 0 <= live_progress <= 100
+                    and live_age is not None
+                    and 0 <= live_age <= _COMPLETION_EVIDENCE_MAX_AGE_SECONDS
+                )
+                if fresh_live_zone_progress:
+                    active.setdefault("task_zone_progress", {})[
+                        str(live_zone_id)
+                    ] = live_progress
+
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])
                     candidates = [
