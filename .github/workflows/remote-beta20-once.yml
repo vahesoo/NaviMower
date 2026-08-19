@@ -18,7 +18,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       BUILD_BRANCH: release/0.4.3-beta20
       BUILD_BASE: bc71aa93993b663ee7890a040b65132c727f7208
-      HELPER_BRANCH: agent/prepare-0.4.3-beta20
+      HELPER_BRANCH: agent/prepare-0.4.3-beta20-final
     steps:
       - uses: actions/checkout@v4
         with:
