@@ -41,6 +41,7 @@ jobs:
           git checkout -B "${BUILD_BRANCH}" origin/main
 
           python .github/scripts/remote_beta21_builder_fix.py
+          python .github/scripts/remote_beta21_postpatch.py
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
@@ -55,6 +56,7 @@ jobs:
               "custom_components/navimower/history.py",
               "custom_components/navimower/manifest.json",
               "tests/test_history_merge.py",
+              "tests/test_v043_beta18.py",
               "tests/test_v043_beta20.py",
               "tests/test_v043_beta21.py",
           }
@@ -103,6 +105,7 @@ jobs:
                   custom_components/navimower/history.py \
                   custom_components/navimower/manifest.json \
                   tests/test_history_merge.py \
+                  tests/test_v043_beta18.py \
                   tests/test_v043_beta20.py \
                   tests/test_v043_beta21.py
           git commit -m "Prepare Navimower 0.4.3-beta21 coverage completion"
