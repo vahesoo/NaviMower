@@ -1,0 +1,131 @@
+name: Prepare Navimower 0.4.3-beta20
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/scripts/prepare_beta20.py
+      - .github/workflows/prepare-beta20.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out helper branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+
+      - name: Copy temporary builder
+        run: cp .github/scripts/prepare_beta20.py /tmp/prepare_beta20.py
+
+      - name: Fix temporary builder transport quoting
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/prepare_beta20.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    dedent(new_zone_history).lstrip("\\n"),\n',
+              '    new_zone_history.lstrip("\\n"),\n',
+              1,
+          )
+          text = text.replace(
+              '    dedent(beta20_runtime_tests).lstrip("\\n") + "\\n\\nasync def explicit_partial_reset_test() -> None:\\n",\n',
+              '    dedent(beta20_runtime_tests).lstrip("\\n") + "\\n\\n",\n',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Build clean beta20 release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main release/0.4.3-beta20
+          git checkout release/0.4.3-beta20
+          git reset --hard origin/main
+          python /tmp/prepare_beta20.py
+
+      - name: Validate beta20
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q custom_components/navimower
+          python -m pytest -q
+          git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+
+          expected = {
+              '.github/release-notes/0.4.3-beta20.md',
+              'CHANGELOG.md',
+              'custom_components/navimower/coordinator.py',
+              'custom_components/navimower/diagnostics.py',
+              'custom_components/navimower/history.py',
+              'custom_components/navimower/manifest.json',
+              'custom_components/navimower/zone_state.py',
+              'tests/test_history_merge.py',
+              'tests/test_v043_beta19.py',
+              'tests/test_v043_beta20.py',
+          }
+          changed = set(
+              subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          ) | set(
+              subprocess.check_output(
+                  ['git', 'ls-files', '--others', '--exclude-standard'], text=True
+              ).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(f'Unexpected beta20 diff scope: {sorted(changed)}')
+
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          assert manifest['version'] == '0.4.3-beta20'
+          history = Path('custom_components/navimower/history.py').read_text()
+          coordinator = Path('custom_components/navimower/coordinator.py').read_text()
+          assert 'last_completed_source' in history
+          assert 'last_completed_confirmation' in history
+          assert '_COMPLETION_EVIDENCE_MAX_AGE_SECONDS = 30.0' in history
+          assert 'guarded_large_progress_jump' in history
+          assert 'waiting_for_second_fresh_sample' in history
+          assert 'completed=self._session_completed(snapshot) if docked else None' not in coordinator
+          dock = history[
+              history.index('            if docked and not cutting:'):
+              history.index('    # Backward-compatible alias')
+          ]
+          assert 'last_completed_at' not in dock
+          assert '_finish_active_locked' in dock
+          PY
+
+      - name: Commit prepared beta20
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/release-notes/0.4.3-beta20.md \
+                  CHANGELOG.md \
+                  custom_components/navimower/coordinator.py \
+                  custom_components/navimower/diagnostics.py \
+                  custom_components/navimower/history.py \
+                  custom_components/navimower/manifest.json \
+                  custom_components/navimower/zone_state.py \
+                  tests/test_history_merge.py \
+                  tests/test_v043_beta19.py \
+                  tests/test_v043_beta20.py
+          git commit -m "Prepare Navimower 0.4.3-beta20 completion arbitration"
+          git push --force-with-lease origin HEAD:release/0.4.3-beta20
