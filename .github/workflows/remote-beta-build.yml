@@ -44,6 +44,7 @@ jobs:
           git fetch origin "${HELPER_BRANCH}" "${BUILD_BRANCH}"
           git show "origin/${HELPER_BRANCH}:.github/scripts/prepare_beta20.py" > /tmp/prepare_beta20.py
           git show "origin/${HELPER_BRANCH}:.github/scripts/prepare_beta20_postpatch.py" > /tmp/prepare_beta20_postpatch.py
+          git show "origin/${HELPER_BRANCH}:.github/scripts/prepare_beta20_compat.py" > /tmp/prepare_beta20_compat.py
 
           python - <<'PY'
           from pathlib import Path
@@ -65,6 +66,7 @@ jobs:
           git checkout -B "${BUILD_BRANCH}" "${BUILD_BASE}"
           python /tmp/prepare_beta20.py
           python /tmp/prepare_beta20_postpatch.py
+          python /tmp/prepare_beta20_compat.py
 
           python -m compileall -q custom_components/navimower
           python -m pytest -q
@@ -86,6 +88,7 @@ jobs:
               'custom_components/navimower/zone_state.py',
               'tests/test_history_merge.py',
               'tests/test_mqtt_telemetry.py',
+              'tests/test_telemetry_stability.py',
               'tests/test_v034_beta3.py',
               'tests/test_v043_beta19.py',
               'tests/test_v043_beta20.py',
@@ -133,6 +136,7 @@ jobs:
                   custom_components/navimower/zone_state.py \
                   tests/test_history_merge.py \
                   tests/test_mqtt_telemetry.py \
+                  tests/test_telemetry_stability.py \
                   tests/test_v034_beta3.py \
                   tests/test_v043_beta19.py \
                   tests/test_v043_beta20.py
