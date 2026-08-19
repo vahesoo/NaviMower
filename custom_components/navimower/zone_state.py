@@ -193,8 +193,24 @@ def build_zone_model(
         )
         live_display_pct = display_pct
         current_task_pct = clamp_pct(task_progress.get(str(zone_id)))
+        # A newly reset session cache can legitimately be 0 while the active
+        # MQTT counter and fresh vendor coverage are already advancing. Let that
+        # low current-cycle live value refill the projection, but keep the older
+        # stale-high recovery and completed-100 monotonic guards intact.
+        active_live_progress = bool(
+            zone_id == active_zone_id
+            and current_task_pct is not None
+            and current_task_pct < COMPLETION_THRESHOLD
+            and live_display_pct is not None
+            and live_display_pct > current_task_pct
+            and vendor_pct is not None
+            and vendor_pct < COMPLETION_THRESHOLD
+        )
+        if active_live_progress:
+            current_task_pct = live_display_pct
         task_override = (
-            cycle_id is not None
+            not active_live_progress
+            and cycle_id is not None
             and zone_id in visited_zone_ids
             and current_task_pct is not None
         )

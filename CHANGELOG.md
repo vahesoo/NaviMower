@@ -1,6 +1,24 @@
 # Changelog
 
 
+## 0.4.3-beta22
+
+Restore live per-zone progress projection without weakening beta21 completion safety.
+
+### Fixed
+
+- Fix active zone Progress being pinned to 0% after a confirmed vendor cycle reset even while MQTT and cloud coverage continue to advance.
+- Let low current-cycle active progress refill a reset-time session cache while retaining the existing stale-high recovery and completed-100 monotonic guards.
+- Refill the per-zone session display cache from fresh vendor coverage, with fresh MQTT work/route progress providing dense active-zone updates between cloud polls.
+- Set the display cache to 100% when the beta21 coverage completion resolver confirms the zone.
+
+### Safety
+
+- `task_zone_progress` is display/session state only and cannot write `Last completed`.
+- Private `mapWorkPosition` is deliberately not persisted into the dense display cache because a fresh HTTP poll can still carry an old semantic value after rain/charging interruptions.
+- `Last completed` remains exclusively owned by fresh current-cycle vendor per-zone coverage reaching 100%.
+
+
 ## 0.4.3-beta21
 
 Vendor per-zone coverage becomes the sole authority for `Last completed`.
