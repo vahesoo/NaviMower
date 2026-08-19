@@ -17,6 +17,9 @@ def test_completion_is_current_cycle_confirmed():
     assert '"task_zone_seen_incomplete"' in history
     assert '"task_zone_completion_confirmed"' in history
     assert "_async_repair_unverified_zone_completions" in history
-    start = history.index("    def prepare_cycle(\n")
+    start = history.index("    def _confirm_coverage_completions_locked")
     end = history.index("    def cycle_diagnostics", start)
-    assert '"last_completed_at"' not in history[start:end]
+    completion = history[start:end]
+    assert '"private_zone_coverage"' in completion
+    assert '"coverage_100_without_current_cycle_evidence"' in completion
+    assert "current_cycle_cloud_end" not in completion

@@ -1,6 +1,28 @@
 # Changelog
 
 
+## 0.4.3-beta21
+
+Vendor per-zone coverage becomes the sole authority for `Last completed`.
+
+### Fixed
+
+- Stop allowing MQTT/private `mapWorkPosition`, route progress or whole-task percentage to write `last_completed`; these remain display/progress signals only.
+- Confirm a zone only when fresh private-cloud per-zone coverage for a currently observed target/physical zone reaches 100% in the current work cycle.
+- Keep an incomplete zone armed after the mower changes target, so multi-zone tasks can confirm the previous zone when its vendor coverage settles to 100%.
+- Ignore stale historical 100% rows until the zone has current-cycle evidence; this prevents rain/charging resumes from completing a still-partial zone.
+
+### Safety
+
+- `endTime` is never completion proof by itself. It is used only as the timestamp after coverage has already reached authoritative 100%.
+- A small-zone fallback accepts a directly observed recent 100% vendor cycle only when its start/end timestamps are new relative to the previously persisted completion.
+- Docking still only finalizes route/session history and does not create zone completion.
+
+### Diagnostics
+
+- Expose zones seen as current targets plus retained vendor coverage state in active completion diagnostics.
+
+
 ## 0.4.3-beta20
 
 Fresh current-cycle per-zone completion arbitration.
