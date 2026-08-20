@@ -1170,13 +1170,12 @@ class NavimowerHistory:
                 continue
             coverage = coverage_by_id.get(zone_id) or {}
             detail = details_by_id.get(zone_id) or {}
-            progress = _as_int(
-                detail.get("progress")
-                if detail.get("progress") is not None
-                else detail.get("percentage")
-                if detail.get("percentage") is not None
-                else coverage.get("pct")
-            )
+            # Cycle boundaries must use one canonical vendor counter. The live
+            # ``zone_details.progress`` value may be MQTT work/route progress and
+            # can jump when sources hand over after rain, charging or a zone
+            # transition. Treating that display value as cycle evidence created
+            # false resets and visible percentage spikes in beta22.
+            progress = _as_int(coverage.get("pct"))
             rows.append(
                 {
                     "id": zone_id,
@@ -1695,9 +1694,33 @@ class NavimowerHistory:
                     and 0 <= live_age <= _COMPLETION_EVIDENCE_MAX_AGE_SECONDS
                 )
                 if fresh_live_zone_progress:
-                    active.setdefault("task_zone_progress", {})[
-                        str(live_zone_id)
-                    ] = live_progress
+                    # Dense MQTT work/route progress is excellent for fast display
+                    # updates, but source hand-over can produce a one-sample large
+                    # regression. If fresh vendor per-zone coverage still agrees
+                    # with the previous current-cycle value, hold that last-known
+                    # value instead of publishing the spike. A genuine new cycle
+                    # is not hidden: prepare_cycle() uses coverage pct/start/end and
+                    # clears task_zone_progress before this projection runs.
+                    previous_live_progress = _as_int(
+                        active.setdefault("task_zone_progress", {}).get(
+                            str(live_zone_id)
+                        )
+                    )
+                    vendor_row = coverage_by_id.get(live_zone_id) or {}
+                    vendor_live_progress = _as_int(vendor_row.get("pct"))
+                    vendor_age = _as_float(coverage_source_age)
+                    corroborated_regression = bool(
+                        previous_live_progress is not None
+                        and previous_live_progress - live_progress >= 10
+                        and vendor_live_progress is not None
+                        and vendor_live_progress >= previous_live_progress - 3
+                        and vendor_age is not None
+                        and 0 <= vendor_age <= _COMPLETION_EVIDENCE_MAX_AGE_SECONDS
+                    )
+                    if not corroborated_regression:
+                        active.setdefault("task_zone_progress", {})[
+                            str(live_zone_id)
+                        ] = live_progress
 
                 if active.get("cutting_height_mm") is None:
                     target_ids = set(active.get("zone_ids") or [])

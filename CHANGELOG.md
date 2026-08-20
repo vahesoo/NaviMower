@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.3-beta23
+
+Separate authoritative vendor cycle detection from dense live zone-progress projection and document Navimower Schedule.
+
+### Fixed
+
+- Use only per-zone vendor coverage `pct/startTime/endTime` for mowing-cycle reset detection; live MQTT work/route progress can no longer create a false cycle boundary during source hand-over.
+- Suppress a large one-sample active-zone regression when fresh vendor coverage still corroborates the previous current-cycle value.
+- Preserve beta21/beta22 completion safety: `Last completed` still requires fresh current-cycle vendor per-zone coverage at 100%.
+
+### Documentation
+
+- Add first-time setup and operating documentation for Navimower Schedule, including Time window, 24 hours, Night mowing, rain/weather delay, charging, interrupted-task resume and native-schedule interaction.
+
+
 
 ## 0.4.3-beta22
 
