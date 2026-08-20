@@ -266,6 +266,122 @@ The two branches degrade independently: cached/private-cloud functionality may
 remain usable during an OAuth/MQTT outage, and live MQTT/history may remain
 useful during a temporary private-cloud outage.
 
+## Navimower Schedule
+
+**Navimower Schedule** is an integration-owned scheduler for users who want Home
+Assistant to decide **which zone should be mowed next** instead of relying on the
+weekly schedule stored in the mower. It intentionally works one zone at a time:
+Navimower selects the eligible zone with the oldest confirmed **Last completed**
+time, starts that zone as a new mowing cycle, waits for genuine vendor completion,
+and only then moves to the next zone.
+
+This is separate from the mower's native **Mowing schedule enabled** setting. The
+two schedulers must not control the mower at the same time. Turning Navimower
+Schedule on disables the native mower schedule. If the native schedule is turned
+back on later, Navimower Schedule disables itself instead of competing with it.
+
+### First-time setup
+
+Before a zone can be selected for Navimower Schedule, let the mower **fully
+complete that zone once**. The integration must have a trustworthy `Last
+completed` timestamp for it; a zone that has never completed is shown as
+unavailable in the options flow. This prevents a newly discovered or historically
+unknown zone from being started automatically without a proven completion cycle.
+
+Then open **Settings -> Devices & services -> Navimower -> Configure -> Navimower
+schedule** and:
+
+1. select the zones that Navimower Schedule may control;
+2. choose **Time window** or **24 hours**;
+3. for Time window, set the allowed start and end time;
+4. save the options;
+5. turn on the **Navimower schedule** switch on the mower device.
+
+Only the explicitly selected zones are enrolled. Adding another zone to the map
+does not automatically add it to the scheduler.
+
+### How zone selection works
+
+Within an allowed mowing period, Navimower chooses the selected eligible zone
+whose confirmed completion is oldest. A newly dispatched zone uses a reset/new
+cycle command. The scheduler does **not** consider a zone complete merely because
+the mower docks, pauses, reaches a high route-progress value or changes target.
+It waits until the integration's `Last completed` logic confirms fresh vendor
+per-zone coverage at 100%.
+
+Normal charging is left to the mower. The scheduler does not try to replace the
+robot's battery/charging logic and does not mark a charging interruption as a
+completed zone.
+
+### Time window
+
+**Time window** is a hard Home Assistant outer boundary. While the window is open,
+the scheduler may start or continue its selected zones. When the window closes
+while the mower is Mowing or Paused, Navimower sends it Home/Dock and remembers
+the interrupted zone, cycle and progress context.
+
+When the next window opens, Navimower first tries to **resume the retained task**.
+If the normal resume command is not confirmed, it may send a one-zone continue
+command with `reset=false`. It deliberately refuses to turn an interrupted task
+into an automatic new/reset cycle merely because a resume acknowledgement was
+lost. This protects partial progress across Home Assistant restarts and vendor
+state delays.
+
+A time window may cross midnight; its window token is handled as one logical
+mowing period.
+
+### 24 hours
+
+**24 hours** means Navimower itself has no daily start/end boundary. After all
+selected eligible zones have completed once, it starts another round and again
+selects the oldest zone. It can therefore keep cycling through the selected zones
+continuously while the mower is available.
+
+24 hours does **not** mean "force the mower to cut regardless of its own safety or
+environment rules". Charging, mower-side pauses and vendor safety behavior remain
+robot-owned.
+
+### Night mowing
+
+The **Night mowing** mower setting remains independent. Navimower Schedule does
+not switch Night mowing on and does not bypass the mower's night restrictions.
+Therefore **24 hours** only removes the Navimower time-window restriction; if
+Night mowing is disabled and the mower itself pauses/returns because of night
+rules, the scheduler waits rather than manufacturing a new completed cycle or
+forcing a reset start.
+
+If you want mowing to be allowed overnight, configure the mower's **Night mowing**
+setting accordingly. If you prefer a guaranteed Home Assistant cut-off regardless
+of the mower setting, use **Time window**.
+
+### Rain, Rain delay and weather interruptions
+
+Rain handling is also mower-owned. **Rain detection / Rain sensor**, weather
+forecast controls and **Rain delay** continue to decide when the mower should stop
+and when it is allowed to continue. Navimower Schedule does not shorten the rain
+delay, fake progress or mark the interrupted zone complete.
+
+If rain interrupts a zone, that zone remains the scheduler's active work until it
+actually completes. When a Time window closes during the interruption, the
+scheduler retains the interrupted task and attempts to resume it when the next
+window opens. In 24 hours mode, the scheduler leaves the retained active zone in
+place and waits for the mower/vendor state to continue rather than starting a
+fresh reset cycle over it.
+
+### Useful state and troubleshooting
+
+The **Navimower schedule** switch exposes attributes such as mode, start/end,
+selected and eligible zone IDs, whether the window is open, active/interrupted
+zone, last command, last error and any suspended reason. These attributes and the
+normal Home Assistant **Download diagnostics** output are the first places to
+check if a schedule appears to be waiting.
+
+Common intentional waiting states include: the selected zone has never completed
+once, the native mower schedule was enabled, the Time window is closed, an active
+zone is interrupted by rain/charging/night behavior, or a start/resume command
+was not safely confirmed. The controller prefers waiting over blindly issuing a
+new reset command.
+
 ## Connectivity and polling
 
 `MQTT connected` and `Live position valid` are separate health signals. A broker
