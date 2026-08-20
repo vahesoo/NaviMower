@@ -1,0 +1,293 @@
+from pathlib import Path
+import json
+
+root = Path(__file__).resolve().parents[2]
+history_path = root / "custom_components/navimower/history.py"
+history = history_path.read_text(encoding="utf-8")
+
+old_progress = '''            progress = _as_int(
+                detail.get("progress")
+                if detail.get("progress") is not None
+                else detail.get("percentage")
+                if detail.get("percentage") is not None
+                else coverage.get("pct")
+            )'''
+new_progress = '''            # Cycle boundaries must use one canonical vendor counter. The live
+            # ``zone_details.progress`` value may be MQTT work/route progress and
+            # can jump when sources hand over after rain, charging or a zone
+            # transition. Treating that display value as cycle evidence created
+            # false resets and visible percentage spikes in beta22.
+            progress = _as_int(coverage.get("pct"))'''
+if old_progress not in history:
+    raise SystemExit("beta23: _progress_rows source block not found")
+history = history.replace(old_progress, new_progress, 1)
+
+old_cache = '''                if fresh_live_zone_progress:
+                    active.setdefault("task_zone_progress", {})[
+                        str(live_zone_id)
+                    ] = live_progress
+'''
+new_cache = '''                if fresh_live_zone_progress:
+                    # Dense MQTT work/route progress is excellent for fast display
+                    # updates, but source hand-over can produce a one-sample large
+                    # regression. If fresh vendor per-zone coverage still agrees
+                    # with the previous current-cycle value, hold that last-known
+                    # value instead of publishing the spike. A genuine new cycle
+                    # is not hidden: prepare_cycle() uses coverage pct/start/end and
+                    # clears task_zone_progress before this projection runs.
+                    previous_live_progress = _as_int(
+                        active.setdefault("task_zone_progress", {}).get(
+                            str(live_zone_id)
+                        )
+                    )
+                    vendor_row = coverage_by_id.get(live_zone_id) or {}
+                    vendor_live_progress = _as_int(vendor_row.get("pct"))
+                    vendor_age = _as_float(coverage_source_age)
+                    corroborated_regression = bool(
+                        previous_live_progress is not None
+                        and previous_live_progress - live_progress >= 10
+                        and vendor_live_progress is not None
+                        and vendor_live_progress >= previous_live_progress - 3
+                        and vendor_age is not None
+                        and 0 <= vendor_age <= _COMPLETION_EVIDENCE_MAX_AGE_SECONDS
+                    )
+                    if not corroborated_regression:
+                        active.setdefault("task_zone_progress", {})[
+                            str(live_zone_id)
+                        ] = live_progress
+'''
+if old_cache not in history:
+    raise SystemExit("beta23: live cache block not found")
+history = history.replace(old_cache, new_cache, 1)
+history_path.write_text(history, encoding="utf-8")
+
+manifest_path = root / "custom_components/navimower/manifest.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["version"] = "0.4.3-beta23"
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+beta22_test = root / "tests/test_v043_beta22.py"
+beta22 = beta22_test.read_text(encoding="utf-8")
+old_identity = '''def test_beta22_identity():
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.4.3-beta22"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta22.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta22")
+'''
+new_identity = '''def test_beta22_release_notes_remain_available():
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta22.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta22")
+'''
+if old_identity not in beta22:
+    raise SystemExit("beta23: beta22 identity test block not found")
+beta22_test.write_text(beta22.replace(old_identity, new_identity, 1), encoding="utf-8")
+
+(root / "tests/test_v043_beta23.py").write_text('''import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENT = ROOT / "custom_components" / "navimower"
+
+
+def test_beta23_identity_and_notes():
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.4.3-beta23"
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta23.md").read_text(encoding="utf-8")
+    assert notes.startswith("title: Navimower 0.4.3-beta23")
+
+
+def test_cycle_detector_uses_vendor_zone_coverage_only():
+    history = (COMPONENT / "history.py").read_text(encoding="utf-8")
+    start = history.index("    def _progress_rows")
+    end = history.index("    def start_new_cycle", start)
+    resolver = history[start:end]
+    assert 'progress = _as_int(coverage.get("pct"))' in resolver
+    assert 'detail.get("progress")' not in resolver
+    assert 'detail.get("percentage")' not in resolver
+
+
+def test_live_progress_regression_guard():
+    history = (COMPONENT / "history.py").read_text(encoding="utf-8")
+    start = history.index("    def update_zone_history")
+    end = history.index("    def update_from_snapshot", start)
+    update = history[start:end]
+    assert "previous_live_progress - live_progress >= 10" in update
+    assert "vendor_live_progress >= previous_live_progress - 3" in update
+    assert "vendor_age" in update
+    assert "if not corroborated_regression:" in update
+    assert '"private_map_work_position"' not in update
+
+
+def test_readme_documents_navimower_schedule():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Navimower Schedule" in readme
+    assert "Time window" in readme
+    assert "24 hours" in readme
+    assert "Night mowing" in readme
+    assert "Rain delay" in readme
+    assert "Last completed" in readme
+''', encoding="utf-8")
+
+(root / ".github/release-notes/0.4.3-beta23.md").write_text('''title: Navimower 0.4.3-beta23
+
+Stabilize active-zone Progress after rain/resume and document Navimower Schedule for first-time users.
+
+### Fixed
+- Cycle-boundary detection now uses only the vendor per-zone coverage `pct/startTime/endTime` tuple. MQTT work progress, route progress and projected `zone_details.progress` can no longer masquerade as a new vendor mowing cycle.
+- Hold a one-sample large MQTT active-zone regression when fresh vendor coverage still corroborates the previous current-cycle value. This removes the beta22 source-handover spikes seen around rain/resume and zone transitions without inventing interpolated percentages.
+- A real new zone cycle still resets normally because the vendor coverage cycle tuple remains authoritative.
+
+### Completion safety
+- **Last completed is unchanged from beta21/beta22:** only fresh current-cycle vendor per-zone coverage reaching 100% advances the timestamp.
+- Private `mapWorkPosition` remains excluded from the dense persisted display cache.
+
+### Documentation
+- Add a full README section for **Navimower Schedule**: first-time zone qualification, setup, one-zone-at-a-time selection, Time window and 24 hours modes, native schedule ownership, Night mowing, Rain delay/weather interruptions, charging, resume behavior and safety rules.
+''', encoding="utf-8")
+
+changelog_path = root / "CHANGELOG.md"
+changelog = changelog_path.read_text(encoding="utf-8")
+marker = "# Changelog\n\n"
+section = '''## 0.4.3-beta23
+
+Separate authoritative vendor cycle detection from dense live zone-progress projection and document Navimower Schedule.
+
+### Fixed
+
+- Use only per-zone vendor coverage `pct/startTime/endTime` for mowing-cycle reset detection; live MQTT work/route progress can no longer create a false cycle boundary during source hand-over.
+- Suppress a large one-sample active-zone regression when fresh vendor coverage still corroborates the previous current-cycle value.
+- Preserve beta21/beta22 completion safety: `Last completed` still requires fresh current-cycle vendor per-zone coverage at 100%.
+
+### Documentation
+
+- Add first-time setup and operating documentation for Navimower Schedule, including Time window, 24 hours, Night mowing, rain/weather delay, charging, interrupted-task resume and native-schedule interaction.
+
+
+'''
+if not changelog.startswith(marker):
+    raise SystemExit("beta23: changelog header not found")
+changelog_path.write_text(marker + section + changelog[len(marker):], encoding="utf-8")
+
+readme_path = root / "README.md"
+readme = readme_path.read_text(encoding="utf-8")
+schedule_section = '''## Navimower Schedule
+
+**Navimower Schedule** is an integration-owned scheduler for users who want Home
+Assistant to decide **which zone should be mowed next** instead of relying on the
+weekly schedule stored in the mower. It intentionally works one zone at a time:
+Navimower selects the eligible zone with the oldest confirmed **Last completed**
+time, starts that zone as a new mowing cycle, waits for genuine vendor completion,
+and only then moves to the next zone.
+
+This is separate from the mower's native **Mowing schedule enabled** setting. The
+two schedulers must not control the mower at the same time. Turning Navimower
+Schedule on disables the native mower schedule. If the native schedule is turned
+back on later, Navimower Schedule disables itself instead of competing with it.
+
+### First-time setup
+
+Before a zone can be selected for Navimower Schedule, let the mower **fully
+complete that zone once**. The integration must have a trustworthy `Last
+completed` timestamp for it; a zone that has never completed is shown as
+unavailable in the options flow. This prevents a newly discovered or historically
+unknown zone from being started automatically without a proven completion cycle.
+
+Then open **Settings -> Devices & services -> Navimower -> Configure -> Navimower
+schedule** and:
+
+1. select the zones that Navimower Schedule may control;
+2. choose **Time window** or **24 hours**;
+3. for Time window, set the allowed start and end time;
+4. save the options;
+5. turn on the **Navimower schedule** switch on the mower device.
+
+Only the explicitly selected zones are enrolled. Adding another zone to the map
+does not automatically add it to the scheduler.
+
+### How zone selection works
+
+Within an allowed mowing period, Navimower chooses the selected eligible zone
+whose confirmed completion is oldest. A newly dispatched zone uses a reset/new
+cycle command. The scheduler does **not** consider a zone complete merely because
+the mower docks, pauses, reaches a high route-progress value or changes target.
+It waits until the integration's `Last completed` logic confirms fresh vendor
+per-zone coverage at 100%.
+
+Normal charging is left to the mower. The scheduler does not try to replace the
+robot's battery/charging logic and does not mark a charging interruption as a
+completed zone.
+
+### Time window
+
+**Time window** is a hard Home Assistant outer boundary. While the window is open,
+the scheduler may start or continue its selected zones. When the window closes
+while the mower is Mowing or Paused, Navimower sends it Home/Dock and remembers
+the interrupted zone, cycle and progress context.
+
+When the next window opens, Navimower first tries to **resume the retained task**.
+If the normal resume command is not confirmed, it may send a one-zone continue
+command with `reset=false`. It deliberately refuses to turn an interrupted task
+into an automatic new/reset cycle merely because a resume acknowledgement was
+lost. This protects partial progress across Home Assistant restarts and vendor
+state delays.
+
+A time window may cross midnight; its window token is handled as one logical
+mowing period.
+
+### 24 hours
+
+**24 hours** means Navimower itself has no daily start/end boundary. After all
+selected eligible zones have completed once, it starts another round and again
+selects the oldest zone. It can therefore keep cycling through the selected zones
+continuously while the mower is available.
+
+24 hours does **not** mean "force the mower to cut regardless of its own safety or
+environment rules". Charging, mower-side pauses and vendor safety behavior remain
+robot-owned.
+
+### Night mowing
+
+The **Night mowing** mower setting remains independent. Navimower Schedule does
+not switch Night mowing on and does not bypass the mower's night restrictions.
+Therefore **24 hours** only removes the Navimower time-window restriction; if
+Night mowing is disabled and the mower itself pauses/returns because of night
+rules, the scheduler waits rather than manufacturing a new completed cycle or
+forcing a reset start.
+
+If you want mowing to be allowed overnight, configure the mower's **Night mowing**
+setting accordingly. If you prefer a guaranteed Home Assistant cut-off regardless
+of the mower setting, use **Time window**.
+
+### Rain, Rain delay and weather interruptions
+
+Rain handling is also mower-owned. **Rain detection / Rain sensor**, weather
+forecast controls and **Rain delay** continue to decide when the mower should stop
+and when it is allowed to continue. Navimower Schedule does not shorten the rain
+delay, fake progress or mark the interrupted zone complete.
+
+If rain interrupts a zone, that zone remains the scheduler's active work until it
+actually completes. When a Time window closes during the interruption, the
+scheduler retains the interrupted task and attempts to resume it when the next
+window opens. In 24 hours mode, the scheduler leaves the retained active zone in
+place and waits for the mower/vendor state to continue rather than starting a
+fresh reset cycle over it.
+
+### Useful state and troubleshooting
+
+The **Navimower schedule** switch exposes attributes such as mode, start/end,
+selected and eligible zone IDs, whether the window is open, active/interrupted
+zone, last command, last error and any suspended reason. These attributes and the
+normal Home Assistant **Download diagnostics** output are the first places to
+check if a schedule appears to be waiting.
+
+Common intentional waiting states include: the selected zone has never completed
+once, the native mower schedule was enabled, the Time window is closed, an active
+zone is interrupted by rain/charging/night behavior, or a start/resume command
+was not safely confirmed. The controller prefers waiting over blindly issuing a
+new reset command.
+
+'''
+readme_marker = "## Connectivity and polling\n"
+if readme_marker not in readme:
+    raise SystemExit("beta23: README insertion marker not found")
+readme_path.write_text(readme.replace(readme_marker, schedule_section + readme_marker, 1), encoding="utf-8")
