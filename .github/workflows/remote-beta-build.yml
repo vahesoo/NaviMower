@@ -11,12 +11,12 @@ permissions:
 jobs:
   build:
     if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA19 BUILD' &&
+      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA23 BUILD' &&
       github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta19
+      BUILD_BRANCH: release/0.4.3-beta23
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.13"
 
       - name: Install test dependencies
         run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
@@ -39,81 +39,58 @@ jobs:
           exec > >(tee /tmp/remote-beta-build.log) 2>&1
           set -euo pipefail
           git checkout -B "${BUILD_BRANCH}" origin/main
-
-          python .github/scripts/remote_beta_builder.py
+          python .github/scripts/remote_beta23_builder.py
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
 
           python - <<'PY'
           from pathlib import Path
+          import json
           import subprocess
 
           expected = {
-              ".github/release-notes/0.4.3-beta19.md",
+              ".github/release-notes/0.4.3-beta23.md",
               "CHANGELOG.md",
+              "README.md",
+              "custom_components/navimower/history.py",
               "custom_components/navimower/manifest.json",
-              "custom_components/navimower/navimower_schedule.py",
-              "tests/test_v043_beta18.py",
-              "tests/test_v043_beta19.py",
+              "tests/test_v043_beta22.py",
+              "tests/test_v043_beta23.py",
           }
-          committed = set(
-              subprocess.check_output(
-                  ["git", "diff", "--name-only", "origin/main...HEAD"], text=True
-              ).splitlines()
-          )
-          unstaged = set(
-              subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
-          )
-          untracked = set(
-              subprocess.check_output(
-                  ["git", "ls-files", "--others", "--exclude-standard"], text=True
-              ).splitlines()
-          )
-          changed = committed | unstaged | untracked
+          changed = set(subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines())
+          changed |= set(subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], text=True).splitlines())
           if changed != expected:
-              raise SystemExit(f"Unexpected beta19 diff scope: {sorted(changed)}")
+              raise SystemExit(f"Unexpected beta23 diff scope: {sorted(changed)}")
 
-          schedule = Path("custom_components/navimower/navimower_schedule.py").read_text(encoding="utf-8")
-          assert "_MOW_CONFIRM_SECONDS = 120" in schedule
-          assert "_reconcile_unconfirmed_mow_start" in schedule
-          assert '"mow_start_not_confirmed"' in schedule
-          assert "automatic reset retry was refused" in schedule
-          assert "night_mow" not in schedule
-          resolver = schedule[
-              schedule.index("    def _window_state(self, now: datetime)"):
-              schedule.index("    def _zone(self, zone_id", schedule.index("    def _window_state(self, now: datetime)"))
-          ]
-          assert 'return True, "continuous"' in resolver
-          enforce = schedule[
-              schedule.index("    async def _enforce_closed_window"):
-              schedule.index("    async def _continue_interrupted_task")
-          ]
-          assert 'await self._async_send_dock("navimower_schedule_window_closed")' in enforce
-          reconcile = schedule[
-              schedule.index("    async def _reconcile_unconfirmed_mow_start"):
-              schedule.index("    def _retry_ready")
-          ]
-          assert "reset=True" not in reconcile
+          manifest = json.loads(Path("custom_components/navimower/manifest.json").read_text())
+          assert manifest["version"] == "0.4.3-beta23"
+          history = Path("custom_components/navimower/history.py").read_text()
+          rows = history[history.index("    def _progress_rows"):history.index("    def start_new_cycle")]
+          assert 'progress = _as_int(coverage.get("pct"))' in rows
+          assert 'detail.get("progress")' not in rows
+          assert "corroborated_regression" in history
+          readme = Path("README.md").read_text()
+          for text in ("## Navimower Schedule", "Time window", "24 hours", "Night mowing", "Rain delay"):
+              assert text in readme
           PY
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/release-notes/0.4.3-beta19.md \
-                  CHANGELOG.md \
+          git add .github/release-notes/0.4.3-beta23.md \
+                  CHANGELOG.md README.md \
+                  custom_components/navimower/history.py \
                   custom_components/navimower/manifest.json \
-                  custom_components/navimower/navimower_schedule.py \
-                  tests/test_v043_beta18.py \
-                  tests/test_v043_beta19.py
-          git commit -m "Prepare Navimower 0.4.3-beta19 schedule hardening"
-          git push origin "${BUILD_BRANCH}"
+                  tests/test_v043_beta22.py tests/test_v043_beta23.py
+          git commit -m "Prepare Navimower 0.4.3-beta23 progress stability"
+          git push --force origin "${BUILD_BRANCH}"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Comment success
         if: steps.build.outcome == 'success'
         shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta19 remote build succeeded. Full tests, compileall, diff-check, exact diff-scope and focused schedule/restart safety checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta23 remote build succeeded. Full pytest, compileall, diff-check, exact diff-scope and focused progress/README checks passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
           gh issue close "${{ github.event.issue.number }}" --reason completed
 
       - name: Comment failure
@@ -122,7 +99,7 @@ jobs:
         run: |
           tail -n 260 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
           {
-            echo '0.4.3-beta19 remote build failed before publishing the completed release branch.'
+            echo '0.4.3-beta23 remote build failed before publishing the completed release branch.'
             echo
             echo '```text'
             cat /tmp/build-tail.txt
