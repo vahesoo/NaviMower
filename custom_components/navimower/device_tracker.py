@@ -45,13 +45,15 @@ async def async_setup_entry(
 class NavimowerDeviceTracker(NavimowEntity, TrackerEntity):
     """Expose the mower's vendor-reported geographic position to Home Assistant."""
 
-    _attr_name = "Location"
+    # This is the mower's primary map marker, so use the device name directly
+    # (for example "Tont") instead of displaying "Tont Location" on HA Map.
+    _attr_name = None
     _attr_icon = "mdi:robot-mower"
     _attr_source_type = SourceType.GPS
     # A position tracker is a user-facing entity, not a diagnostic-only entity.
     _attr_entity_category = None
     # The private-cloud location response does not expose a trustworthy accuracy
-    # radius, so do not invent one. Home Assistant treats zero as unspecified.
+    # radius, so do not invent one.
     _attr_location_accuracy = 0
 
     def __init__(self, coordinator: NavimowCoordinator) -> None:
