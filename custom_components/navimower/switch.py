@@ -442,8 +442,16 @@ async def async_setup_entry(
         )
 
     entities = [NavimowSwitch(coordinator, desc) for desc in supported_descriptions]
-    if getattr(coordinator, "navimower_schedule", None) is not None:
+    controller = getattr(coordinator, "navimower_schedule", None)
+    if controller is not None and controller.configured:
         entities.append(NavimowerScheduleSwitch(coordinator))
+    else:
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "switch", DOMAIN, f"{coordinator.sn}_navimower_schedule"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
     async_add_entities(entities)
 
 

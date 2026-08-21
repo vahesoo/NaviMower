@@ -7,6 +7,7 @@ from datetime import time
 from homeassistant.components.time import TimeEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -21,7 +22,14 @@ async def async_setup_entry(
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     controller = getattr(coordinator, "navimower_schedule", None)
-    if controller is None:
+    if controller is None or not controller.configured:
+        registry = er.async_get(hass)
+        for key in ("start", "end"):
+            entity_id = registry.async_get_entity_id(
+                "time", DOMAIN, f"{coordinator.sn}_navimower_schedule_{key}"
+            )
+            if entity_id is not None:
+                registry.async_remove(entity_id)
         return
     async_add_entities(
         [

@@ -19,18 +19,17 @@ Navimower does **not** require the older NavimowHA integration.
 > machine with a cutting blade; verify commands and physical-gate automations in
 > a safe environment.
 
-## Project origins
+## Installation
 
-The private-cloud foundation used by Navimower was created by **Roberto
-Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
-That project reverse-engineered the Navimow mobile application's private-cloud
-communication and implemented the authentication, encrypted protocol, map
-handling and control foundation on which this integration builds.
+### HACS custom repository
 
-Navimower extends that foundation with official Smart Home OAuth/MQTT live data,
-persistent mowing history, physical-zone and gate logic, richer Home Assistant
-entities, and a separately maintained
-[Navimower Map Card](https://github.com/vahesoo/navimower-map-card).
+1. Open **HACS -> Integrations -> three-dot menu -> Custom repositories**.
+2. Add `https://github.com/vahesoo/NaviMower` as category **Integration**.
+3. Install Navimower and restart Home Assistant.
+4. Open **Settings -> Devices & services -> Add integration -> Navimower**.
+
+Manual installation is also possible by copying `custom_components/navimower`
+into `/config/custom_components/` and restarting Home Assistant.
 
 ## Recommended account arrangement
 
@@ -55,6 +54,19 @@ long as both can access the same mower.
 > account**. Add each mower as its own Navimower config entry. Entries using the
 > same account share one stable app/device identity at private-cloud account
 > scope while keeping separate entities, maps and histories.
+
+## Setup flow
+
+1. Enter the email and password of the dedicated private-cloud account.
+2. Select the mower, or enter its serial when a shared mower is not returned by
+   the normal mower list.
+3. Continue to official Smart Home OAuth.
+4. Sign in with an account that can access the same mower.
+5. Home Assistant stores both connection branches in one Navimower config entry.
+
+The two branches degrade independently: cached/private-cloud functionality may
+remain usable during an OAuth/MQTT outage, and live MQTT/history may remain
+useful during a temporary private-cloud outage.
 
 ## Main features
 
@@ -143,43 +155,36 @@ code is exposed only when the vendor actually reports one.
 
 ### Latest notification
 
-Navimower exposes the Navimow app's main **Notification -> Device** feed as the
-**Latest notification** sensor.
+Navimower exposes one merged **Latest notification** timeline. It combines the
+Navimow app's Device feed with Home Assistant-side context that Navimower can
+prove from confirmed mower state and fresh local command traces.
 
-- state: newest vendor notification title;
-- attributes: content, timestamp, read state, level/type/style and vendor code;
-- `recent`: up to five newest normalized messages;
-- poll interval: at most once per minute during normal background polling;
-- transient failures retain the last successful snapshot;
-- vendor notification codes are kept as strings, including alphanumeric values
-  such as `150A`;
-- vendor-native app jump URLs are deliberately not retained or exposed.
+- up to **10 vendor** Device notifications are retained with `origin: vendor`;
+- up to **20 Navimower** context rows are retained with `origin: navimower`;
+- vendor rows keep their original title, content, timestamp, read state and code;
+- Navimower rows explain confirmed Home Assistant starts, Resume/Dock actions,
+  night interruptions and retained-task resumes without inventing vendor codes;
+- a mowing start with no fresh command trace in this Home Assistant instance is
+  shown neutrally as **Mowing task started** / observed start. It is not labelled
+  as an app or "external" command because another HA instance, the mower itself
+  or another control path may have issued it;
+- low-battery return uses the vendor Device notification as the single visible
+  charging-pause row. Navimower still retains the unfinished task context and can
+  add **Mowing resumed after charging** when cutting really resumes;
+- local activity rows are created only after confirmed vendor activity, not from
+  an optimistic button state.
 
-Field testing with a mower shared to multiple Navimow accounts confirmed that the
-vendor `read` state is **account-specific**: reading notifications under the same
-Navimow account used by the HA private-cloud integration changes the feed entries
-from `read: false` to `read: true` on a later refresh.
+`navimower.mark_notification_read` marks the selected row using the correct
+origin-specific path: local rows stay local, while vendor rows use the vendor
+message flow. `navimower.mark_all_notifications_read` handles both retained local
+rows and the vendor Device feed.
 
-0.4.2-beta2 adds two explicit Home Assistant actions:
-
-- **`navimower.mark_notification_read`** accepts a Device notification
-  `message_id` and opens the same encrypted message-detail route used by the
-  official app. The integration does not optimistically change the cached read
-  flag; it immediately reloads the Device feed and accepts only the vendor's
-  returned state. This single-message path remains field-validation behavior in
-  beta2 until a live unread row is confirmed to become `read: true`.
-- **`navimower.mark_all_notifications_read`** uses the recovered official
-  `clearBatchMessageRead` Mark-all request and then immediately reloads the
-  Device feed.
-
-Both actions operate in the private-cloud Navimow account used by the selected
-config entry. They do not mark notifications read for other Navimow accounts to
-which the mower may also be shared.
+Vendor notification read state remains account-specific. These actions operate
+on the private-cloud Navimow account used by that config entry and do not mark
+messages read in other shared accounts.
 
 Notification history is user-facing event information and does not replace the
-live Problem/Error state model. Field testing also confirmed that mower
-fault/safety events can appear in the Device feed, but the notification code and
-live mower Error/Problem state remain separate vendor concepts.
+live Problem/Error state model.
 
 ### Settings and controls
 
@@ -201,27 +206,23 @@ Depending on mower model and firmware, Navimower can expose:
 
 **Night mowing, Rain and Rain sensor** use a robot-first plus cloud-persist write
 path. This prevents the mower's onboard copy from later restoring an older value
-to the cloud. All three were field-tested bidirectionally on H215 during the
-0.4.1 beta cycle.
+to the cloud. All three have been field-tested bidirectionally on H215.
 
 Unknown encoded cutting-height markers are not converted into invented
 millimetre values.
 
 ### i2 AWD experimental support
 
-0.4.1 introduced an initial capability profile derived from an i208 AWD
-diagnostic and the i2 documentation. It may expose settings such as Eco mode,
-Narrow zone adapt, Advanced slope mode, Grass pattern enhancement, Progress
-retention, Mowing cycle interval, Headlight, Night animal protection, Terrain
-adapt, Edge sense, TCS, positioning controls and Global cutting height when
-corresponding vendor fields are present.
+Initial i2 AWD support is capability-driven and may expose settings such as Eco
+mode, Narrow zone adapt, Advanced slope mode, Grass pattern enhancement,
+Progress retention, Mowing cycle interval, Headlight, Night animal protection,
+Terrain adapt, Edge sense, TCS, positioning controls and Global cutting height
+when the corresponding vendor fields are present.
 
 > [!CAUTION]
-> **i2 AWD support is experimental and has not yet been field-tested on a live
-> i2 AWD mower through Navimower.** The controls remain included so owners can
-> test and report behavior, but availability, labels and write semantics may vary
-> by firmware. H215 is the primary field-tested model and X390 provides secondary
-> model validation.
+> **i2 AWD controls remain experimental.** Diagnostics have provided useful
+> capability evidence, but not every control/write path has been field-validated
+> across i2 AWD models and firmware. Availability and write semantics can vary.
 
 Default battery-setting ranges are 5–20% for return-to-dock and 70–100% for the
 charging limit unless the mower reports its own supported min/max limits.
@@ -240,31 +241,6 @@ cutting height. Entities are exposed only when the model/capability mapping and
 reported vendor settings support them.
 
 The private and OAuth endpoints currently target the European/FRA service.
-
-## Installation
-
-### HACS custom repository
-
-1. Open **HACS -> Integrations -> three-dot menu -> Custom repositories**.
-2. Add `https://github.com/vahesoo/NaviMower` as category **Integration**.
-3. Install Navimower and restart Home Assistant.
-4. Open **Settings -> Devices & services -> Add integration -> Navimower**.
-
-Manual installation is also possible by copying `custom_components/navimower`
-into `/config/custom_components/` and restarting Home Assistant.
-
-## Setup flow
-
-1. Enter the email and password of the dedicated private-cloud account.
-2. Select the mower, or enter its serial when a shared mower is not returned by
-   the normal mower list.
-3. Continue to official Smart Home OAuth.
-4. Sign in with an account that can access the same mower.
-5. Home Assistant stores both connection branches in one Navimower config entry.
-
-The two branches degrade independently: cached/private-cloud functionality may
-remain usable during an OAuth/MQTT outage, and live MQTT/history may remain
-useful during a temporary private-cloud outage.
 
 ## Navimower Schedule
 
@@ -299,6 +275,11 @@ schedule** and:
 
 Only the explicitly selected zones are enrolled. Adding another zone to the map
 does not automatically add it to the scheduler.
+
+Before this setup is saved, Navimower Schedule switch/time entities are intentionally
+not created on the mower device. Saving the setup reloads the config entry and
+exposes the controls for that mower. Turning the Schedule switch off later does
+not remove the configured controls.
 
 ### How zone selection works
 
@@ -428,16 +409,12 @@ entity: lawn_mower.tont
 The integration itself provides authenticated local APIs for map data, session
 indexes, exact route details and completed-session render archives.
 
-### Built-in Map Camera removal
+### Legacy Map Camera
 
-The old SVG **Legacy Map Camera** was deprecated in 0.4.1 and is **removed from
-0.4.2-beta1 onward**. The camera platform, renderer and camera entity translation
-are no longer part of the integration. Existing dashboards should use Navimower
-Map Card instead.
-
-This removal does not affect camera/VisionFence-related mower settings such as
-Camera positioning (EFLS); it removes only the old Home Assistant SVG map-camera
-entity.
+The old built-in SVG **Legacy Map Camera** is removed. Existing dashboards should
+use Navimower Map Card instead. This does not affect camera/VisionFence-related
+mower settings such as Camera positioning (EFLS); only the old Home Assistant SVG
+map-camera entity was removed.
 
 ## Options
 
@@ -465,91 +442,41 @@ options from the 0.4.1 beta cycle remain removed.
 Use Home Assistant's normal **Download diagnostics** action from the Navimower
 integration/config-entry menu.
 
-The generated document remains sanitized. It contains general mower,
-connectivity, positioning, map, telemetry, history, capability, maintenance,
-schedule, Problem/Error and latest-notification context. Tokens, password, email,
-UID, full mower serial, GPS coordinates and other sensitive account/network
-identifiers are redacted.
+The generated document is snapshot-only and sanitized. It contains general
+mower, connectivity, positioning, map, telemetry, history, capability,
+maintenance, Navimower Schedule, Problem/Error and notification-center context.
+Tokens, password, email, UID, full mower serial, GPS coordinates and other
+sensitive account/network identifiers are redacted.
 
-From **0.4.2-beta2 onward**, Download diagnostics is snapshot-only again: the
-beta1 public-H5 notification discovery has been removed after recovering the
-required request contracts. Downloading diagnostics makes no extra vendor or H5
-requests and never executes notification read actions.
-
-The older passive MQTT discovery, broad endpoint probing, state-transition
-capture and custom `navimower.export_diagnostics` / `mark_discovery_event`
-actions remain removed.
-
-## 0.4.2 beta development
-
-### 0.4.2-beta2
-
-- adds explicit **Mark notification as read** and **Mark all notifications as
-  read** Home Assistant actions for Device notifications;
-- uses the official app's Device message-detail route for one-message field
-  validation and the confirmed `clearBatchMessageRead` mutation for Mark all;
-- forces an immediate Device-feed refresh after a successful action and never
-  invents `read: true` locally;
-- removes the beta1 H5 Download-diagnostics discovery and returns diagnostics to
-  snapshot-only behavior;
-- remains cumulative from stable 0.4.1; beta1 does not need to be installed
-  first.
-
-### 0.4.2-beta1
-
-- removes the deprecated Legacy Map Camera platform and renderer;
-- keeps Navimower Map Card as the supported map UI;
-- keeps Latest notification and the existing read-only Device feed unchanged;
-- confirms/documents notification `read` state as account-specific from field
-  testing;
-- adds a targeted Download diagnostics H5 inspection to recover the official
-  notification read mutation request for future **Mark as read** and **Mark all
-  as read** support;
-- does not send notification write/mutation requests.
-
-## Upgrade from 0.4.0 to 0.4.1
-
-0.4.1 is a cumulative stability and data-correctness release built directly on
-0.4.0. No beta releases need to be installed individually.
-
-Highlights include:
-
-- guarded private-cloud polling under dense MQTT traffic;
-- clearer raw vendor Task/Map/zone telemetry ownership;
-- multi-zone session and same-day trail stability;
-- route/history pose deduplication and mower-specific mowing footprint width;
-- freshness-aware private-cloud position fallback with conservative Gate safety;
-- corrected Idle, Lifted and numeric-fault handling;
-- vendor detail on the Error sensor for reported numeric faults;
-- the new Latest notification Device-feed sensor;
-- initial experimental/unverified i2 AWD capability support;
-- persistent bidirectional Night mowing, Rain and Rain sensor writes;
-- removal of beta-only diagnostics/discovery controls;
-- Legacy Map Camera deprecation notice ahead of its 0.4.2-beta1 removal.
-
-See [CHANGELOG.md](CHANGELOG.md) and
-[`.github/release-notes/0.4.1.md`](.github/release-notes/0.4.1.md) for the release
-summary.
-
-### v0.3.4
-
-The 0.3.4 release established the current capability-driven settings model and
-field-tested H215 control baseline. 0.4.1 retains those controls while adding the
-runtime, notification, error and model-support changes described above.
+Downloading diagnostics does not execute mower commands or notification read
+mutations. Older development-only passive discovery/export controls are not part
+of the normal integration UI.
 
 ## Current limitations
 
 - Private-cloud behavior is undocumented and may change without notice.
 - Model and firmware fields differ; unsupported settings are not invented.
-- i2 AWD support is experimental and not yet field-tested through Navimower.
+- i2 AWD control support remains experimental and is not equally field-tested
+  across models/firmware.
 - Exact dense route history depends on live MQTT pose samples; missing samples
   are not reconstructed.
 - Map writes, boundary edits and other destructive map editing are deliberately
   not included.
-- The old built-in SVG Map Camera is removed from the 0.4.2 beta line; use
-  Navimower Map Card.
-- Single-message notification read behavior is still being field-validated in
-  beta2; Mark all as read uses the directly recovered official mutation contract.
+
+For release-by-release changes, see [CHANGELOG.md](CHANGELOG.md).
+
+## Project origins
+
+The private-cloud foundation used by Navimower was created by **Roberto
+Gualandris** in [ilguala/navimow_pro](https://github.com/ilguala/navimow_pro).
+That project reverse-engineered the Navimow mobile application's private-cloud
+communication and implemented the authentication, encrypted protocol, map
+handling and control foundation on which this integration builds.
+
+Navimower extends that foundation with official Smart Home OAuth/MQTT live data,
+persistent mowing history, physical-zone and gate logic, richer Home Assistant
+entities, and a separately maintained
+[Navimower Map Card](https://github.com/vahesoo/navimower-map-card).
 
 ## Credits and licence
 

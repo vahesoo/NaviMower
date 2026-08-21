@@ -124,7 +124,10 @@ def test_readme_documents_entities_models_and_testing_scope() -> None:
     assert "Primary field testing has been performed on an **H215**" in readme
     assert "Night light brightness" in readme
     assert "Terrain adapt" in readme
-    assert "### v0.3.4" in readme
+    # README documents current behavior. Release-by-release history belongs in
+    # CHANGELOG.md instead of being duplicated in embedded version sections.
+    assert "[CHANGELOG.md](CHANGELOG.md)" in readme
+    assert "### v0.3.4" not in readme
 
 
 def test_v040_beta1_completed_session_archive_contract() -> None:
