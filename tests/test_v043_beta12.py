@@ -21,8 +21,8 @@ def test_beta12_error_discovery_is_wall_clock_bounded() -> None:
     ast.parse(source)
     for phrase in (
         "MAX_ROOT_REQUESTS = 4",
-        "MAX_PREFIX_REQUESTS = 32",
-        "MAX_FULL_MATCHES = 6",
+        "MAX_PREFIX_REQUESTS = 14",
+        "MAX_FULL_MATCHES = 8",
         "MAX_PROBE_SECONDS = 24.0",
         "TIMEOUT = 2.5",
         "def _deadline_fetch",

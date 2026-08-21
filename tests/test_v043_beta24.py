@@ -1,5 +1,4 @@
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,9 +9,7 @@ def _source(name: str) -> str:
     return (COMPONENT / name).read_text(encoding="utf-8")
 
 
-def test_beta24_identity_and_release_notes():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta24"
+def test_beta24_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta24.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta24")
 
