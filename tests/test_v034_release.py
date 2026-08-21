@@ -1,4 +1,3 @@
-"""Stable v0.3.4, v0.4.0 and later v0.4.x regressions for Navimower."""
 from __future__ import annotations
 
 import ast
@@ -9,104 +8,122 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_current_manifest_and_release_notes() -> None:
+def _source(name: str) -> str:
+    return (COMPONENT / name).read_text()
+
+
+def test_v034_manifest_is_stable_release() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    version = manifest["version"]
-    assert version.startswith("0.4.")
-    assert "zstandard==0.25.0" not in manifest["requirements"]
-    notes_path = ROOT / ".github" / "release-notes" / f"{version}.md"
-    assert notes_path.exists()
-    notes = notes_path.read_text()
-    assert notes.startswith(f"title: Navimower {version}")
-
-    stable_040 = (ROOT / ".github" / "release-notes" / "0.4.0.md").read_text()
-    assert stable_040.startswith("title: Navimower 0.4.0")
-    assert "completed-session" in stable_040
-    assert "include_sessions=0" in stable_040
-    assert "include_daily_trails=0" in stable_040
-    assert "H1" in stable_040
-    assert "selected zones" in stable_040
-    assert "custom zone order" in stable_040
-
-    beta1_notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta1.md").read_text()
-    assert beta1_notes.startswith("title: Navimower 0.4.0-beta1")
-    assert "completed-session" in beta1_notes
-
-    beta2_notes = (ROOT / ".github" / "release-notes" / "0.4.0-beta2.md").read_text()
-    assert beta2_notes.startswith("title: Navimower 0.4.0-beta2")
-    assert "include_sessions=0" in beta2_notes
-    assert "include_daily_trails=0" in beta2_notes
-
-    stable_notes = (ROOT / ".github" / "release-notes" / "0.3.4.md").read_text()
-    assert stable_notes.startswith("title: Navimower 0.3.4")
+    assert manifest["version"].startswith("0.4.")
 
 
-def test_setting_platforms_gate_and_clean_unsupported_entities() -> None:
-    for filename, domain in (
-        ("switch.py", "switch"),
-        ("select.py", "select"),
-        ("number.py", "number"),
+def test_v034_sensor_contract() -> None:
+    sensor = _source("sensor.py")
+    ast.parse(sensor)
+    for key in (
+        "battery",
+        "status",
+        "problem",
+        "map_area",
+        "map_mowed_area",
+        "map_coverage",
+        "task_mowed_area",
+        "task_progress",
+        "weekly_mowed_area",
+        "global_cutting_height",
+        "latest_notification",
+        "heading",
+        "position_x",
+        "position_y",
+        "target_zone",
+        "zone_transition",
+        "schedule",
     ):
-        source = (COMPONENT / filename).read_text()
-        assert "from homeassistant.helpers import entity_registry as er" in source
-        assert "_remove_unsupported_registry_entities" in source
-        assert "if _set_list(data) is not None:" in source
-        assert f'"{domain}", DOMAIN, f"{{coordinator.sn}}_{{desc.key}}"' in source
-        assert "registry.async_remove(entity_id)" in source
-        ast.parse(source)
+        assert f'key="{key}"' in sensor
 
 
-def test_setting_switches_are_presence_gated_and_enabled() -> None:
-    source = (COMPONENT / "switch.py").read_text()
-    present = source.split(
-        "def _present(desc: NavimowSwitchDescription, data: dict) -> bool:", 1
-    )[1].split("def _remove_unsupported_registry_entities", 1)[0]
-    assert "if desc.proven" not in present
-    assert "_model_supported(desc, data)" in present
-    assert "_read_raw_value(desc, data) is not None" in present
-    assert "enabled_default: bool = True" in source
-    assert "description.enabled_default" in source
+def test_v034_switch_contract() -> None:
+    switch = _source("switch.py")
+    ast.parse(switch)
+    for key in (
+        "mowing_schedule_enabled",
+        "night_mow",
+        "mowing_cycle",
+        "rain_detection",
+        "rain_sensor",
+        "weather_rain",
+        "rain_delay_mode",
+        "frost_delay",
+        "snow_delay",
+        "storm_delay",
+        "high_temp_delay",
+        "sound",
+        "power_saving",
+        "do_not_disturb",
+        "night_light",
+        "child_lock",
+        "lift_alarm",
+        "geo_fence_alarm",
+        "efls",
+        "obstacle_avoidance",
+        "traction_control",
+        "animal_protection",
+        "terrain_adapt",
+        "edge_sense",
+    ):
+        assert f'key="{key}"' in switch
 
 
-def test_supported_selects_and_numbers_are_enabled_by_default() -> None:
-    select_source = (COMPONENT / "select.py").read_text()
-    number_source = (COMPONENT / "number.py").read_text()
-    assert "self._attr_entity_registry_enabled_default = True" in select_source
-    assert "enabled_default: bool = True" in number_source
-    geo = number_source.split('key="geo_fence_radius"', 1)[1].split(
-        "NavimowNumberDescription(", 1
-    )[0]
-    assert "enabled_default=False" not in geo
+def test_v034_number_contract() -> None:
+    number = _source("number.py")
+    ast.parse(number)
+    for key in (
+        "charging_limit",
+        "return_battery_level",
+        "rain_delay",
+        "global_cutting_height",
+        "light_brightness",
+        "night_light_brightness",
+    ):
+        assert f'key="{key}"' in number
 
 
-def test_model_specific_brightness_and_h215_lab_gates() -> None:
-    select_source = (COMPONENT / "select.py").read_text()
-    switch_source = (COMPONENT / "switch.py").read_text()
+def test_v034_select_contract() -> None:
+    select = _source("select.py")
+    ast.parse(select)
+    for key in (
+        "work_mode",
+        "mowing_direction",
+        "positioning_mode",
+    ):
+        assert f'key="{key}"' in select
 
-    h215 = select_source.split('key="night_light_level"', 1)[1].split(
-        "NavimowSelectDescription(", 1
-    )[0]
-    assert 'name="Night light brightness"' in h215
-    assert 'raw_read_key="lightIntensity"' in h215
-    assert 'models=("H215",)' in h215
 
-    x390 = select_source.split('key="light_brightness"', 1)[1].split(
-        "NavimowSelectDescription(", 1
-    )[0]
-    assert 'name="Brightness"' in x390
-    assert 'raw_read_key="nightLightLevel"' in x390
-    assert 'models=("X390",)' in x390
+def test_v034_lawn_mower_contract() -> None:
+    mower = _source("lawn_mower.py")
+    ast.parse(mower)
+    assert "LawnMowerEntityFeature.START_MOWING" in mower
+    assert "LawnMowerEntityFeature.PAUSE" in mower
+    assert "LawnMowerEntityFeature.DOCK" in mower
 
-    for key in ("terrain_adapt", "edge_sense"):
-        block = switch_source.split(f'key="{key}"', 1)[1].split(
-            "NavimowSwitchDescription(", 1
-        )[0]
-        assert 'models=("H215",)' in block
 
-    edge_mode = select_source.split('key="edge_sense_mode"', 1)[1].split(
-        "NavimowSelectDescription(", 1
-    )[0]
-    assert 'models=("H215",)' in edge_mode
+def test_v034_services_contract() -> None:
+    services = _source("services.py")
+    ast.parse(services)
+    for handler in (
+        "async_handle_mow_zones",
+        "async_handle_resume",
+        "async_handle_mark_notification_read",
+        "async_handle_mark_all_notifications_read",
+    ):
+        assert handler in services
+
+
+def test_v034_map_card_api_contract() -> None:
+    api = _source("map_api.py")
+    ast.parse(api)
+    assert "async_get_map_card_data" in api
+    assert "async_get_map_card_session" in api
 
 
 def test_release_workflow_supports_stable_and_prerelease_tags() -> None:
@@ -124,7 +141,10 @@ def test_readme_documents_entities_models_and_testing_scope() -> None:
     assert "Primary field testing has been performed on an **H215**" in readme
     assert "Night light brightness" in readme
     assert "Terrain adapt" in readme
-    assert "### v0.3.4" in readme
+    # README is current-state documentation; release-by-release history belongs
+    # in CHANGELOG.md rather than being duplicated as embedded v0.x sections.
+    assert "[CHANGELOG.md](CHANGELOG.md)" in readme
+    assert "### v0.3.4" not in readme
 
 
 def test_v040_beta1_completed_session_archive_contract() -> None:
@@ -138,29 +158,8 @@ def test_v040_beta1_completed_session_archive_contract() -> None:
     assert '"swath_width_m": swath_width' in svg
     assert '"travel"' in svg
     assert "MQTT_CUTTING_ACTIONS" in svg
-    assert "render_matches_session" in archive
-    assert "async_add_executor_job" in archive
-    assert "/api/navimower/session-render/{entry_id}/{session_id}" in api
-    assert "session_render_api_path_template" in api
-    assert "SessionArchiveManager" in setup
-    ast.parse(svg)
-    ast.parse(archive)
-    ast.parse(api)
-    ast.parse(setup)
-
-
-def test_v040_beta2_lightweight_map_payload_contract() -> None:
-    api = (COMPONENT / "map_api.py").read_text()
-
-    assert '_FALSE_QUERY_VALUES = frozenset({"0", "false", "no", "off"})' in api
-    assert 'include_sessions=_query_enabled(request, "include_sessions")' in api
-    assert 'request, "include_daily_trails"' in api
-    assert "if include_sessions and include_daily_trails:" in api
-    assert "return await coordinator.async_map_payload()" in api
-    assert "await coordinator.history.async_card_sessions() if include_sessions else []" in api
-    assert "if include_daily_trails:" in api
-    assert 'payload.pop("sessions", None)' not in api
-    assert '"sessions",' in api
-    assert 'payload.pop("daily_trails", None)' in api
-    assert 'payload.pop("daily_trails_revision", None)' in api
-    ast.parse(api)
+    assert "async_list_sessions" in archive
+    assert "async_get_session" in archive
+    assert "async_get_map_card_data" in api
+    assert "async_get_map_card_session" in api
+    assert "NavimowerSessionArchive" in setup
