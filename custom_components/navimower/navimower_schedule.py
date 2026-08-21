@@ -150,6 +150,11 @@ class NavimowerScheduleController:
         return tuple(sorted(self._selected_zone_ids))
 
     @property
+    def configured(self) -> bool:
+        """Return whether the user has saved Navimower Schedule setup."""
+        return self._selection_configured
+
+    @property
     def start_time(self) -> time:
         return self._start
 
@@ -409,6 +414,35 @@ class NavimowerScheduleController:
         pending = self._runtime.get("pending_command")
         return _age_seconds(pending.get("sent_at")) if isinstance(pending, dict) else None
 
+    def _sync_active_cycle_id(self) -> bool:
+        """Attach the newly-created history cycle once cutting actually starts."""
+        if (
+            self._runtime.get("active_zone_id") is None
+            or self._runtime.get("active_cycle_id") is not None
+        ):
+            return False
+        history = getattr(self.coordinator, "history", None)
+        active = getattr(history, "active_session", None)
+        if not isinstance(active, dict) or not active.get("id"):
+            return False
+        try:
+            zone_id = int(self._runtime["active_zone_id"])
+        except (TypeError, ValueError):
+            return False
+        observed: set[int] = set()
+        for value in [
+            *(active.get("zone_ids") or []),
+            *(active.get("cycle_reset_zone_ids") or []),
+        ]:
+            try:
+                observed.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        if zone_id not in observed:
+            return False
+        self._runtime["active_cycle_id"] = str(active["id"])
+        return True
+
     async def _reconcile_unconfirmed_mow_start(self, activity: Any) -> None:
         """Recover safely when a new-zone start confirmation is lost across restart."""
         pending = self._runtime.get("pending_command")
@@ -481,6 +515,8 @@ class NavimowerScheduleController:
         completed_now = await self._confirm_active_completion()
         activity = data.get("activity")
         await self._confirm_pending(activity)
+        if self._sync_active_cycle_id():
+            await self._save()
         await self._reconcile_unconfirmed_mow_start(activity)
 
         if not in_window:
@@ -686,7 +722,11 @@ class NavimowerScheduleController:
             self.coordinator.start_new_mowing_cycle([zone_id], source=source)
             post_reset_row = self._zone(zone_id) or row
             self._runtime["active_zone_id"] = zone_id
-            self._runtime["active_cycle_id"] = post_reset_row.get("cycle_id")
+            # start_new_mowing_cycle closes the old history session and arms a
+            # new one. Do not copy the previous zone model's cycle_id here; the
+            # real new session is attached by _sync_active_cycle_id after the
+            # mower confirms cutting.
+            self._runtime["active_cycle_id"] = None
             self._runtime["active_zone_baseline_completed_at"] = later_iso(
                 row.get("last_completed_at"),
                 post_reset_row.get("last_completed_at"),

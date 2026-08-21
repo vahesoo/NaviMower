@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.3-beta24
+
+Release-candidate cleanup for Navimower Schedule, notifications and documentation.
+
+### Changed
+
+- Expose Navimower Schedule switch/time entities only after the user has saved Schedule setup for that mower; remove stale pre-setup registry entities created by earlier betas.
+- Rename un-attributed mowing starts to the neutral `Mowing task started` wording instead of claiming an `External` source when this Home Assistant instance has no fresh local command trace.
+- Use the vendor Device-feed low-battery return as the single visible charging-pause notification while retaining local task context for `Mowing resumed after charging`.
+- Reorder README into installation/setup first and current functionality second; remove embedded beta/upgrade history and keep release history in `CHANGELOG.md`.
+
+### Fixed
+
+- Stop copying a stale pre-reset zone `cycle_id` into Navimower Schedule runtime. A new dispatch now leaves `active_cycle_id` empty until the newly-created history session for that active zone is observed, then synchronizes the real session ID.
+
+### Unchanged
+
+- Navimower Schedule completion remains based on fresh `Last completed` advancement and is not changed by the cycle-ID diagnostics fix.
+- Charging/rain/night behavior remains mower-owned in 24-hour mode; charging resume attribution remains available without duplicating the vendor low-battery notification.
+
+
 ## 0.4.3-beta23
 
 Separate authoritative vendor cycle detection from dense live zone-progress projection and document Navimower Schedule.

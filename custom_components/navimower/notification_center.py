@@ -617,7 +617,13 @@ class NavimowerNotificationCenter:
         ids = self._observed_task_zone_ids(snapshot)
         names_by_id = _zone_names(snapshot)
         names = [names_by_id.get(value, f"Zone {value}") for value in ids]
-        content = "Started an external mowing task"
+        # This Home Assistant instance cannot prove the source when no fresh
+        # local Mow/Resume trace exists. NM1003 used to be titled
+        # "External mowing task started", but that was too strong: the command
+        # may have come from another Navimower HA instance, the app, mower
+        # controls or voice control. The observed fallback does not assume it
+        # came from the mobile app or from any other specific external source.
+        content = "Observed a mowing task start"
         if names:
             content += f" in {_zone_phrase(names)}"
         else:
@@ -625,15 +631,15 @@ class NavimowerNotificationCenter:
         content += "."
         item = self._emit(
             "NM1003",
-            "External mowing task started",
+            "Mowing task started",
             content,
-            kind="external_mowing_started",
-            confidence="observed_external_start",
+            kind="observed_mowing_started",
+            confidence="observed_start_without_local_command",
         )
         self._active_task = {
             "task_id": (item or {}).get("message_id"),
-            "origin": "external",
-            "trigger": "external_or_vendor",
+            "origin": "observed",
+            "trigger": "observed_without_local_command",
             "zone_ids": ids,
             "zone_names": names,
             "ordered": None,
@@ -757,24 +763,20 @@ class NavimowerNotificationCenter:
 
         threshold = _as_float((snapshot.get("settings") or {}).get("return_battery_level"))
         if battery is not None and threshold is not None and battery <= threshold + 2:
-            names = list((self._active_task or {}).get("zone_names") or [])
-            content = f"The unfinished mowing task returned to charge at {battery:g}% battery"
-            if names:
-                content += f" while mowing {_zone_phrase(names)}"
-            if progress is not None:
-                content += f" at {progress:g}% task progress"
-            content += "."
-            item = self._emit(
-                "NM1007",
-                "Mowing paused for charging",
-                content,
-                kind="charging_pause",
-                confidence="inferred_from_return_battery_threshold",
-            )
+            # The vendor Device feed already reports the low-battery return,
+            # normally as code 1502. Keep that vendor row as the single visible
+            # charging-pause notification so schedule and non-schedule users see
+            # the same event without a duplicate Navimower-local NM1007 row.
+            # NM1007 "Mowing paused for charging" is therefore retained only as
+            # historical stored data from older releases. Internal task context
+            # is still kept so NM1008 can explain the later charging resume.
             self._interrupted_reason = "charging"
             if self._active_task is not None:
                 self._active_task["charging_paused_at"] = datetime.now(UTC).isoformat()
-            return item is not None
+                self._active_task["charging_pause_confidence"] = (
+                    "inferred_from_return_battery_threshold"
+                )
+            return False
 
         self._interrupted_reason = "unknown"
         return False
