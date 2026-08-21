@@ -22,13 +22,16 @@ from .maintenance_h5_discovery import (
 
 MAX_HTML = 256 * 1024
 MAX_ROOT_JS = 1024 * 1024
-PREFIX_BYTES = 64 * 1024
+PREFIX_BYTES = 768 * 1024
 MAX_ROOT_REQUESTS = 4
-MAX_PREFIX_REQUESTS = 32
-MAX_FULL_MATCHES = 6
+MAX_PREFIX_REQUESTS = 14
+MAX_FULL_MATCHES = 8
 MAX_FULL_JS = 2 * 1024 * 1024
 MAX_CONTEXTS = 80
 CONTEXT_RADIUS = 1800
+ACTION_CONTEXT_RADIUS = 12000
+MAX_ACTION_NEIGHBORHOODS = 24
+MAX_ACTION_LITERALS = 120
 MAX_PROBE_SECONDS = 24.0
 TIMEOUT = 2.5
 MIN_REQUEST_TIMEOUT = 0.2
@@ -44,6 +47,21 @@ BRIDGE_RE = re.compile(
     r"(?P<callee>(?:[A-Za-z_$][\w$]*\.)*(?:sendEncryptionData|callNative|sendMessageToNative))"
     r"\s*\(\s*[\"'](?P<method>[^\"']{1,160})[\"']",
     re.I,
+)
+GENERIC_NATIVE_CALL_RE = re.compile(
+    r"(?P<callee>(?:(?:window|globalThis|webkit|Android|android)[A-Za-z0-9_$.[\]]*\.)?"
+    r"(?:sendEncryptionData|callNative|sendMessageToNative|postMessage|handleH5MowerSet|invoke))"
+    r"\s*\((?P<args>.{0,1400}?)\)",
+    re.I | re.S,
+)
+COMMAND_FIELD_RE = re.compile(
+    r"(?P<key>cmdCode|cmd_code|command|action|behavior|method|event|code|type)"
+    r"\s*:\s*(?P<value>[^,}\]]{1,220})",
+    re.I,
+)
+STRING_LITERAL_RE = re.compile(
+    r"(?P<quote>[\"'])(?P<value>(?:\\.|(?!\1).){2,180})(?P=quote)",
+    re.S,
 )
 
 BASE_TARGET_TERMS = (
@@ -341,6 +359,71 @@ def _contexts(text: str, source: str, terms: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+def _action_neighborhoods(
+    text: str, source: str, anchors: list[str]
+) -> list[dict[str, Any]]:
+    """Capture wide, bounded evidence around real error UI/action anchors."""
+    lower = text.lower()
+    rows: list[dict[str, Any]] = []
+    for anchor in anchors:
+        needle = str(anchor or "").strip()
+        if not needle:
+            continue
+        start = 0
+        found = 0
+        while found < 2 and len(rows) < MAX_ACTION_NEIGHBORHOODS:
+            index = lower.find(needle.lower(), start)
+            if index < 0:
+                break
+            lo = max(0, index - ACTION_CONTEXT_RADIUS)
+            hi = min(len(text), index + len(needle) + ACTION_CONTEXT_RADIUS)
+            nearby = text[lo:hi]
+            literals: list[str] = []
+            for match in STRING_LITERAL_RE.finditer(nearby):
+                value = re.sub(r"\s+", " ", match.group("value")).strip()
+                if (
+                    value
+                    and value not in literals
+                    and len(value) <= 180
+                    and not value.startswith(("data:", "http://", "https://"))
+                ):
+                    literals.append(value)
+                if len(literals) >= MAX_ACTION_LITERALS:
+                    break
+            native_calls = [
+                {
+                    "callee": match.group("callee"),
+                    "args": re.sub(r"\s+", " ", match.group("args")).strip()[:1400],
+                }
+                for match in GENERIC_NATIVE_CALL_RE.finditer(nearby)
+            ][:40]
+            command_fields = [
+                {
+                    "key": match.group("key"),
+                    "value": re.sub(r"\s+", " ", match.group("value")).strip()[:220],
+                }
+                for match in COMMAND_FIELD_RE.finditer(nearby)
+            ][:60]
+            rows.append(
+                {
+                    "anchor": needle,
+                    "source": _safe_url(source),
+                    "offset": index,
+                    "window_start": lo,
+                    "window_end": hi,
+                    "string_literals": literals,
+                    "endpoint_paths": sorted(set(ENDPOINT_RE.findall(nearby)))[:30],
+                    "http_methods": sorted(set(value.upper() for value in HTTP_RE.findall(nearby))),
+                    "native_calls": native_calls,
+                    "command_fields": command_fields,
+                    "js_references": [row["url"] for row in _js_references(nearby, source, {urllib.parse.urlsplit(source).netloc})[:30]],
+                }
+            )
+            start = index + len(needle)
+            found += 1
+    return rows
+
+
 def _translation_keys(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for label in UI_LABELS:
@@ -477,6 +560,8 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
     mower_set_export_aliases: list[dict[str, Any]] = []
     mower_set_import_aliases: list[dict[str, Any]] = []
     mower_set_callsite_contexts: list[dict[str, Any]] = []
+    action_neighborhoods: list[dict[str, Any]] = []
+    action_anchors = list(dict.fromkeys([*UI_LABELS, *dynamic_terms]))
 
     for url in root_urls[:MAX_ROOT_REQUESTS]:
         if budget_exhausted:
@@ -498,6 +583,11 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         for item in _translation_keys(text):
             if item not in translation_keys:
                 translation_keys.append(item)
+        _append_unique(
+            action_neighborhoods,
+            _action_neighborhoods(text, url, action_anchors),
+            MAX_ACTION_NEIGHBORHOODS,
+        )
         definitions, exports, callsites = _mower_set_findings(text, url)
         _append_unique(mower_set_wrapper_definitions, definitions, 32)
         _append_unique(mower_set_export_aliases, exports, 32)
@@ -657,6 +747,11 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
             elif context not in ui_contexts and len(ui_contexts) < MAX_CONTEXTS:
                 ui_contexts.append(context)
 
+        _append_unique(
+            action_neighborhoods,
+            _action_neighborhoods(full_text, url, action_anchors),
+            MAX_ACTION_NEIGHBORHOODS,
+        )
         definitions, exports, callsites = _mower_set_findings(full_text, url)
         _append_unique(mower_set_wrapper_definitions, definitions, 32)
         _append_unique(mower_set_export_aliases, exports, 32)
@@ -784,9 +879,11 @@ def probe_error_h5(client: Any, error_code: str = "", error_title: str = "") -> 
         "mower_set_export_aliases": mower_set_export_aliases[:32],
         "mower_set_import_aliases": mower_set_import_aliases[:48],
         "mower_set_callsite_contexts": mower_set_callsite_contexts[:64],
+        "action_neighborhoods": action_neighborhoods[:MAX_ACTION_NEIGHBORHOODS],
         "note": (
-            "Public GET-only discovery prioritizes proven error-command assets and keeps "
-            "two-pass prefix/full-fetch recovery inside a strict wall-clock budget. Partial "
+            "Public GET-only discovery prioritizes proven error-command assets, scans wider "
+            "bundle prefixes, and captures bounded action-neighborhood literals/native-call evidence "
+            "inside a strict wall-clock budget. Partial "
             "evidence is returned when the budget is exhausted. It never calls the private "
             "mower command endpoint or the notification detail/read endpoint."
         ),

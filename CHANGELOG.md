@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3-beta25
+
+Focused active-error diagnostics expansion.
+
+### Diagnostics
+
+- Keep active-error recovery discovery strictly read-only/public-GET only; no mower mutation or notification-detail calls are executed.
+- Scan wider prefixes of the strongest H5 bundles so lazy error-action imports and labels beyond the first 64 KiB are no longer missed.
+- Capture bounded 12 KiB neighborhoods around `Clear and resume`, `Reboot Mower`, `Got it`, the active error code and active error title.
+- Export nearby string literals, command-like object fields, endpoints, HTTP methods, JavaScript references and broader native-bridge/invoke calls to recover the actual Clear/Resume/Reboot contract.
+
+### Unchanged
+
+- No Clear/Resume/Reboot Home Assistant action is exposed yet. A command will only be added after the vendor contract is evidenced and separately validated.
+
+
 ## 0.4.3-beta24
 
 Release-candidate cleanup for Navimower Schedule, notifications and documentation.

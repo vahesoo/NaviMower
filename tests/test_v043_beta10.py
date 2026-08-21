@@ -57,7 +57,7 @@ def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
         "c:behavior",
         "cmdCode",
         "MAX_PREFIX_REQUESTS =",
-        "PREFIX_BYTES = 64 * 1024",
+        "PREFIX_BYTES = 768 * 1024",
         'method="GET"',
         '"mutation_calls_executed": False',
         '"live_command_call_executed": False',
