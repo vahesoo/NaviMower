@@ -38,11 +38,11 @@ def test_scheduler_cycle_id_waits_for_the_real_new_history_session():
     assert 'self._runtime["active_cycle_id"] = str(active["id"])' in source
     assert "if self._sync_active_cycle_id():" in source
 
-    send_start = source.index("    async def _async_send_mow")
-    send_end = source.index("    async def _async_send_dock", send_start)
-    send = source[send_start:send_end]
-    assert 'self._runtime["active_cycle_id"] = None' in send
-    assert 'post_reset_row.get("cycle_id")' not in send
+    confirm_start = source.index("    async def _confirm_pending")
+    confirm_end = source.index("    async def _enforce_closed_window", confirm_start)
+    confirm = source[confirm_start:confirm_end]
+    assert 'self._runtime["active_cycle_id"] = None' in confirm
+    assert 'post_reset_row.get("cycle_id")' not in source
 
 
 def test_observed_mowing_start_is_neutral_when_this_ha_has_no_command_trace():

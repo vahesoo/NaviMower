@@ -1,14 +1,11 @@
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta26_identity_and_release_notes():
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta26"
+def test_beta26_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta26.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta26")
 
@@ -61,6 +58,4 @@ def test_download_diagnostics_still_redacts_geographic_location():
         assert key in sanitize_source
     assert 'if "latitude" in normalized or "longitude" in normalized:' in sanitize_source
     assert 'if normalized.endswith("_gps") or normalized.startswith("gps_"):' in sanitize_source
-    # Diagnostics may pass coordinator data through sanitize(), but must not
-    # publish a dedicated unsanitized tracker-coordinate section.
     assert '"device_tracker_location"' not in diagnostics_source

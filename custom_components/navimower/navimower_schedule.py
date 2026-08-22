@@ -22,6 +22,8 @@ from .const import (
     DEFAULT_SCHEDULE_MODE,
     DEFAULT_SCHEDULE_START,
     DOMAIN,
+    MQTT_STATE_CHARGING,
+    MQTT_STATE_MOWING,
     OPT_SCHEDULE_ENABLED,
     OPT_SCHEDULE_END,
     OPT_SCHEDULE_MODE,
@@ -29,6 +31,9 @@ from .const import (
     OPT_SCHEDULE_ZONE_IDS,
     SCHEDULE_MODE_CONTINUOUS,
     SCHEDULE_MODE_WINDOW,
+    STATE_IDLE_DOCKED_POST,
+    STATE_MOWING,
+    STATE_MOWING_MANUAL,
     encode_partition_ids,
     mow_setup,
 )
@@ -73,6 +78,13 @@ def _age_seconds(value: Any) -> float | None:
     if parsed is None:
         return None
     return max(0.0, (datetime.now(UTC) - parsed.astimezone(UTC)).total_seconds())
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 class NavimowerScheduleController:
@@ -414,6 +426,37 @@ class NavimowerScheduleController:
         pending = self._runtime.get("pending_command")
         return _age_seconds(pending.get("sent_at")) if isinstance(pending, dict) else None
 
+    @staticmethod
+    def _vendor_mowing(data: dict[str, Any]) -> bool:
+        """Return only a mower-confirmed cutting state, never optimistic HA activity."""
+        mqtt_state = _as_int(data.get("mqtt_vehicle_state"))
+        if mqtt_state is not None:
+            return mqtt_state == MQTT_STATE_MOWING
+        return str(data.get("state_code") or "") in {STATE_MOWING, STATE_MOWING_MANUAL}
+
+    @staticmethod
+    def _vendor_charging(data: dict[str, Any]) -> bool:
+        """Return whether the mower itself currently reports charging in the dock."""
+        mqtt_state = _as_int(data.get("mqtt_vehicle_state"))
+        if mqtt_state is not None:
+            return mqtt_state == MQTT_STATE_CHARGING
+        return str(data.get("state_code") or "") == STATE_IDLE_DOCKED_POST
+
+    def _pending_mow_confirmed(self, pending: dict[str, Any], data: dict[str, Any]) -> bool:
+        """Confirm a scheduler start from vendor state and the commanded target."""
+        if not self._vendor_mowing(data):
+            return False
+        zone_id = _as_int(pending.get("zone_id"))
+        if zone_id is None:
+            return False
+        observed_zone = _as_int(data.get("active_zone_progress_zone_id"))
+        if observed_zone == zone_id:
+            return True
+        # A start from dock/paused has a real vendor transition from non-mowing
+        # to mowing. A seamless next-zone handoff starts while the previous zone
+        # still reports mowing, so that case waits for the target zone to change.
+        return pending.get("vendor_mowing_at_send") is False
+
     def _sync_active_cycle_id(self) -> bool:
         """Attach the newly-created history cycle once cutting actually starts."""
         if (
@@ -443,34 +486,25 @@ class NavimowerScheduleController:
         self._runtime["active_cycle_id"] = str(active["id"])
         return True
 
-    async def _reconcile_unconfirmed_mow_start(self, activity: Any) -> None:
-        """Recover safely when a new-zone start confirmation is lost across restart."""
+    async def _reconcile_unconfirmed_mow_start(self) -> None:
+        """Stop safely when a scheduler start was never confirmed by the mower."""
         pending = self._runtime.get("pending_command")
-        if isinstance(pending, dict) and pending.get("kind") == "mow":
-            age = self._pending_age()
-            if age is not None and age >= _MOW_CONFIRM_SECONDS and activity != ACTIVITY_MOWING:
-                zone_id = pending.get("zone_id") or self._runtime.get("active_zone_id")
-                self._runtime["pending_command"] = None
-                self._runtime["suspended_reason"] = "mow_start_not_confirmed"
-                self._runtime["last_error"] = (
-                    "New-zone mowing start was not confirmed; automatic reset retry was refused"
-                )
-                self._runtime["last_command"] = f"mow_start_unconfirmed:{zone_id}"
-                self._runtime["last_command_at"] = _utc_now()
-                await self._save()
-                return
-
-        if (
-            self._runtime.get("suspended_reason") == "mow_start_not_confirmed"
-            and activity == ACTIVITY_MOWING
-            and self._runtime.get("active_zone_id") is not None
-        ):
-            zone_id = self._runtime.get("active_zone_id")
-            self._runtime["suspended_reason"] = None
-            self._runtime["last_error"] = None
-            self._runtime["last_command"] = f"late_mow_confirmed:{zone_id}"
-            self._runtime["last_command_at"] = _utc_now()
-            await self._save()
+        if not isinstance(pending, dict) or pending.get("kind") != "mow":
+            return
+        age = self._pending_age()
+        if age is None or age < _MOW_CONFIRM_SECONDS:
+            return
+        zone_id = pending.get("zone_id")
+        self.coordinator.clear_pending_activity()
+        self.coordinator.clear_command_target()
+        self._runtime["pending_command"] = None
+        self._runtime["suspended_reason"] = "mow_start_not_confirmed"
+        self._runtime["last_error"] = (
+            "New-zone mowing start was not confirmed by the mower; automatic reset retry was refused"
+        )
+        self._runtime["last_command"] = f"mow_start_unconfirmed:{zone_id}"
+        self._runtime["last_command_at"] = _utc_now()
+        await self._save()
 
     def _retry_ready(self) -> bool:
         stamp = self._runtime.get("retry_not_before")
@@ -514,10 +548,10 @@ class NavimowerScheduleController:
 
         completed_now = await self._confirm_active_completion()
         activity = data.get("activity")
-        await self._confirm_pending(activity)
+        await self._confirm_pending(data, activity)
         if self._sync_active_cycle_id():
             await self._save()
-        await self._reconcile_unconfirmed_mow_start(activity)
+        await self._reconcile_unconfirmed_mow_start()
 
         if not in_window:
             await self._enforce_closed_window(activity)
@@ -543,6 +577,10 @@ class NavimowerScheduleController:
         if isinstance(pending, dict):
             return
         if not self._retry_ready():
+            return
+        # Charging is a normal mower-owned interruption. Do not start another
+        # scheduler task while the mower itself reports 0102/MQTT charging.
+        if self._vendor_charging(data):
             return
         if activity not in {ACTIVITY_DOCKED, ACTIVITY_PAUSED} and not (
             completed_now and activity == ACTIVITY_MOWING
@@ -617,15 +655,34 @@ class NavimowerScheduleController:
         await self._save()
         return True
 
-    async def _confirm_pending(self, activity: Any) -> None:
+    async def _confirm_pending(self, data: dict[str, Any], activity: Any) -> None:
         pending = self._runtime.get("pending_command")
         if not isinstance(pending, dict):
             return
         kind = str(pending.get("kind") or "")
-        if kind in {"mow", "resume", "continue"} and activity == ACTIVITY_MOWING:
+        if kind == "mow":
+            if not self._pending_mow_confirmed(pending, data):
+                return
+            zone_id = _as_int(pending.get("zone_id"))
+            if zone_id is None:
+                return
+            baseline = pending.get("baseline_completed_at")
+            sent_at = str(pending.get("sent_at") or _utc_now())
+            source = str(pending.get("source") or "navimower_schedule_next_zone")
+            self.coordinator.start_new_mowing_cycle([zone_id], source=source)
+            self._runtime["active_zone_id"] = zone_id
+            self._runtime["active_cycle_id"] = None
+            self._runtime["active_zone_baseline_completed_at"] = baseline
+            self._runtime["dispatch_started_at"] = sent_at
+            self._runtime["just_completed_zone_id"] = None
+            self._runtime["retry_not_before"] = None
             self._runtime["pending_command"] = None
-            if kind in {"resume", "continue"}:
-                self._runtime["resume_pending"] = False
+            self._runtime["last_error"] = None
+            await self._save()
+            return
+        if kind in {"resume", "continue"} and activity == ACTIVITY_MOWING:
+            self._runtime["pending_command"] = None
+            self._runtime["resume_pending"] = False
             self._runtime["last_error"] = None
             await self._save()
         elif kind == "dock" and activity in {ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
@@ -685,6 +742,8 @@ class NavimowerScheduleController:
         row = self._zone(zone_id) or {}
         partition_ids = encode_partition_ids([zone_id])
         partition_setup = mow_setup(reset=reset, ordered=False)
+        data_before_send = self.coordinator.data or {}
+        vendor_mowing_at_send = self._vendor_mowing(data_before_send)
         self.coordinator.begin_mow_command_trace(
             source=source,
             requested_zone_ids=[zone_id],
@@ -718,23 +777,7 @@ class NavimowerScheduleController:
             await self._save()
             return
 
-        if reset:
-            self.coordinator.start_new_mowing_cycle([zone_id], source=source)
-            post_reset_row = self._zone(zone_id) or row
-            self._runtime["active_zone_id"] = zone_id
-            # start_new_mowing_cycle closes the old history session and arms a
-            # new one. Do not copy the previous zone model's cycle_id here; the
-            # real new session is attached by _sync_active_cycle_id after the
-            # mower confirms cutting.
-            self._runtime["active_cycle_id"] = None
-            self._runtime["active_zone_baseline_completed_at"] = later_iso(
-                row.get("last_completed_at"),
-                post_reset_row.get("last_completed_at"),
-            )
-            self._runtime["dispatch_started_at"] = sent_at
-            self._runtime["just_completed_zone_id"] = None
-            self._runtime["retry_not_before"] = None
-        else:
+        if not reset:
             self._runtime["active_zone_id"] = int(self._runtime.get("active_zone_id") or zone_id)
             self._runtime["resume_pending"] = True
         self._runtime["pending_command"] = {
@@ -742,6 +785,9 @@ class NavimowerScheduleController:
             "zone_id": zone_id,
             "reset": reset,
             "sent_at": sent_at,
+            "source": source,
+            "baseline_completed_at": row.get("last_completed_at") if reset else None,
+            "vendor_mowing_at_send": vendor_mowing_at_send if reset else None,
         }
         self._runtime["last_command"] = f"mow:{zone_id}:reset={str(reset).lower()}"
         self._runtime["last_command_at"] = sent_at

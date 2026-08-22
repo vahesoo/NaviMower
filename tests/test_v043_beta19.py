@@ -44,7 +44,8 @@ def test_restart_restores_runtime_and_reconciles_stale_new_zone_start():
     assert "_reconcile_unconfirmed_mow_start" in source
     assert '"mow_start_not_confirmed"' in source
     assert "automatic reset retry was refused" in source
-    assert '"late_mow_confirmed:' in source
+    reconcile = source[source.index("    async def _reconcile_unconfirmed_mow_start"):source.index("    def _retry_ready")]
+    assert 'self._runtime["active_zone_id"] =' not in reconcile
 
 
 def test_restart_reconciliation_runs_before_window_and_suspend_guards():
@@ -52,7 +53,7 @@ def test_restart_reconciliation_runs_before_window_and_suspend_guards():
     evaluate_start = source.index("    async def _evaluate_locked")
     evaluate_end = source.index("    async def _confirm_active_completion", evaluate_start)
     evaluate = source[evaluate_start:evaluate_end]
-    reconcile = evaluate.index("await self._reconcile_unconfirmed_mow_start(activity)")
+    reconcile = evaluate.index("await self._reconcile_unconfirmed_mow_start()")
     closed = evaluate.index("if not in_window:")
     suspended = evaluate.index('if self._runtime.get("suspended_reason"):')
     assert reconcile < closed < suspended
