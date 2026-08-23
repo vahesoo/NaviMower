@@ -39,5 +39,10 @@ assert '"centroid": [round(centroid[0], 4), round(centroid[1], 4)]' in diagnosti
 assert '"edit_session_active": bool(' in diagnostics
 assert '"map_version": map_version' in diagnostics
 
-assert manifest["version"] in {"0.4.3-beta29", "0.4.3-beta30", "0.4.3-beta31"}
+assert manifest["version"] in {
+    "0.4.3-beta29",
+    "0.4.3-beta30",
+    "0.4.3-beta31",
+    "0.4.3-beta32",
+}
 print("beta29 map revision diagnostics tests passed")
