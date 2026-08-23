@@ -16,6 +16,13 @@ def _position_fallback():
     return module
 
 
+def _production_flow_source() -> str:
+    base = COMPONENT / "config_flow_base.py"
+    if base.exists():
+        return base.read_text(encoding="utf-8")
+    return (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+
+
 def test_beta17_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta17.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta17")
@@ -46,7 +53,7 @@ def test_pending_activity_suppresses_stale_dock_override():
 
 
 def test_24_hour_schedule_form_has_no_time_selectors():
-    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+    source = _production_flow_source()
     first = source.index("    async def async_step_navimower_schedule(\n")
     second = source.index("    async def async_step_navimower_schedule_window(\n", first)
     main_step = source[first:second]
@@ -60,7 +67,7 @@ def test_scheduler_description_has_no_literal_backslash_newlines_or_none():
     strings = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
     step = strings["options"]["step"]["navimower_schedule"]
     assert "\\n" not in step["description"]
-    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+    source = _production_flow_source()
     assert 'if not rows:\n            return ""' in source
     assert '"unavailable_note": self._schedule_unavailable_text()' in source
 

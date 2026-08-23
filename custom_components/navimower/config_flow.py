@@ -1,605 +1,80 @@
-"""Configuration and options flows for the standalone Navimower integration.
+"""Navimower config flow with experimental Custom Area import support.
 
-A Navimower entry contains two independent sessions:
-
-* private app-cloud credentials for maps, settings, schedules and commands;
-* Smart Home OAuth credentials for official MQTT live position.
-
-The account password is only used during the private login step and is never
-stored. The OAuth token is managed by Home Assistant's OAuth helper.
+The stable beta29 flow is kept in ``config_flow_base`` so beta30 can add the
+Custom Area experiment without disturbing the already field-tested login,
+scheduler, gate and legacy channel flows.
 """
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import (
-    SOURCE_REAUTH,
-    SOURCE_RECONFIGURE,
-    ConfigEntry,
-    ConfigFlowResult,
-    OptionsFlowWithReload,
-)
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers import config_entry_oauth2_flow
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
-    SelectSelector,
-    SelectSelectorConfig,
-    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
-    TimeSelector,
 )
 
-from .account import shared_private_device_id
-from .api import NavimowCloudClient, NavimowError, PassportAuthError, PassportError
-from .channel import NavimowerChannel, parse_channels
-from .const import (
-    API_BASE_URL,
-    CONF_ACCESS_TOKEN,
-    CONF_API_BASE_URL,
-    CONF_DEVICE_ID,
-    CONF_LANGUAGE,
-    CONF_MODEL,
-    CONF_OAUTH_DEVICE_ID,
-    CONF_PASSPORT_UUID,
-    CONF_REFRESH_TOKEN,
-    CONF_REGION,
-    CONF_UID,
-    CONF_VEHICLE_NAME,
-    CONF_VEHICLE_SN,
-    CONF_VEHICLE_TYPE,
-    DEFAULT_INCLUDE_RETURN_TRAIL,
-    DEFAULT_LANGUAGE,
-    DEFAULT_SCHEDULE_END,
-    DEFAULT_SCHEDULE_MODE,
-    DEFAULT_SCHEDULE_START,
-    DEFAULT_TRAIL_RETENTION_DAYS,
-    DOMAIN,
-    OPT_CHANNELS,
-    OPT_GATES,
-    OPT_INCLUDE_RETURN_TRAIL,
-    OPT_SCHEDULE_END,
-    OPT_SCHEDULE_MODE,
-    OPT_SCHEDULE_START,
-    OPT_SCHEDULE_ZONE_IDS,
-    OPT_TRAIL_RETENTION_DAYS,
-    OPT_ZONES,
-    SCHEDULE_MODE_CONTINUOUS,
-    SCHEDULE_MODE_WINDOW,
-    TRAIL_RETENTION_OPTIONS,
+from .config_flow_base import NavimowConfigFlow
+from .config_flow_base import NavimowOptionsFlow as _BaseNavimowOptionsFlow
+from .custom_area import (
+    OPT_CUSTOM_AREAS,
+    create_custom_area,
+    find_new_polygons,
+    normalize_polygon,
+    parse_custom_areas,
+    polygon_area_m2,
+    polygon_centroid,
 )
-from .gate import NavimowerGate, parse_gates
-from .oauth import async_register_oauth_implementation
-from .schedule_logic import format_hhmm, parse_hhmm
 
 _LOGGER = logging.getLogger(__name__)
-_USER_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_EMAIL): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username")
-        ),
-        vol.Required(CONF_PASSWORD): TextSelector(
-            TextSelectorConfig(
-                type=TextSelectorType.PASSWORD,
-                autocomplete="current-password",
-            )
-        ),
-    }
-)
 
 
-def _device_candidates(device: Any) -> set[str]:
-    return {
-        str(getattr(device, attr, "") or "").upper()
-        for attr in ("serial_number", "serial", "id")
-    }
-
-
-class NavimowConfigFlow(
-    config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
-    domain=DOMAIN,
-):
-    """Set up private app-cloud authentication followed by official OAuth."""
-
-    DOMAIN = DOMAIN
-    VERSION = 2
+class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
+    """Extend the production options flow with Custom Area capture/import."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._email: str | None = None
-        self._device_id: str | None = None
-        self._client: NavimowCloudClient | None = None
-        self._vehicles: list[dict[str, Any]] = []
-        self._pending_data: dict[str, Any] | None = None
-        self._reauth_mode: str | None = None
+        self._custom_area_baseline: list[list[list[float]]] | None = None
+        self._custom_area_baseline_revision: str | None = None
+        self._custom_area_candidate: list[list[float]] | None = None
 
-    @property
-    def logger(self) -> logging.Logger:
-        return _LOGGER
+    def _custom_areas(self):
+        return parse_custom_areas(self.config_entry.options.get(OPT_CUSTOM_AREAS))
 
-    def _linked_entry(self) -> ConfigEntry | None:
-        """Return the reauth/reconfigure entry linked to this flow."""
-        if self.source == SOURCE_REAUTH:
-            return self._get_reauth_entry()
-        if self.source == SOURCE_RECONFIGURE:
-            return self._get_reconfigure_entry()
-        return None
-
-    async def _authenticate(self, email: str, password: str) -> list[dict[str, Any]]:
-        device_id = (
-            shared_private_device_id(
-                self._async_current_entries(),
-                email,
-                self._device_id,
-            )
-            or uuid.uuid4().hex
-        )
-        self._device_id = device_id
-        client = NavimowCloudClient(device_id=device_id, language=DEFAULT_LANGUAGE)
-
-        def _do() -> list[dict[str, Any]]:
-            client.authenticate(email, password)
-            client.mower_login()
-            return client.auth_list()
-
-        vehicles = await self.hass.async_add_executor_job(_do)
-        self._client = client
-        return vehicles
-
-    def _private_entry_data(self, vehicle: dict[str, Any]) -> dict[str, Any]:
-        assert self._client is not None
-        state = self._client.session_state()
-        return {
-            CONF_EMAIL: self._email,
-            CONF_ACCESS_TOKEN: state["access_token"],
-            CONF_REFRESH_TOKEN: state["refresh_token"],
-            CONF_PASSPORT_UUID: state["uuid"],
-            CONF_UID: state["uid"],
-            CONF_DEVICE_ID: self._client.device_id,
-            CONF_REGION: state["region"],
-            CONF_LANGUAGE: DEFAULT_LANGUAGE,
-            CONF_VEHICLE_SN: str(vehicle.get("vehicle_sn", "")),
-            CONF_VEHICLE_TYPE: int(vehicle.get("vehicle_type", 0) or 0),
-            CONF_VEHICLE_NAME: str(
-                vehicle.get("selfDefinedName")
-                or vehicle.get("vehicle_name")
-                or "Navimow"
-            ),
-            CONF_MODEL: str(vehicle.get("subType", "")),
-        }
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            self._email = str(user_input[CONF_EMAIL]).strip()
-            try:
-                self._vehicles = await self._authenticate(
-                    self._email,
-                    user_input[CONF_PASSWORD],
-                )
-            except PassportAuthError:
-                errors["base"] = "invalid_auth"
-            except (PassportError, NavimowError):
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error during private Navimow login")
-                errors["base"] = "unknown"
-            else:
-                if not self._vehicles:
-                    return await self.async_step_manual()
-                configured = {entry.unique_id for entry in self._async_current_entries()}
-                remaining = [
-                    vehicle
-                    for vehicle in self._vehicles
-                    if str(vehicle.get("vehicle_sn")) not in configured
-                ]
-                if not remaining:
-                    return await self.async_step_manual()
-                self._vehicles = remaining
-                return await self.async_step_select_vehicle()
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=_USER_SCHEMA,
-            errors=errors,
-        )
-
-    async def async_step_select_vehicle(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            serial = str(user_input[CONF_VEHICLE_SN])
-            vehicle = next(
-                (
-                    item
-                    for item in self._vehicles
-                    if str(item.get("vehicle_sn")) == serial
-                ),
-                self._vehicles[0],
-            )
-            return await self._prepare_vehicle(vehicle)
-
-        choices = {
-            str(vehicle.get("vehicle_sn")): (
-                f"{vehicle.get('selfDefinedName') or vehicle.get('vehicle_name') or 'Navimow'} "
-                f"({vehicle.get('vehicle_sn')})"
-            )
-            for vehicle in self._vehicles
-        }
-        return self.async_show_form(
-            step_id="select_vehicle",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_VEHICLE_SN): vol.In(choices)}
-            ),
-        )
-
-    async def async_step_manual(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Validate a shared mower by serial when auth-list is empty."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            serial = str(user_input[CONF_VEHICLE_SN]).strip().upper()
-
-            def _probe() -> dict[str, Any]:
-                assert self._client is not None
-                index = self._client.index2(serial) or {}
-                try:
-                    device = self._client.device_info(serial) or {}
-                except NavimowError:
-                    device = {}
-                return {"index": index, "device": device}
-
-            try:
-                probe = await self.hass.async_add_executor_job(_probe)
-            except NavimowError:
-                errors["base"] = "vehicle_not_found"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error validating shared mower serial")
-                errors["base"] = "unknown"
-            else:
-                index = probe["index"]
-                if not index:
-                    errors["base"] = "vehicle_not_found"
-                else:
-                    device = probe["device"]
-                    vehicle_type = (
-                        index.get("vehicle_type")
-                        or index.get("vehicleType")
-                        or 160000001
-                    )
-                    vehicle = {
-                        "vehicle_sn": serial,
-                        "vehicle_type": int(vehicle_type or 160000001),
-                        "vehicle_name": (
-                            user_input.get(CONF_VEHICLE_NAME)
-                            or device.get("model")
-                            or "Navimow"
-                        ),
-                        "subType": device.get("model", ""),
-                    }
-                    return await self._prepare_vehicle(vehicle)
-
-        return self.async_show_form(
-            step_id="manual",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_VEHICLE_SN): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    ),
-                    vol.Optional(CONF_VEHICLE_NAME, default="Navimow"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    ),
-                }
-            ),
-            errors=errors,
-        )
-
-    async def _prepare_vehicle(self, vehicle: dict[str, Any]) -> ConfigFlowResult:
-        serial = str(vehicle.get("vehicle_sn", ""))
-        private_data = self._private_entry_data(vehicle)
-
-        linked_entry = self._linked_entry()
-        if linked_entry is not None:
-            await self.async_set_unique_id(serial)
-            self._abort_if_unique_id_mismatch()
-            self._pending_data = private_data
-            if self._reauth_mode == "private":
-                return self.async_update_reload_and_abort(
-                    linked_entry,
-                    data_updates=private_data,
-                )
-            return await self.async_step_link_oauth()
-
-        await self.async_set_unique_id(serial)
-        self._abort_if_unique_id_configured()
-        self._pending_data = private_data
-        return await self.async_step_link_oauth()
-
-    async def async_step_link_oauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Explain and start the official Smart Home OAuth browser flow."""
-        if self._pending_data is None and self._linked_entry() is None:
-            return self.async_abort(reason="unknown")
-        if user_input is None:
-            return self.async_show_form(step_id="link_oauth", data_schema=vol.Schema({}))
-        async_register_oauth_implementation(self.hass)
-        return await self.async_step_pick_implementation()
-
-    async def _async_validate_oauth_mower(
-        self,
-        oauth_data: dict[str, Any],
-        serial: str,
-    ) -> str | None:
-        token = oauth_data.get("token") or {}
-        access_token = token.get("access_token")
-        if not access_token:
-            return None
-        from mower_sdk.api import MowerAPI
-
-        api = MowerAPI(
-            session=async_get_clientsession(self.hass),
-            token=str(access_token),
-            base_url=API_BASE_URL,
-        )
-        devices = await api.async_get_devices()
-        serial_upper = serial.upper()
-        for device in devices:
-            if serial_upper in _device_candidates(device):
-                return str(getattr(device, "id", "") or "")
-        if len(devices) == 1:
-            return str(getattr(devices[0], "id", "") or "")
-        return None
-
-    async def async_oauth_create_entry(
-        self, oauth_data: dict[str, Any]
-    ) -> ConfigFlowResult:
-        """Combine OAuth tokens with the already validated private-cloud data."""
-        existing = self._linked_entry()
-        private_data = self._pending_data or (dict(existing.data) if existing else None)
-        if private_data is None:
-            return self.async_abort(reason="unknown")
-        serial = str(private_data.get(CONF_VEHICLE_SN, ""))
-        try:
-            oauth_device_id = await self._async_validate_oauth_mower(
-                oauth_data,
-                serial,
-            )
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Could not validate the Smart Home OAuth mower")
-            return self.async_abort(reason="oauth_cannot_connect")
-        if not oauth_device_id:
-            return self.async_abort(reason="oauth_mower_not_found")
-
-        combined = {
-            **private_data,
-            **oauth_data,
-            CONF_OAUTH_DEVICE_ID: oauth_device_id,
-            CONF_API_BASE_URL: API_BASE_URL,
-        }
-        if existing is not None:
-            return self.async_update_reload_and_abort(
-                existing,
-                data_updates=combined,
-            )
-
-        return self.async_create_entry(
-            title=str(combined.get(CONF_VEHICLE_NAME) or "Navimower"),
-            data=combined,
-        )
-
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> ConfigFlowResult:
-        entry = self._get_reauth_entry()
-        self._email = entry.data.get(CONF_EMAIL)
-        self._device_id = entry.data.get(CONF_DEVICE_ID)
-        requested = str((entry_data or {}).get("reauth_type") or "")
-        if requested == "private":
-            self._reauth_mode = "private"
-            return await self.async_step_reauth_private()
-        if requested == "oauth":
-            self._reauth_mode = "oauth"
-            self._pending_data = dict(self._linked_entry().data)
-            return await self.async_step_link_oauth()
-        return await self.async_step_reauth_select()
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Let the user replace private-cloud and/or Smart Home OAuth data."""
-        entry = self._get_reconfigure_entry()
-        self._email = entry.data.get(CONF_EMAIL)
-        self._device_id = entry.data.get(CONF_DEVICE_ID)
-        return await self.async_step_reauth_select(user_input)
-
-    async def async_step_reauth_select(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self._reauth_mode = str(user_input["reauth_mode"])
-            if self._reauth_mode == "oauth":
-                self._pending_data = dict(self._linked_entry().data)
-                return await self.async_step_link_oauth()
-            return await self.async_step_reauth_private()
-        return self.async_show_form(
-            step_id="reauth_select",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("reauth_mode", default="both"): vol.In(
-                        {
-                            "private": "Private cloud only",
-                            "oauth": "Smart Home OAuth only",
-                            "both": "Both connections",
-                        }
-                    )
-                }
-            ),
-        )
-
-    async def async_step_reauth_private(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            email = str(user_input.get(CONF_EMAIL) or self._email or "").strip()
-            self._email = email
-            try:
-                self._vehicles = await self._authenticate(
-                    email,
-                    user_input[CONF_PASSWORD],
-                )
-            except PassportAuthError:
-                errors["base"] = "invalid_auth"
-            except (PassportError, NavimowError):
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error during private-cloud reauth")
-                errors["base"] = "unknown"
-            else:
-                linked_entry = self._linked_entry()
-                entry_data = linked_entry.data if linked_entry is not None else {}
-                serial = entry_data.get(CONF_VEHICLE_SN)
-                vehicle = next(
-                    (
-                        item
-                        for item in self._vehicles
-                        if str(item.get("vehicle_sn")) == serial
-                    ),
-                    None,
-                )
-                if vehicle is None:
-                    vehicle = {
-                        "vehicle_sn": serial or "",
-                        "vehicle_type": entry_data.get(CONF_VEHICLE_TYPE, 160000001),
-                        "vehicle_name": entry_data.get(CONF_VEHICLE_NAME, "Navimow"),
-                        "subType": entry_data.get(CONF_MODEL, ""),
-                    }
-                return await self._prepare_vehicle(vehicle)
-
-        return self.async_show_form(
-            step_id="reauth_private",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_EMAIL, default=self._email or ""): TextSelector(
-                        TextSelectorConfig(
-                            type=TextSelectorType.EMAIL,
-                            autocomplete="username",
-                        )
-                    ),
-                    vol.Required(CONF_PASSWORD): TextSelector(
-                        TextSelectorConfig(
-                            type=TextSelectorType.PASSWORD,
-                            autocomplete="current-password",
-                        )
-                    ),
-                }
-            ),
-            errors=errors,
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(entry: ConfigEntry) -> "NavimowOptionsFlow":
-        return NavimowOptionsFlow()
-
-
-class NavimowOptionsFlow(OptionsFlowWithReload):
-    """Manage history, the managed scheduler, gates and local channels."""
-
-    def __init__(self) -> None:
-        self._gate_index: int | None = None
-        self._channel_index: int | None = None
-        self._schedule_pending_zone_ids: list[str] | None = None
-
-    def _options(self) -> dict[str, Any]:
-        return dict(self.config_entry.options)
-
-    def _coordinator(self) -> Any | None:
-        return (self.hass.data.get(DOMAIN) or {}).get(self.config_entry.entry_id)
-
-    def _zone_choices(self) -> dict[str, str]:
+    def _off_limit_polygons(self) -> list[list[list[float]]]:
         coordinator = self._coordinator()
         data = getattr(coordinator, "data", None) or {}
-        zones = data.get("zones") or ((data.get("map") or {}).get("zones")) or []
-        choices: dict[str, str] = {}
-        for zone in zones:
-            if not isinstance(zone, dict) or zone.get("id") is None:
-                continue
-            zone_id = str(int(zone["id"]))
-            choices[zone_id] = f"{zone.get('name') or f'Zone {zone_id}'} (ID {zone_id})"
-        if not choices:
-            raw = self.config_entry.options.get(OPT_ZONES, "")
-            for item in str(raw).split(","):
-                if ":" in item:
-                    zone_id, name = item.split(":", 1)
-                    if zone_id.strip().isdigit():
-                        choices[zone_id.strip()] = name.strip() or f"Zone {zone_id.strip()}"
-        for gate in self._gates():
-            for zone_id in gate.zones:
-                choices.setdefault(str(zone_id), f"Zone {zone_id} (ID {zone_id})")
-        return choices
+        map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+        result: list[list[list[float]]] = []
+        for raw in map_data.get("off_limit_areas") or []:
+            polygon = normalize_polygon(raw)
+            if polygon is not None:
+                result.append(polygon)
+        return result
 
-    def _schedule_zone_rows(self) -> list[dict[str, Any]]:
+    def _map_revision(self) -> str:
         coordinator = self._coordinator()
         data = getattr(coordinator, "data", None) or {}
-        rows = data.get("zone_states") or []
-        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+        map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+        return str(map_data.get("revision") or map_data.get("map_version") or "")
 
-    def _schedule_zone_choices(self) -> dict[str, str]:
-        choices: dict[str, str] = {}
-        for row in self._schedule_zone_rows():
-            if not row.get("last_completed_at"):
-                continue
-            try:
-                zone_id = str(int(row["id"]))
-            except (TypeError, ValueError):
-                continue
-            choices[zone_id] = str(row.get("name") or f"Zone {zone_id}")
-        for value in self._options().get(OPT_SCHEDULE_ZONE_IDS, []) or []:
-            text = str(value)
-            if text.isdigit():
-                choices.setdefault(text, f"Zone {text} (saved)")
-        return choices
-
-    def _schedule_unavailable_text(self) -> str:
-        rows: list[str] = []
-        for row in self._schedule_zone_rows():
-            if row.get("last_completed_at"):
-                continue
-            name = str(row.get("name") or f"Zone {row.get('id')}")
-            rows.append(f"- {name} — Never completed")
-        if not rows:
-            return ""
-        return (
-            "Not yet available for automatic mowing:\n"
-            "These zones must be fully completed manually once before they can be selected:\n"
-            + "\n".join(rows)
-        )
-
-    def _gates(self) -> list[NavimowerGate]:
-        return parse_gates(self.config_entry.options.get(OPT_GATES))
-
-    def _channels(self) -> list[NavimowerChannel]:
-        return parse_channels(self.config_entry.options.get(OPT_CHANNELS))
-
-    def _save(self, **updates: Any) -> ConfigFlowResult:
-        """Finish the flow with the complete updated production options mapping."""
-        options = self._options()
-        options.pop("diagnostics_detail", None)
-        options.pop("passive_discovery", None)
-        options.update(updates)
-        return self.async_create_entry(data=options)
+    async def _refresh_map_for_custom_area(self) -> None:
+        """Bypass endpoint TTLs once so Detect sees the just-saved app map."""
+        coordinator = self._coordinator()
+        if coordinator is None:
+            return
+        statuses = getattr(coordinator, "_endpoint_status", {})
+        for endpoint in ("index2", "location", "map_list"):
+            status = statuses.get(endpoint)
+            if isinstance(status, dict):
+                status["last_attempt_mono"] = None
+                status["last_attempt_utc"] = None
+        await coordinator.async_request_refresh()
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -607,409 +82,157 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
         del user_input
         return self.async_show_menu(
             step_id="init",
-            menu_options=["general", "navimower_schedule", "gates", "channels"],
+            menu_options=[
+                "general",
+                "navimower_schedule",
+                "gates",
+                "custom_areas",
+                "channels",
+            ],
         )
 
-    async def async_step_general(
+    async def async_step_custom_areas(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        options = self._options()
+        del user_input
+        menu = ["custom_area_add"]
+        if self._custom_areas():
+            menu.append("custom_area_delete")
+        return self.async_show_menu(step_id="custom_areas", menu_options=menu)
+
+    async def async_step_custom_area_add(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Capture the pre-edit off-limit set before the user opens map editor."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self._save(
-                **{
-                    OPT_TRAIL_RETENTION_DAYS: int(user_input[OPT_TRAIL_RETENTION_DAYS]),
-                    OPT_INCLUDE_RETURN_TRAIL: bool(user_input[OPT_INCLUDE_RETURN_TRAIL]),
-                }
-            )
-        retention_labels = {
-            3: "3 days",
-            7: "7 days",
-            14: "14 days",
-            30: "30 days",
-            0: "Unlimited",
-        }
+            coordinator = self._coordinator()
+            data = getattr(coordinator, "data", None) or {}
+            map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+            if not map_data or not isinstance(map_data.get("off_limit_areas"), list):
+                errors["base"] = "custom_area_map_not_available"
+            else:
+                self._custom_area_baseline = self._off_limit_polygons()
+                self._custom_area_baseline_revision = self._map_revision()
+                self._custom_area_candidate = None
+                return await self.async_step_custom_area_detect()
+
+        # beta30 intentionally keeps this first form simple: submit it while the
+        # normal Navimow map is loaded and before creating the temporary island.
         return self.async_show_form(
-            step_id="general",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        OPT_TRAIL_RETENTION_DAYS,
-                        default=int(
-                            options.get(
-                                OPT_TRAIL_RETENTION_DAYS,
-                                DEFAULT_TRAIL_RETENTION_DAYS,
-                            )
-                        ),
-                    ): vol.In(
-                        {value: retention_labels[value] for value in TRAIL_RETENTION_OPTIONS}
-                    ),
-                    vol.Required(
-                        OPT_INCLUDE_RETURN_TRAIL,
-                        default=bool(
-                            options.get(
-                                OPT_INCLUDE_RETURN_TRAIL,
-                                DEFAULT_INCLUDE_RETURN_TRAIL,
-                            )
-                        ),
-                    ): bool,
-                }
-            ),
+            step_id="custom_area_add",
+            data_schema=vol.Schema({}),
+            errors=errors,
         )
 
-    async def async_step_navimower_schedule(
+    async def async_step_custom_area_detect(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        options = self._options()
-        choices = self._schedule_zone_choices()
+        """Refresh the map and identify exactly one newly added off-limit polygon."""
+        errors: dict[str, str] = {}
+        if self._custom_area_baseline is None:
+            return await self.async_step_custom_area_add()
+
         if user_input is not None:
-            selected = [
-                str(value)
-                for value in user_input.get(OPT_SCHEDULE_ZONE_IDS, []) or []
-                if str(value) in choices
-            ]
-            mode = str(user_input.get(OPT_SCHEDULE_MODE) or DEFAULT_SCHEDULE_MODE)
-            if mode == SCHEDULE_MODE_CONTINUOUS:
-                self._schedule_pending_zone_ids = None
-                return self._save(
-                    **{
-                        OPT_SCHEDULE_ZONE_IDS: selected,
-                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_CONTINUOUS,
-                    }
+            try:
+                await self._refresh_map_for_custom_area()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Could not refresh Navimow map for Custom Area import")
+                errors["base"] = "custom_area_refresh_failed"
+            else:
+                candidates = find_new_polygons(
+                    self._custom_area_baseline,
+                    self._off_limit_polygons(),
                 )
-            self._schedule_pending_zone_ids = selected
-            return await self.async_step_navimower_schedule_window()
+                if not candidates:
+                    errors["base"] = "custom_area_not_detected"
+                elif len(candidates) > 1:
+                    errors["base"] = "custom_area_multiple_detected"
+                else:
+                    self._custom_area_candidate = candidates[0]
+                    return await self.async_step_custom_area_name()
 
-        selected_default = [
-            str(value)
-            for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []
-            if str(value) in choices
-        ]
-        mode_default = str(options.get(OPT_SCHEDULE_MODE, DEFAULT_SCHEDULE_MODE))
-        if mode_default not in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS}:
-            mode_default = DEFAULT_SCHEDULE_MODE
         return self.async_show_form(
-            step_id="navimower_schedule",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        OPT_SCHEDULE_ZONE_IDS,
-                        default=selected_default,
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                {"value": value, "label": label}
-                                for value, label in choices.items()
-                            ],
-                            multiple=True,
-                            mode=SelectSelectorMode.LIST,
-                        )
-                    ),
-                    vol.Required(
-                        OPT_SCHEDULE_MODE,
-                        default=mode_default,
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                {"value": SCHEDULE_MODE_WINDOW, "label": "Time window"},
-                                {"value": SCHEDULE_MODE_CONTINUOUS, "label": "24 hours"},
-                            ],
-                            mode=SelectSelectorMode.LIST,
-                        )
-                    ),
-                }
-            ),
+            step_id="custom_area_detect",
+            data_schema=vol.Schema({}),
+            errors=errors,
             description_placeholders={
-                "unavailable_note": self._schedule_unavailable_text(),
+                "baseline_revision": self._custom_area_baseline_revision or "unknown",
             },
         )
 
-    async def async_step_navimower_schedule_window(
+    async def async_step_custom_area_name(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        options = self._options()
-        errors: dict[str, str] = {}
-        selected = self._schedule_pending_zone_ids
-        if selected is None:
-            choices = self._schedule_zone_choices()
-            selected = [
-                str(value)
-                for value in options.get(OPT_SCHEDULE_ZONE_IDS, []) or []
-                if str(value) in choices
-            ]
-        if user_input is not None:
-            start = format_hhmm(
-                parse_hhmm(user_input.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
-            )
-            end = format_hhmm(
-                parse_hhmm(user_input.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
-            )
-            if start == end:
-                errors["base"] = "schedule_same_time"
-            else:
-                self._schedule_pending_zone_ids = None
-                return self._save(
-                    **{
-                        OPT_SCHEDULE_ZONE_IDS: selected,
-                        OPT_SCHEDULE_MODE: SCHEDULE_MODE_WINDOW,
-                        OPT_SCHEDULE_START: start,
-                        OPT_SCHEDULE_END: end,
-                    }
-                )
+        """Persist the detected polygon as a NaviMower-owned virtual area."""
+        candidate = self._custom_area_candidate
+        if candidate is None:
+            return await self.async_step_custom_area_add()
 
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get("name") or "").strip()
+            existing = self._custom_areas()
+            new_area = create_custom_area(name, candidate)
+            if new_area is None:
+                errors["base"] = "custom_area_invalid"
+            elif any(area.slug == new_area.slug for area in existing):
+                errors["base"] = "custom_area_duplicate"
+            else:
+                values = [area.as_dict() for area in existing]
+                values.append(new_area.as_dict())
+                return self._save(**{OPT_CUSTOM_AREAS: values})
+
+        area = polygon_area_m2(candidate)
+        centroid = polygon_centroid(candidate)
         return self.async_show_form(
-            step_id="navimower_schedule_window",
+            step_id="custom_area_name",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        OPT_SCHEDULE_START,
-                        default=str(options.get(OPT_SCHEDULE_START, DEFAULT_SCHEDULE_START)),
-                    ): TimeSelector(),
-                    vol.Required(
-                        OPT_SCHEDULE_END,
-                        default=str(options.get(OPT_SCHEDULE_END, DEFAULT_SCHEDULE_END)),
-                    ): TimeSelector(),
+                    vol.Required("name", default="Custom area"): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.TEXT)
+                    )
                 }
             ),
             errors=errors,
-        )
-
-    async def async_step_gates(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        del user_input
-        menu = ["gate_add"]
-        if self._gates():
-            menu.extend(["gate_edit_select", "gate_delete"])
-        return self.async_show_menu(step_id="gates", menu_options=menu)
-
-    def _gate_schema(self, gate: NavimowerGate | None = None) -> vol.Schema:
-        zones = self._zone_choices()
-        if gate is not None:
-            zones.setdefault(str(gate.zone_a), f"Zone {gate.zone_a} (ID {gate.zone_a})")
-            zones.setdefault(str(gate.zone_b), f"Zone {gate.zone_b} (ID {gate.zone_b})")
-        default_a = str(gate.zone_a) if gate else (next(iter(zones), ""))
-        default_b = str(gate.zone_b) if gate else (
-            next((value for value in zones if value != default_a), default_a)
-        )
-        return vol.Schema(
-            {
-                vol.Required("name", default=gate.name if gate else "Gate"): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
+            description_placeholders={
+                "area": f"{area:.2f}" if area is not None else "unknown",
+                "points": str(len(candidate)),
+                "centroid": (
+                    f"{centroid[0]:.2f}, {centroid[1]:.2f}"
+                    if centroid is not None
+                    else "unknown"
                 ),
-                vol.Required("zone_a", default=default_a): vol.In(zones),
-                vol.Required("zone_b", default=default_b): vol.In(zones),
-                vol.Required(
-                    "bidirectional",
-                    default=gate.bidirectional if gate else True,
-                ): bool,
-                vol.Required(
-                    "close_delay",
-                    default=gate.close_delay if gate else 20,
-                ): vol.In(
-                    {
-                        0: "Immediately",
-                        10: "10 seconds",
-                        20: "20 seconds",
-                        30: "30 seconds",
-                    }
-                ),
-            }
+            },
         )
 
-    async def async_step_gate_add(
+    async def async_step_custom_area_delete(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        zones = self._zone_choices()
-        if len(zones) < 2:
-            return self.async_abort(reason="zones_not_available")
+        """Delete only the local virtual polygon; never write the mower map."""
+        areas = self._custom_areas()
+        if not areas:
+            return self.async_abort(reason="no_custom_areas")
+        choices = {area.area_id: area.name for area in areas}
         if user_input is not None:
-            if user_input["zone_a"] == user_input["zone_b"]:
-                errors["base"] = "same_zone"
-            else:
-                gates = [gate.as_dict() for gate in self._gates()]
-                gates.append(
-                    {
-                        "name": str(user_input["name"]).strip() or "Gate",
-                        "zone_a": int(user_input["zone_a"]),
-                        "zone_b": int(user_input["zone_b"]),
-                        "bidirectional": bool(user_input["bidirectional"]),
-                        "close_delay": int(user_input["close_delay"]),
-                    }
-                )
-                parsed = parse_gates(gates)
-                if len(parsed) != len(gates):
-                    errors["base"] = "duplicate_gate"
-                else:
-                    return self._save(**{OPT_GATES: [gate.as_dict() for gate in parsed]})
+            area_id = str(user_input["custom_area"])
+            remaining = [area for area in areas if area.area_id != area_id]
+            return self._save(
+                **{OPT_CUSTOM_AREAS: [area.as_dict() for area in remaining]}
+            )
         return self.async_show_form(
-            step_id="gate_add",
-            data_schema=self._gate_schema(),
-            errors=errors,
+            step_id="custom_area_delete",
+            data_schema=vol.Schema({vol.Required("custom_area"): vol.In(choices)}),
         )
 
-    async def async_step_gate_edit_select(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        gates = self._gates()
-        if not gates:
-            return self.async_abort(reason="no_gates")
-        choices = {str(index): gate.name for index, gate in enumerate(gates)}
-        if user_input is not None:
-            self._gate_index = int(user_input["gate"])
-            return await self.async_step_gate_edit()
-        return self.async_show_form(
-            step_id="gate_edit_select",
-            data_schema=vol.Schema({vol.Required("gate"): vol.In(choices)}),
-        )
 
-    async def async_step_gate_edit(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        gates = self._gates()
-        if self._gate_index is None or self._gate_index >= len(gates):
-            return self.async_abort(reason="no_gates")
-        gate = gates[self._gate_index]
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            if user_input["zone_a"] == user_input["zone_b"]:
-                errors["base"] = "same_zone"
-            else:
-                replacement = NavimowerGate(
-                    name=str(user_input["name"]).strip() or "Gate",
-                    zone_a=int(user_input["zone_a"]),
-                    zone_b=int(user_input["zone_b"]),
-                    bidirectional=bool(user_input["bidirectional"]),
-                    close_delay=int(user_input["close_delay"]),
-                )
-                gates[self._gate_index] = replacement
-                parsed = parse_gates([item.as_dict() for item in gates])
-                if len(parsed) != len(gates):
-                    errors["base"] = "duplicate_gate"
-                else:
-                    return self._save(**{OPT_GATES: [item.as_dict() for item in parsed]})
-        return self.async_show_form(
-            step_id="gate_edit",
-            data_schema=self._gate_schema(gate),
-            errors=errors,
-        )
+@callback
+def _async_get_options_flow(entry: ConfigEntry) -> NavimowOptionsFlow:
+    """Return the beta30 options-flow extension for the registered handler."""
+    del entry
+    return NavimowOptionsFlow()
 
-    async def async_step_gate_delete(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        gates = self._gates()
-        if not gates:
-            return self.async_abort(reason="no_gates")
-        choices = {str(index): gate.name for index, gate in enumerate(gates)}
-        if user_input is not None:
-            index = int(user_input["gate"])
-            remaining = [gate for pos, gate in enumerate(gates) if pos != index]
-            return self._save(**{OPT_GATES: [gate.as_dict() for gate in remaining]})
-        return self.async_show_form(
-            step_id="gate_delete",
-            data_schema=vol.Schema({vol.Required("gate"): vol.In(choices)}),
-        )
 
-    async def async_step_channels(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        del user_input
-        menu = ["channel_add"]
-        if self._channels():
-            menu.extend(["channel_edit_select", "channel_delete"])
-        return self.async_show_menu(step_id="channels", menu_options=menu)
-
-    @staticmethod
-    def _channel_schema(channel: NavimowerChannel | None = None) -> vol.Schema:
-        return vol.Schema(
-            {
-                vol.Required("name", default=channel.name if channel else "Channel"): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
-                ),
-                vol.Required(
-                    "x_min", default=channel.x_min if channel else 0.0
-                ): vol.Coerce(float),
-                vol.Required(
-                    "x_max", default=channel.x_max if channel else 1.0
-                ): vol.Coerce(float),
-                vol.Required(
-                    "y_min", default=channel.y_min if channel else 0.0
-                ): vol.Coerce(float),
-                vol.Required(
-                    "y_max", default=channel.y_max if channel else 1.0
-                ): vol.Coerce(float),
-            }
-        )
-
-    async def async_step_channel_add(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            channels = [channel.as_dict() for channel in self._channels()]
-            channels.append(dict(user_input))
-            parsed = parse_channels(channels)
-            if len(parsed) != len(channels):
-                return self.async_show_form(
-                    step_id="channel_add",
-                    data_schema=self._channel_schema(),
-                    errors={"base": "duplicate_channel"},
-                )
-            return self._save(**{OPT_CHANNELS: [channel.as_dict() for channel in parsed]})
-        return self.async_show_form(
-            step_id="channel_add",
-            data_schema=self._channel_schema(),
-        )
-
-    async def async_step_channel_edit_select(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        channels = self._channels()
-        if not channels:
-            return self.async_abort(reason="no_channels")
-        choices = {str(index): channel.name for index, channel in enumerate(channels)}
-        if user_input is not None:
-            self._channel_index = int(user_input["channel"])
-            return await self.async_step_channel_edit()
-        return self.async_show_form(
-            step_id="channel_edit_select",
-            data_schema=vol.Schema({vol.Required("channel"): vol.In(choices)}),
-        )
-
-    async def async_step_channel_edit(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        channels = self._channels()
-        if self._channel_index is None or self._channel_index >= len(channels):
-            return self.async_abort(reason="no_channels")
-        channel = channels[self._channel_index]
-        if user_input is not None:
-            items = [item.as_dict() for item in channels]
-            items[self._channel_index] = dict(user_input)
-            parsed = parse_channels(items)
-            if len(parsed) != len(items):
-                return self.async_show_form(
-                    step_id="channel_edit",
-                    data_schema=self._channel_schema(channel),
-                    errors={"base": "duplicate_channel"},
-                )
-            return self._save(**{OPT_CHANNELS: [item.as_dict() for item in parsed]})
-        return self.async_show_form(
-            step_id="channel_edit",
-            data_schema=self._channel_schema(channel),
-        )
-
-    async def async_step_channel_delete(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        channels = self._channels()
-        if not channels:
-            return self.async_abort(reason="no_channels")
-        choices = {str(index): channel.name for index, channel in enumerate(channels)}
-        if user_input is not None:
-            index = int(user_input["channel"])
-            remaining = [item for pos, item in enumerate(channels) if pos != index]
-            return self._save(**{OPT_CHANNELS: [item.as_dict() for item in remaining]})
-        return self.async_show_form(
-            step_id="channel_delete",
-            data_schema=vol.Schema({vol.Required("channel"): vol.In(choices)}),
-        )
+# NavimowConfigFlow was registered with Home Assistant when config_flow_base was
+# imported. Swap only its options-flow factory; authentication remains unchanged.
+NavimowConfigFlow.async_get_options_flow = staticmethod(_async_get_options_flow)
