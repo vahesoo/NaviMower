@@ -1,0 +1,595 @@
+name: Beta30 custom area builder
+
+on:
+  push:
+    branches:
+      - release/0.4.3-beta30
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/0.4.3-beta30
+          fetch-depth: 0
+
+      - name: Apply beta30 custom area changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+
+          custom_area = r'''"""Persistent NaviMower custom-area polygons and import helpers."""
+          from __future__ import annotations
+
+          from dataclasses import dataclass
+          import hashlib
+          import json
+          import re
+          import uuid
+          from typing import Any
+
+          Point = tuple[float, float]
+
+
+          def normalize_polygon(raw: Any) -> list[list[float]] | None:
+              """Return a clean open polygon in mower-local X/Y coordinates."""
+              if not isinstance(raw, (list, tuple)):
+                  return None
+              points: list[list[float]] = []
+              for point in raw:
+                  if not isinstance(point, (list, tuple)) or len(point) < 2:
+                      continue
+                  try:
+                      x, y = float(point[0]), float(point[1])
+                  except (TypeError, ValueError):
+                      continue
+                  candidate = [x, y]
+                  if not points or candidate != points[-1]:
+                      points.append(candidate)
+              if len(points) >= 2 and points[0] == points[-1]:
+                  points.pop()
+              return points if len(points) >= 3 else None
+
+
+          def _canonical_polygon(raw: Any) -> tuple[Point, ...] | None:
+              polygon = normalize_polygon(raw)
+              if polygon is None:
+                  return None
+              points = tuple((round(point[0], 4), round(point[1], 4)) for point in polygon)
+              rotations: list[tuple[Point, ...]] = []
+              for sequence in (points, tuple(reversed(points))):
+                  rotations.extend(
+                      sequence[index:] + sequence[:index]
+                      for index in range(len(sequence))
+                  )
+              return min(rotations) if rotations else None
+
+
+          def polygon_fingerprint(raw: Any) -> str | None:
+              """Return a stable fingerprint independent of start point/direction."""
+              canonical = _canonical_polygon(raw)
+              if canonical is None:
+                  return None
+              payload = json.dumps(canonical, separators=(",", ":"))
+              return hashlib.sha256(payload.encode()).hexdigest()
+
+
+          def polygon_area_m2(raw: Any) -> float | None:
+              polygon = normalize_polygon(raw)
+              if polygon is None:
+                  return None
+              cross_sum = 0.0
+              for index, (x1, y1) in enumerate(polygon):
+                  x2, y2 = polygon[(index + 1) % len(polygon)]
+                  cross_sum += x1 * y2 - x2 * y1
+              return abs(cross_sum) / 2.0
+
+
+          def polygon_centroid(raw: Any) -> tuple[float, float] | None:
+              polygon = normalize_polygon(raw)
+              if polygon is None:
+                  return None
+              cross_sum = 0.0
+              x_sum = 0.0
+              y_sum = 0.0
+              for index, (x1, y1) in enumerate(polygon):
+                  x2, y2 = polygon[(index + 1) % len(polygon)]
+                  cross = x1 * y2 - x2 * y1
+                  cross_sum += cross
+                  x_sum += (x1 + x2) * cross
+                  y_sum += (y1 + y2) * cross
+              if abs(cross_sum) <= 1e-9:
+                  return (
+                      sum(point[0] for point in polygon) / len(polygon),
+                      sum(point[1] for point in polygon) / len(polygon),
+                  )
+              return (x_sum / (3.0 * cross_sum), y_sum / (3.0 * cross_sum))
+
+
+          def find_new_polygons(before: Any, after: Any) -> list[list[list[float]]]:
+              """Return polygons present after a map edit but absent before it."""
+              before_fingerprints = {
+                  fingerprint
+                  for raw in (before or [])
+                  if (fingerprint := polygon_fingerprint(raw)) is not None
+              }
+              result: list[list[list[float]]] = []
+              seen: set[str] = set()
+              for raw in after or []:
+                  polygon = normalize_polygon(raw)
+                  fingerprint = polygon_fingerprint(polygon)
+                  if (
+                      polygon is None
+                      or fingerprint is None
+                      or fingerprint in before_fingerprints
+                      or fingerprint in seen
+                  ):
+                      continue
+                  seen.add(fingerprint)
+                  result.append(polygon)
+              return result
+
+
+          @dataclass(frozen=True, slots=True)
+          class NavimowerCustomArea:
+              """A persistent virtual polygon owned by NaviMower, not the mower map."""
+
+              area_id: str
+              name: str
+              polygon: tuple[Point, ...]
+              source: str = "navimow_off_limit_import"
+
+              @property
+              def slug(self) -> str:
+                  value = re.sub(r"[^a-z0-9]+", "_", self.name.lower()).strip("_")
+                  return value or "custom_area"
+
+              def as_dict(self) -> dict[str, Any]:
+                  return {
+                      "id": self.area_id,
+                      "name": self.name,
+                      "polygon": [[x, y] for x, y in self.polygon],
+                      "source": self.source,
+                  }
+
+
+          def create_custom_area(name: str, polygon: Any) -> NavimowerCustomArea | None:
+              normalized = normalize_polygon(polygon)
+              clean_name = str(name or "").strip()
+              if normalized is None or not clean_name:
+                  return None
+              return NavimowerCustomArea(
+                  area_id=uuid.uuid4().hex,
+                  name=clean_name,
+                  polygon=tuple((point[0], point[1]) for point in normalized),
+              )
+
+
+          def parse_custom_areas(raw: Any) -> list[NavimowerCustomArea]:
+              """Parse stored custom areas while rejecting malformed/duplicate rows."""
+              if raw in (None, "", []):
+                  return []
+              if isinstance(raw, str):
+                  try:
+                      raw = json.loads(raw)
+                  except (TypeError, ValueError):
+                      return []
+              if not isinstance(raw, list):
+                  return []
+
+              result: list[NavimowerCustomArea] = []
+              seen_ids: set[str] = set()
+              seen_slugs: set[str] = set()
+              for item in raw:
+                  if not isinstance(item, dict):
+                      continue
+                  polygon = normalize_polygon(item.get("polygon"))
+                  name = str(item.get("name") or "").strip()
+                  if polygon is None or not name:
+                      continue
+                  area_id = str(item.get("id") or polygon_fingerprint(polygon) or "").strip()
+                  source = str(item.get("source") or "navimow_off_limit_import")
+                  area = NavimowerCustomArea(
+                      area_id=area_id,
+                      name=name,
+                      polygon=tuple((point[0], point[1]) for point in polygon),
+                      source=source,
+                  )
+                  if not area_id or area_id in seen_ids or area.slug in seen_slugs:
+                      continue
+                  seen_ids.add(area_id)
+                  seen_slugs.add(area.slug)
+                  result.append(area)
+              return result
+          '''
+          # Dedent the literal because it is nested inside this workflow script.
+          import textwrap
+          (root / 'custom_components/navimower/custom_area.py').write_text(
+              textwrap.dedent(custom_area), encoding='utf-8'
+          )
+
+          const_path = root / 'custom_components/navimower/const.py'
+          text = const_path.read_text()
+          needle = 'OPT_CHANNELS: Final = "channels"  # list[dict] of local X/Y rectangles\n'
+          assert needle in text
+          text = text.replace(
+              needle,
+              needle + 'OPT_CUSTOM_AREAS: Final = "custom_areas"  # list[dict] of persistent local X/Y polygons\n',
+              1,
+          )
+          const_path.write_text(text)
+
+          flow_path = root / 'custom_components/navimower/config_flow.py'
+          text = flow_path.read_text()
+
+          needle = 'from .channel import NavimowerChannel, parse_channels\n'
+          assert needle in text
+          text = text.replace(
+              needle,
+              needle
+              + 'from .custom_area import (\n'
+              + '    create_custom_area,\n'
+              + '    find_new_polygons,\n'
+              + '    normalize_polygon,\n'
+              + '    parse_custom_areas,\n'
+              + '    polygon_area_m2,\n'
+              + '    polygon_centroid,\n'
+              + ')\n',
+              1,
+          )
+
+          needle = '    OPT_CHANNELS,\n'
+          assert needle in text
+          text = text.replace(needle, needle + '    OPT_CUSTOM_AREAS,\n', 1)
+
+          needle = '        self._channel_index: int | None = None\n        self._schedule_pending_zone_ids: list[str] | None = None\n'
+          assert needle in text
+          text = text.replace(
+              needle,
+              '        self._channel_index: int | None = None\n'
+              '        self._schedule_pending_zone_ids: list[str] | None = None\n'
+              '        self._custom_area_baseline: list[list[list[float]]] | None = None\n'
+              '        self._custom_area_baseline_revision: str | None = None\n'
+              '        self._custom_area_candidate: list[list[float]] | None = None\n',
+              1,
+          )
+
+          needle = '    def _channels(self) -> list[NavimowerChannel]:\n        return parse_channels(self.config_entry.options.get(OPT_CHANNELS))\n\n'
+          assert needle in text
+          helpers = '''    def _custom_areas(self):
+              return parse_custom_areas(self.config_entry.options.get(OPT_CUSTOM_AREAS))
+
+              def _off_limit_polygons(self) -> list[list[list[float]]]:
+                  coordinator = self._coordinator()
+                  data = getattr(coordinator, "data", None) or {}
+                  map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+                  result: list[list[list[float]]] = []
+                  for raw in map_data.get("off_limit_areas") or []:
+                      polygon = normalize_polygon(raw)
+                      if polygon is not None:
+                          result.append(polygon)
+                  return result
+
+              def _map_revision(self) -> str:
+                  coordinator = self._coordinator()
+                  data = getattr(coordinator, "data", None) or {}
+                  map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+                  return str(map_data.get("revision") or map_data.get("map_version") or "")
+
+              async def _refresh_map_for_custom_area(self) -> None:
+                  coordinator = self._coordinator()
+                  if coordinator is None:
+                      return
+                  statuses = getattr(coordinator, "_endpoint_status", {})
+                  for endpoint in ("index2", "location", "map_list"):
+                      status = statuses.get(endpoint)
+                      if isinstance(status, dict):
+                          status["last_attempt_mono"] = None
+                          status["last_attempt_utc"] = None
+                  await coordinator.async_request_refresh()
+
+          '''
+          helpers = textwrap.dedent(helpers)
+          # Re-indent to class scope (four spaces), preserving nested blocks.
+          helpers = ''.join(('    ' + line if line.strip() else line) for line in helpers.splitlines(True))
+          replacement = needle + helpers
+          text = text.replace(needle, replacement, 1)
+
+          needle = '            menu_options=["general", "navimower_schedule", "gates", "channels"],\n'
+          assert needle in text
+          text = text.replace(
+              needle,
+              '            menu_options=[\n'
+              '                "general",\n'
+              '                "navimower_schedule",\n'
+              '                "gates",\n'
+              '                "custom_areas",\n'
+              '                "channels",\n'
+              '            ],\n',
+              1,
+          )
+
+          needle = '    async def async_step_channels(\n'
+          assert needle in text
+          methods = r'''    async def async_step_custom_areas(
+              self, user_input: dict[str, Any] | None = None
+          ) -> ConfigFlowResult:
+              del user_input
+              menu = ["custom_area_add"]
+              if self._custom_areas():
+                  menu.append("custom_area_delete")
+              return self.async_show_menu(step_id="custom_areas", menu_options=menu)
+
+              async def async_step_custom_area_add(
+                  self, user_input: dict[str, Any] | None = None
+              ) -> ConfigFlowResult:
+                  errors: dict[str, str] = {}
+                  if user_input is not None:
+                      coordinator = self._coordinator()
+                      data = getattr(coordinator, "data", None) or {}
+                      map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+                      if not map_data:
+                          errors["base"] = "custom_area_map_not_available"
+                      else:
+                          self._custom_area_baseline = self._off_limit_polygons()
+                          self._custom_area_baseline_revision = self._map_revision()
+                          self._custom_area_candidate = None
+                          return await self.async_step_custom_area_detect()
+                  return self.async_show_form(
+                      step_id="custom_area_add",
+                      data_schema=vol.Schema({}),
+                      errors=errors,
+                  )
+
+              async def async_step_custom_area_detect(
+                  self, user_input: dict[str, Any] | None = None
+              ) -> ConfigFlowResult:
+                  errors: dict[str, str] = {}
+                  if self._custom_area_baseline is None:
+                      return await self.async_step_custom_area_add()
+                  if user_input is not None:
+                      try:
+                          await self._refresh_map_for_custom_area()
+                      except Exception:  # noqa: BLE001
+                          _LOGGER.exception("Could not refresh Navimow map for custom-area import")
+                          errors["base"] = "custom_area_refresh_failed"
+                      else:
+                          candidates = find_new_polygons(
+                              self._custom_area_baseline,
+                              self._off_limit_polygons(),
+                          )
+                          if not candidates:
+                              errors["base"] = "custom_area_not_detected"
+                          elif len(candidates) > 1:
+                              errors["base"] = "custom_area_multiple_detected"
+                          else:
+                              self._custom_area_candidate = candidates[0]
+                              return await self.async_step_custom_area_name()
+                  return self.async_show_form(
+                      step_id="custom_area_detect",
+                      data_schema=vol.Schema({}),
+                      errors=errors,
+                      description_placeholders={
+                          "baseline_revision": self._custom_area_baseline_revision or "unknown",
+                      },
+                  )
+
+              async def async_step_custom_area_name(
+                  self, user_input: dict[str, Any] | None = None
+              ) -> ConfigFlowResult:
+                  candidate = self._custom_area_candidate
+                  if candidate is None:
+                      return await self.async_step_custom_area_add()
+                  errors: dict[str, str] = {}
+                  if user_input is not None:
+                      name = str(user_input.get("name") or "").strip()
+                      existing = self._custom_areas()
+                      new_area = create_custom_area(name, candidate)
+                      if new_area is None:
+                          errors["base"] = "custom_area_invalid"
+                      elif any(area.slug == new_area.slug for area in existing):
+                          errors["base"] = "custom_area_duplicate"
+                      else:
+                          values = [area.as_dict() for area in existing]
+                          values.append(new_area.as_dict())
+                          return self._save(**{OPT_CUSTOM_AREAS: values})
+
+                  area = polygon_area_m2(candidate)
+                  centroid = polygon_centroid(candidate)
+                  return self.async_show_form(
+                      step_id="custom_area_name",
+                      data_schema=vol.Schema(
+                          {
+                              vol.Required("name", default="Custom area"): TextSelector(
+                                  TextSelectorConfig(type=TextSelectorType.TEXT)
+                              )
+                          }
+                      ),
+                      errors=errors,
+                      description_placeholders={
+                          "area": f"{area:.2f}" if area is not None else "unknown",
+                          "points": str(len(candidate)),
+                          "centroid": (
+                              f"{centroid[0]:.2f}, {centroid[1]:.2f}"
+                              if centroid is not None
+                              else "unknown"
+                          ),
+                      },
+                  )
+
+              async def async_step_custom_area_delete(
+                  self, user_input: dict[str, Any] | None = None
+              ) -> ConfigFlowResult:
+                  areas = self._custom_areas()
+                  if not areas:
+                      return self.async_abort(reason="no_custom_areas")
+                  choices = {area.area_id: area.name for area in areas}
+                  if user_input is not None:
+                      area_id = str(user_input["custom_area"])
+                      remaining = [area for area in areas if area.area_id != area_id]
+                      return self._save(
+                          **{OPT_CUSTOM_AREAS: [area.as_dict() for area in remaining]}
+                      )
+                  return self.async_show_form(
+                      step_id="custom_area_delete",
+                      data_schema=vol.Schema(
+                          {vol.Required("custom_area"): vol.In(choices)}
+                      ),
+                  )
+
+          '''
+          methods = textwrap.dedent(methods)
+          methods = ''.join(('    ' + line if line.strip() else line) for line in methods.splitlines(True))
+          text = text.replace(needle, methods + needle, 1)
+          flow_path.write_text(text)
+
+          # Strings and English translations share the same options-flow structure.
+          def update_translation(path: Path) -> None:
+              data = json.loads(path.read_text())
+              options = data.setdefault('options', {})
+              steps = options.setdefault('step', {})
+              init = steps.setdefault('init', {})
+              init['description'] = (
+                  'Configure retained trail history, Navimower Schedule, zone-pair gates, '
+                  'virtual Custom Areas and optional legacy local X/Y gate areas.'
+              )
+              init.setdefault('menu_options', {})['custom_areas'] = 'Custom areas'
+              steps['custom_areas'] = {
+                  'title': 'Custom areas',
+                  'description': (
+                      'Create NaviMower-owned virtual polygons by temporarily drawing one '
+                      'off-limit area in the Navimow app. Imported areas remain in Home '
+                      'Assistant after the temporary off-limit area is deleted.'
+                  ),
+                  'menu_options': {
+                      'custom_area_add': 'Add custom area',
+                      'custom_area_delete': 'Delete custom area',
+                  },
+              }
+              steps['custom_area_add'] = {
+                  'title': 'Add custom area',
+                  'description': (
+                      'Start with the Navimow map editor closed and without the temporary '
+                      'off-limit area. Submit this step to capture the current map as the '
+                      'baseline.'
+                  ),
+                  'data': {},
+              }
+              steps['custom_area_detect'] = {
+                  'title': 'Create the temporary off-limit area',
+                  'description': (
+                      'Baseline map revision: {baseline_revision}. Open the Navimow app, '
+                      'create exactly one new off-limit area in the shape you want, and save '
+                      'the map. Leave that temporary area in the Navimow map for now, return '
+                      'here, then submit. NaviMower will detect the new polygon automatically.'
+                  ),
+                  'data': {},
+              }
+              steps['custom_area_name'] = {
+                  'title': 'Name the custom area',
+                  'description': (
+                      'New polygon detected: {area} m², {points} boundary points, centroid '
+                      '{centroid}. Saving copies the polygon into NaviMower. After this flow '
+                      'finishes you can delete the temporary off-limit area from the Navimow '
+                      'app; the Custom Area remains in Home Assistant.'
+                  ),
+                  'data': {'name': 'Name'},
+              }
+              steps['custom_area_delete'] = {
+                  'title': 'Delete custom area',
+                  'description': 'Delete only the NaviMower virtual area. The robot map is not changed.',
+                  'data': {'custom_area': 'Custom area'},
+              }
+              errors = options.setdefault('error', {})
+              errors.update({
+                  'custom_area_map_not_available': 'The current Navimow map is not loaded yet. Try again after the integration has refreshed.',
+                  'custom_area_refresh_failed': 'The Navimow map could not be refreshed. Try again.',
+                  'custom_area_not_detected': 'No new off-limit polygon was detected. Make sure the new area was saved in the Navimow app, wait a few seconds, and submit again.',
+                  'custom_area_multiple_detected': 'More than one new off-limit polygon was detected. Keep only the single temporary area you want to import, save the map, and try again.',
+                  'custom_area_invalid': 'The detected polygon or name is invalid.',
+                  'custom_area_duplicate': 'A Custom Area with the same name already exists.',
+              })
+              options.setdefault('abort', {})['no_custom_areas'] = 'No Custom Areas are configured.'
+              path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+
+          update_translation(root / 'custom_components/navimower/strings.json')
+          update_translation(root / 'custom_components/navimower/translations/en.json')
+
+          manifest_path = root / 'custom_components/navimower/manifest.json'
+          manifest = json.loads(manifest_path.read_text())
+          manifest['version'] = '0.4.3-beta30'
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+
+          test = r'''"""Regression guards for 0.4.3-beta30 Custom Area import prototype."""
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import sys
+
+          ROOT = Path(__file__).resolve().parents[1]
+          sys.path.insert(0, str(ROOT / "custom_components"))
+
+          from navimower.custom_area import (  # noqa: E402
+              create_custom_area,
+              find_new_polygons,
+              parse_custom_areas,
+              polygon_fingerprint,
+          )
+
+          square = [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]
+          rotated = [[2, 0], [2, 2], [0, 2], [0, 0], [2, 0]]
+          reversed_square = list(reversed(square))
+          candidate = [[4, 4], [6, 4], [6, 5], [4, 5], [4, 4]]
+
+          assert polygon_fingerprint(square) == polygon_fingerprint(rotated)
+          assert polygon_fingerprint(square) == polygon_fingerprint(reversed_square)
+          assert find_new_polygons([square], [candidate, rotated]) == [candidate[:-1]]
+
+          area = create_custom_area("Front door", candidate)
+          assert area is not None
+          parsed = parse_custom_areas([area.as_dict()])
+          assert len(parsed) == 1
+          assert parsed[0].name == "Front door"
+
+          flow = (ROOT / "custom_components/navimower/config_flow.py").read_text()
+          const = (ROOT / "custom_components/navimower/const.py").read_text()
+          manifest = json.loads((ROOT / "custom_components/navimower/manifest.json").read_text())
+          assert 'OPT_CUSTOM_AREAS: Final = "custom_areas"' in const
+          assert '"custom_areas"' in flow
+          assert 'find_new_polygons(' in flow
+          assert 'await self._refresh_map_for_custom_area()' in flow
+          assert 'OPT_CUSTOM_AREAS: values' in flow
+          assert manifest["version"] == "0.4.3-beta30"
+          print("beta30 custom area import tests passed")
+          '''
+          (root / 'tests/test_v043_beta30.py').write_text(textwrap.dedent(test), encoding='utf-8')
+
+          notes = '''# 0.4.3-beta30\n\n- Adds the first experimental **Custom Areas** import flow under the integration gear-icon options.\n- `Add custom area` snapshots the current off-limit polygons, asks the user to create and save exactly one temporary off-limit area in the Navimow app, then detects the new polygon by geometry rather than list index.\n- Polygon matching is stable across vendor point rotation and clockwise/counter-clockwise ordering.\n- The detected polygon is copied into NaviMower options with its own persistent ID and name. It remains stored after the temporary Navimow off-limit area is deleted.\n- Adds Custom Area deletion from the same options menu.\n- This beta intentionally stops at geometry import/storage. No Custom Area occupancy sensor or mower-setting automation is enabled yet; those will be layered on after import behavior is field-tested.\n'''
+          (root / '.github/release-notes/0.4.3-beta30.md').write_text(notes, encoding='utf-8')
+          PY
+
+      - name: Validate Python and beta30 regression
+        shell: bash
+        run: |
+          python -m compileall -q custom_components/navimower
+          python tests/test_v043_beta30.py
+
+      - name: Commit beta30 implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/navimower tests/test_v043_beta30.py .github/release-notes/0.4.3-beta30.md
+          git commit -m "Add experimental Custom Area import flow"
+          git push origin HEAD:release/0.4.3-beta30
