@@ -28,6 +28,15 @@ def _load_account_module():
     return _load_module(f"{PACKAGE}.account", COMPONENT / "account.py")
 
 
+def _config_flow_source() -> str:
+    """Return production flow plus any current options-flow extension."""
+    source = (COMPONENT / "config_flow.py").read_text()
+    base = COMPONENT / "config_flow_base.py"
+    if base.exists():
+        source += "\n" + base.read_text()
+    return source
+
+
 class _Entry:
     def __init__(self, email: str, device_id: str | None) -> None:
         self.data = {"email": email, "device_id": device_id}
@@ -46,7 +55,7 @@ def test_same_account_uses_one_deterministic_private_identity() -> None:
 
 
 def test_config_flow_reuses_account_identity_and_always_confirms_mower() -> None:
-    source = (COMPONENT / "config_flow.py").read_text()
+    source = _config_flow_source()
     assert "shared_private_device_id(" in source
     assert "self._async_current_entries()" in source
     assert "return await self.async_step_select_vehicle()" in source
@@ -54,7 +63,7 @@ def test_config_flow_reuses_account_identity_and_always_confirms_mower() -> None
 
 
 def test_options_reload_without_deprecated_update_listener_pairing() -> None:
-    flow = (COMPONENT / "config_flow.py").read_text()
+    flow = _config_flow_source()
     init = (COMPONENT / "__init__.py").read_text()
     assert "OptionsFlowWithReload" in flow
     assert "class NavimowOptionsFlow(OptionsFlowWithReload)" in flow
