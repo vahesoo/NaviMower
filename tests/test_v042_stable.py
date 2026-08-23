@@ -44,7 +44,11 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
     ):
         assert f'"{section}"' in diagnostics
 
-    assert "sanitize(deepcopy(raw))" in diagnostics
+    # beta29 intentionally filters bulky maintenance research out of the raw
+    # download while keeping the remainder sanitized.
+    assert 'raw_for_diagnostics = deepcopy(raw)' in diagnostics
+    assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
+    assert 'sanitize(raw_for_diagnostics)' in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
 
