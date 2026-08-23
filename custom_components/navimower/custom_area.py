@@ -79,6 +79,49 @@ def find_new_polygons(before: Any, after: Any) -> list[list[list[float]]]:
     return result
 
 
+def _point_on_segment(
+    x: float,
+    y: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    """Return whether a local-map point lies on one polygon edge."""
+    cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
+    if abs(cross) > tolerance:
+        return False
+    return (
+        min(x1, x2) - tolerance <= x <= max(x1, x2) + tolerance
+        and min(y1, y2) - tolerance <= y <= max(y1, y2) + tolerance
+    )
+
+
+def point_in_polygon(x: Any, y: Any, raw: Any) -> bool | None:
+    """Return whether X/Y is inside or on the boundary of a Custom Area."""
+    polygon = normalize_polygon(raw)
+    if polygon is None:
+        return None
+    try:
+        px, py = float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+
+    inside = False
+    for index, (x1, y1) in enumerate(polygon):
+        x2, y2 = polygon[(index + 1) % len(polygon)]
+        if _point_on_segment(px, py, x1, y1, x2, y2):
+            return True
+        if (y1 > py) == (y2 > py):
+            continue
+        crossing_x = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+        if px < crossing_x:
+            inside = not inside
+    return inside
+
+
 def polygon_area_m2(raw: Any) -> float | None:
     """Return polygon area in the mower map's metre coordinate system."""
     polygon = normalize_polygon(raw)

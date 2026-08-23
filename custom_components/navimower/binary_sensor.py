@@ -18,6 +18,12 @@ from .channel import NavimowerChannel
 from .gate import NavimowerGate
 from .const import DOMAIN, MAP_EDIT_STATES
 from .coordinator import NavimowCoordinator
+from .custom_area import (
+    OPT_CUSTOM_AREAS,
+    NavimowerCustomArea,
+    parse_custom_areas,
+    point_in_polygon,
+)
 from .entity import NavimowEntity
 
 
@@ -107,6 +113,10 @@ async def async_setup_entry(
         for channel in coordinator.channels
     )
     entities.extend(
+        NavimowerCustomAreaBinarySensor(coordinator, area)
+        for area in parse_custom_areas(entry.options.get(OPT_CUSTOM_AREAS))
+    )
+    entities.extend(
         NavimowerGateRequiredBinarySensor(coordinator, gate)
         for gate in coordinator.gates
     )
@@ -160,6 +170,36 @@ class NavimowerChannelBinarySensor(NavimowEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return self.channel.as_dict()
+
+
+class NavimowerCustomAreaBinarySensor(NavimowEntity, BinarySensorEntity):
+    """On while the mower's fresh live X/Y pose is inside a Custom Area."""
+
+    _attr_icon = "mdi:vector-polygon"
+
+    def __init__(self, coordinator: NavimowCoordinator, area: NavimowerCustomArea) -> None:
+        super().__init__(coordinator, f"custom_area_{area.slug}")
+        self.area = area
+        self._attr_name = area.name
+
+    @property
+    def is_on(self) -> bool | None:
+        position = self.coordinator._fresh_mqtt_position()
+        if position is None:
+            return None
+        return point_in_polygon(position["x"], position["y"], self.area.polygon)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator._fresh_mqtt_position() is not None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            **self.area.as_dict(),
+            "position_source": "mqtt",
+            "position_age": self.coordinator.pose_age(),
+        }
 
 
 class NavimowerGateRequiredBinarySensor(NavimowEntity, BinarySensorEntity):
