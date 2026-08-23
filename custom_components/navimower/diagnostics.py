@@ -1,7 +1,6 @@
 """Native Home Assistant diagnostics for Navimower."""
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -13,14 +12,7 @@ from .capability_profile import build_capability_profile
 from .const import DOMAIN
 from .diagnostics_sanitize import sanitize
 from .private_cloud_region import private_cloud_region_diagnostics
-from .maintenance_h5_discovery import probe_maintenance_h5
-from .error_h5_discovery import probe_error_h5
-from .notification_actions import notification_detail_diagnostics
 from .state_semantics import error_transition_diagnostics
-from .resume import resume_command_diagnostics
-
-
-ERROR_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
 
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -28,17 +20,72 @@ def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: deepcopy(data.get(key)) for key in keys if key in data}
 
 
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _polygon_diagnostics(polygons: Any) -> list[dict[str, Any]]:
+    """Return stable local-map geometry summaries for off-limit experiments."""
+    result: list[dict[str, Any]] = []
+    for index, polygon in enumerate(polygons or []):
+        if not isinstance(polygon, list):
+            continue
+        points: list[list[float]] = []
+        for point in polygon:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            x = _as_float(point[0])
+            y = _as_float(point[1])
+            if x is not None and y is not None:
+                points.append([x, y])
+        if len(points) < 3:
+            continue
+
+        cross_sum = 0.0
+        centroid_x_sum = 0.0
+        centroid_y_sum = 0.0
+        for point_index, (x1, y1) in enumerate(points):
+            x2, y2 = points[(point_index + 1) % len(points)]
+            cross = x1 * y2 - x2 * y1
+            cross_sum += cross
+            centroid_x_sum += (x1 + x2) * cross
+            centroid_y_sum += (y1 + y2) * cross
+        signed_area = cross_sum / 2.0
+        area = abs(signed_area)
+        if abs(cross_sum) > 1e-9:
+            centroid = [
+                centroid_x_sum / (3.0 * cross_sum),
+                centroid_y_sum / (3.0 * cross_sum),
+            ]
+        else:
+            centroid = [
+                sum(point[0] for point in points) / len(points),
+                sum(point[1] for point in points) / len(points),
+            ]
+        result.append(
+            {
+                "index": index,
+                "point_count": len(points),
+                "area_m2": round(area, 4),
+                "centroid": [round(centroid[0], 4), round(centroid[1], 4)],
+                "polygon": points,
+            }
+        )
+    return result
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> dict[str, Any]:
-    """Return a sanitized snapshot for Home Assistant Download diagnostics.
+    """Return a fast, cached-only sanitized diagnostics snapshot.
 
-    Normal diagnostics use the config entry, coordinator state and caches.
-    0.4.3-beta12 keeps Maintenance/Mowing Reports discovery paused and makes
-    active-error command recovery diagnostics-safe: public-H5 inspection has a
-    strict wall-clock budget plus an outer Home Assistant timeout, while partial
-    evidence and explicit notification-detail traces remain downloadable.
+    Download diagnostics must not perform H5 discovery or any other exploratory
+    network request. Runtime coordinator caches contain the information needed
+    for normal troubleshooting and map/custom-area experiments.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -46,7 +93,7 @@ async def async_get_config_entry_diagnostics(
             "format": "navimower-diagnostics-v2",
             "created_utc": datetime.now(UTC).isoformat(),
             "read_only": True,
-            "diagnostics_source": "home_assistant_download",
+            "diagnostics_source": "home_assistant_download_cached_only",
             "note": "integration not loaded; only the stored entry is available",
             "entry": {
                 "data": sanitize(dict(entry.data)),
@@ -58,8 +105,14 @@ async def async_get_config_entry_diagnostics(
     map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
     settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
-    maintenance = data.get("maintenance") if isinstance(data.get("maintenance"), dict) else {}
-    raw_maintenance = raw.get("maintenance") if isinstance(raw.get("maintenance"), dict) else {}
+    raw_index2 = raw.get("index2") if isinstance(raw.get("index2"), dict) else {}
+    raw_auth = raw.get("auth_item") if isinstance(raw.get("auth_item"), dict) else {}
+    raw_location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    raw_for_diagnostics = deepcopy(raw)
+    # Parts-maintenance research payloads are intentionally omitted from the
+    # normal download. The maintenance entities themselves remain unchanged.
+    raw_for_diagnostics.pop("maintenance", None)
+
     capabilities = data.get("capabilities")
     if not isinstance(capabilities, dict):
         capabilities = build_capability_profile(data)
@@ -108,52 +161,16 @@ async def async_get_config_entry_diagnostics(
         else None
     )
 
-    maintenance_h5_discovery = {
-        "ok": True,
-        "read_only": True,
-        "beta_only": True,
-        "paused": True,
-        "reason": "0.4.3-beta12 diagnostics focus only on bounded active error action recovery",
-        "mutation_calls_executed": False,
-    }
-    try:
-        async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):
-            error_command_discovery = await hass.async_add_executor_job(
-                probe_error_h5,
-                coordinator.client,
-                str(data.get("error_code") or ""),
-                str(data.get("error_title") or data.get("error_text") or ""),
-            )
-    except TimeoutError:
-        error_command_discovery = {
-            "ok": False,
-            "read_only": True,
-            "beta_only": True,
-            "timed_out": True,
-            "timeout_seconds": ERROR_DISCOVERY_TIMEOUT_SECONDS,
-            "mutation_calls_executed": False,
-            "live_command_call_executed": False,
-            "notification_detail_call_executed": False,
-            "error_type": "TimeoutError",
-            "error": "public H5 error discovery exceeded the diagnostics timeout",
-        }
-    except Exception as err:  # noqa: BLE001 - optional beta diagnostics discovery
-        error_command_discovery = {
-            "ok": False,
-            "read_only": True,
-            "beta_only": True,
-            "mutation_calls_executed": False,
-            "live_command_call_executed": False,
-            "notification_detail_call_executed": False,
-            "error_type": type(err).__name__,
-            "error": sanitize(str(err)),
-        }
+    map_version = map_data.get("map_version") or raw_index2.get("mapVersion")
+    edit_map_info = raw_index2.get("editMapInfo")
+    if not isinstance(edit_map_info, dict):
+        edit_map_info = {}
 
     return {
         "format": "navimower-diagnostics-v2",
         "created_utc": datetime.now(UTC).isoformat(),
         "read_only": True,
-        "diagnostics_source": "home_assistant_download",
+        "diagnostics_source": "home_assistant_download_cached_only",
         "entry": {
             "data": sanitize(deepcopy(dict(entry.data))),
             "options": sanitize(deepcopy(dict(entry.options))),
@@ -206,8 +223,6 @@ async def async_get_config_entry_diagnostics(
             private_cloud_region_diagnostics(coordinator)
         ),
         "capabilities": sanitize(deepcopy(capabilities)),
-        "maintenance": sanitize({"parsed": deepcopy(maintenance), "raw_component_maintenance": deepcopy(raw_maintenance)}),
-        "maintenance_h5_discovery": maintenance_h5_discovery,
         "positioning": sanitize(
             _selected(
                 data,
@@ -265,15 +280,33 @@ async def async_get_config_entry_diagnostics(
         ),
         "settings": sanitize(deepcopy(settings)),
         "navimower_schedule": sanitize(deepcopy(navimower_schedule_diagnostics)),
+        "map_edit": sanitize(
+            {
+                "state_code": data.get("state_code"),
+                "mqtt_vehicle_state": data.get("mqtt_vehicle_state"),
+                "map_version": map_version,
+                "location_map_edit_time": raw_location.get("map_edit_time"),
+                "edit_map_info": deepcopy(edit_map_info),
+                "edit_session_active": bool(str(edit_map_info.get("editMapUid") or "")),
+            }
+        ),
         "map": sanitize(
             {
                 "id": map_data.get("id"),
+                "map_id": map_data.get("map_id"),
+                "map_base_id": map_data.get("map_base_id"),
+                "edit_time": map_data.get("edit_time"),
+                "revision": map_data.get("revision"),
+                "map_version": map_version,
                 "name": map_data.get("name"),
                 "version": map_data.get("version"),
                 "modified_count": map_data.get("modified_count"),
                 "area": map_data.get("area"),
                 "zone_count": len(map_data.get("zones") or []),
                 "off_limit_count": len(map_data.get("off_limit_areas") or []),
+                "off_limit_areas": _polygon_diagnostics(
+                    map_data.get("off_limit_areas") or []
+                ),
                 "vf_off_count": len(map_data.get("vf_off_areas") or []),
                 "channel_count": len(map_data.get("channels") or []),
                 "doodle_count": len(map_data.get("doodles") or []),
@@ -290,21 +323,13 @@ async def async_get_config_entry_diagnostics(
             }
         ),
         "problem_history": sanitize(deepcopy(problem_history)),
-        "error_investigation": sanitize(
+        "error_state": sanitize(
             {
                 "policy": "private_cloud_canonical_mqtt_transition_trigger",
                 "transition": error_transition_diagnostics(coordinator),
-                "raw_index2_vehicle_state": (raw.get("index2") or {}).get("vehicle_state"),
-                "raw_auth_vehicle_state": (raw.get("auth_item") or {}).get("vehicle_state"),
-                "raw_index2_error_data": deepcopy((raw.get("index2") or {}).get("error_data") or []),
-                "vendor_notification_raw_cache": deepcopy(
-                    getattr(coordinator, "_notification_raw_cache", None)
-                ),
-                "vendor_notification_normalized_cache": deepcopy(
-                    getattr(coordinator, "_notification_cache", None)
-                ),
-                "last_notification_detail": notification_detail_diagnostics(coordinator),
-                "command_discovery": deepcopy(error_command_discovery),
+                "raw_index2_vehicle_state": raw_index2.get("vehicle_state"),
+                "raw_auth_vehicle_state": raw_auth.get("vehicle_state"),
+                "raw_index2_error_data": deepcopy(raw_index2.get("error_data") or []),
             }
         ),
         "latest_notification": sanitize(
@@ -332,21 +357,15 @@ async def async_get_config_entry_diagnostics(
             }
         ),
         "notification_center": sanitize(deepcopy(notification_center_diagnostics)),
-        "last_resume_command": sanitize(resume_command_diagnostics(coordinator)),
         "private_polling": sanitize(deepcopy(private_polling)),
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
-        "raw": sanitize(deepcopy(raw)),
+        "raw": sanitize(raw_for_diagnostics),
         "notes": [
-            "The integration-owned one-zone schedule is disabled by default and exposes only its persisted runtime state in diagnostics; bounded error-command discovery remains unchanged.",
-            "The error-action H5 inspection sends no account or mower identity and executes no mower command or notification-detail/read action.",
-            "Notification detail evidence is retained only after an explicit user Mark notification as read action; downloading diagnostics never calls the detail endpoint.",
-            "Private-cloud account region/host routing is separate from Smart Home OAuth/MQTT; MQTT continues to use the broker details returned by the official API.",
-            "Capability profile entries are positive observations or narrow proven model constraints. An empty/missing endpoint in one snapshot is not treated as unsupported.",
-            "Resume diagnostics record only the explicit command trace already held in memory; downloading diagnostics never sends Resume.",
-            "Zone Last completed is confirmed from fresh current-cycle telemetry; last-known values cannot complete a zone and docking only finalizes route history.",
-            "The notification center keeps at most 10 vendor rows and 20 persistent Navimower-local rows, then merges them newest-first for Latest notification.",
-            "Notification read actions are explicit Home Assistant services and are never executed by Download diagnostics.",
+            "0.4.3-beta29 Download diagnostics are cached-only and perform no H5 discovery or exploratory network calls.",
+            "Clear/Resume/Reboot discovery, Mowing Reports research and Maintenance research payloads are intentionally omitted from normal diagnostics.",
+            "index2.mapVersion is exposed as the fast vendor map revision signal; a change forces location/map-list and map geometry refresh in the same private-cloud poll.",
+            "Off-limit polygons remain local map X/Y coordinates and are included for temporary-off-limit custom-area experiments.",
+            "Map edit diagnostics retain state, official MQTT mapping state and editMapInfo so calibration/edit sessions can be compared without extra requests.",
             "Account, mower, network and physical GPS identifiers are sanitized/redacted.",
-            "Local map X/Y coordinates may remain because they are relative map geometry rather than GPS coordinates.",
         ],
     }
