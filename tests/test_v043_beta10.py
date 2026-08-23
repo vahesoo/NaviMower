@@ -37,12 +37,15 @@ def test_beta10_retains_raw_vendor_notification_feed() -> None:
 
 def test_beta10_diagnostics_focuses_only_error_action_discovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
+    # Keep beta10 discovery evidence in source history while beta29 makes normal
+    # Download diagnostics cached-only and leaves command discovery paused.
     assert "from .error_h5_discovery import probe_error_h5" in diagnostics
     assert "probe_error_h5," in diagnostics
     assert '"paused": True' in diagnostics
     assert '"error_investigation"' in diagnostics
     assert '"command_discovery": deepcopy(error_command_discovery)' in diagnostics
-    assert "probe_maintenance_h5, coordinator.client" not in diagnostics
+    assert '"removed_from_download": True' in diagnostics
+    assert "error_command_discovery = await" not in diagnostics
 
 
 def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
