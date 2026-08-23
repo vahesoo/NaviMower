@@ -45,6 +45,6 @@ def test_custom_area_occupancy_requires_fresh_mqtt_xy() -> None:
     assert "return super().available and self.coordinator._fresh_mqtt_position() is not None" in source
 
 
-def test_manifest_is_beta33() -> None:
+def test_manifest_keeps_beta33_or_later_043_beta() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta33"
+    assert manifest["version"] in {"0.4.3-beta33", "0.4.3-beta34"}

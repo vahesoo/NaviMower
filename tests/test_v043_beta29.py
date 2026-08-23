@@ -45,5 +45,6 @@ assert manifest["version"] in {
     "0.4.3-beta31",
     "0.4.3-beta32",
     "0.4.3-beta33",
+    "0.4.3-beta34",
 }
 print("beta29 map revision diagnostics tests passed")
