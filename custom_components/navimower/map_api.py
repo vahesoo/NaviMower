@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
+from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
 
 _REGISTERED_KEY = f"{DOMAIN}_map_api_registered"
 _FALSE_QUERY_VALUES = frozenset({"0", "false", "no", "off"})
@@ -30,6 +31,19 @@ def _query_enabled(request: web.Request, key: str) -> bool:
     return str(value).strip().lower() not in _FALSE_QUERY_VALUES
 
 
+def _with_custom_areas(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach persistent NaviMower-owned Custom Area geometry to map payloads."""
+    return {
+        **payload,
+        "custom_areas": [
+            area.as_dict()
+            for area in parse_custom_areas(
+                coordinator.entry.options.get(OPT_CUSTOM_AREAS)
+            )
+        ],
+    }
+
+
 async def _async_map_payload(
     coordinator: Any,
     *,
@@ -44,7 +58,7 @@ async def _async_map_payload(
     transfer, and browser parsing on every dashboard load.
     """
     if include_sessions and include_daily_trails:
-        return await coordinator.async_map_payload()
+        return _with_custom_areas(coordinator, await coordinator.async_map_payload())
 
     sessions = (
         await coordinator.history.async_card_sessions() if include_sessions else []
@@ -89,7 +103,7 @@ async def _async_map_payload(
     if not include_daily_trails:
         payload.pop("daily_trails", None)
         payload.pop("daily_trails_revision", None)
-    return payload
+    return _with_custom_areas(coordinator, payload)
 
 
 class NavimowerMapView(HomeAssistantView):
