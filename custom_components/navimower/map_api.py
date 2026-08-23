@@ -58,6 +58,7 @@ async def _async_map_payload(
     transfer, and browser parsing on every dashboard load.
     """
     if include_sessions and include_daily_trails:
+        # Historical contract before Custom Areas: return await coordinator.async_map_payload()
         return _with_custom_areas(coordinator, await coordinator.async_map_payload())
 
     sessions = (
