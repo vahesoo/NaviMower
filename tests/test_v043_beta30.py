@@ -68,6 +68,6 @@ def test_beta29_production_flow_is_retained_as_base() -> None:
     assert "async_step_channels" in base
 
 
-def test_manifest_is_beta30() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta30"
+def test_beta30_release_notes_remain_available() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta30.md").read_text(encoding="utf-8")
+    assert "0.4.3-beta30" in notes
