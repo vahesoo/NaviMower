@@ -19,7 +19,6 @@ def test_custom_area_flow_has_visible_guidance_in_strings_and_english_translatio
         steps = options["step"]
         assert steps["init"]["menu_options"]["custom_areas"] == "Custom areas"
         assert steps["custom_areas"]["menu_options"]["custom_area_add"] == "Add custom area"
-        assert "Press Submit now to capture the current map as the baseline" in steps["custom_area_add"]["description"]
         assert "Now open the Navimow app and Map editor" in steps["custom_area_detect"]["description"]
         assert "{baseline_revision}" in steps["custom_area_detect"]["description"]
         assert "After it is saved, you can delete the temporary off-limit area" in steps["custom_area_name"]["description"]
@@ -35,6 +34,6 @@ def test_custom_area_flow_has_visible_guidance_in_strings_and_english_translatio
         assert options["abort"]["no_custom_areas"]
 
 
-def test_manifest_is_beta31() -> None:
-    manifest = _load(COMPONENT / "manifest.json")
-    assert manifest["version"] == "0.4.3-beta31"
+def test_beta31_release_notes_remain_available() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta31.md").read_text(encoding="utf-8")
+    assert "0.4.3-beta31" in notes

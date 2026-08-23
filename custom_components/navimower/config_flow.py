@@ -1,7 +1,7 @@
 """Navimower config flow with experimental Custom Area import support.
 
-The stable beta29 flow is kept in ``config_flow_base`` so beta30 can add the
-Custom Area experiment without disturbing the already field-tested login,
+The stable beta29 flow is kept in ``config_flow_base`` so the Custom Area
+experiment can evolve without disturbing the already field-tested login,
 scheduler, gate and legacy channel flows.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
         return str(map_data.get("revision") or map_data.get("map_version") or "")
 
     async def _refresh_map_for_custom_area(self) -> None:
-        """Bypass endpoint TTLs once so Detect sees the just-saved app map."""
+        """Bypass endpoint TTLs once so capture/detect sees the current app map."""
         coordinator = self._coordinator()
         if coordinator is None:
             return
@@ -103,9 +103,16 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
     async def async_step_custom_area_add(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Capture the pre-edit off-limit set before the user opens map editor."""
+        """Refresh and capture the baseline as soon as Add Custom Area is selected."""
+        del user_input
         errors: dict[str, str] = {}
-        if user_input is not None:
+
+        try:
+            await self._refresh_map_for_custom_area()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Could not refresh Navimow map before Custom Area capture")
+            errors["base"] = "custom_area_refresh_failed"
+        else:
             coordinator = self._coordinator()
             data = getattr(coordinator, "data", None) or {}
             map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
@@ -117,8 +124,7 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
                 self._custom_area_candidate = None
                 return await self.async_step_custom_area_detect()
 
-        # beta30 intentionally keeps this first form simple: submit it while the
-        # normal Navimow map is loaded and before creating the temporary island.
+        # This retry form is only shown if the fresh baseline could not be captured.
         return self.async_show_form(
             step_id="custom_area_add",
             data_schema=vol.Schema({}),
@@ -228,7 +234,7 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
 
 @callback
 def _async_get_options_flow(entry: ConfigEntry) -> NavimowOptionsFlow:
-    """Return the beta30 options-flow extension for the registered handler."""
+    """Return the Custom Area options-flow extension for the registered handler."""
     del entry
     return NavimowOptionsFlow()
 
