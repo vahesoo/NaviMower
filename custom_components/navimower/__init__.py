@@ -31,7 +31,7 @@ from .const import (
     OPT_INCLUDE_RETURN_TRAIL,
     OPT_TRAIL_RETENTION_DAYS,
 )
-from .coordinator import NavimowCoordinator, state_store
+from .coordinator_semantics import NavimowCoordinator, state_store
 from .gate import parse_gates
 from .history import NavimowerHistory
 from .map_api import async_register_map_api
