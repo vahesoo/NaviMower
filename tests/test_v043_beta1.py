@@ -14,9 +14,12 @@ def test_v043_beta1_contract() -> None:
     discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
     ast.parse(diagnostics)
     ast.parse(discovery)
+    # Historical beta1 discovery remains in-tree and read-only, but beta29 no
+    # longer executes or embeds its bulky Maintenance/Mowing Reports payload.
     assert "probe_maintenance_h5" in diagnostics
     assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
-    assert '"raw_component_maintenance"' in diagnostics
+    assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
+    assert '"removed_from_download": True' in diagnostics
     for term in (
         "resetBlade",
         "resetKnife",
