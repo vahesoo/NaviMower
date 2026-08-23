@@ -143,7 +143,7 @@ jobs:
           beta31_test = '''"""Regression guards for 0.4.3-beta31 Custom Area UI hotfix."""\nfrom __future__ import annotations\n\nimport json\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[1]\nCOMPONENT = ROOT / "custom_components" / "navimower"\n\n\ndef _load(path: Path):\n    return json.loads(path.read_text(encoding="utf-8"))\n\n\ndef test_custom_area_flow_has_visible_guidance_in_strings_and_english_translation() -> None:\n    for path in (COMPONENT / "strings.json", COMPONENT / "translations" / "en.json"):\n        data = _load(path)\n        options = data["options"]\n        steps = options["step"]\n        assert steps["init"]["menu_options"]["custom_areas"] == "Custom areas"\n        assert steps["custom_areas"]["menu_options"]["custom_area_add"] == "Add custom area"\n        assert "Press Submit now to capture the current map as the baseline" in steps["custom_area_add"]["description"]\n        assert "Now open the Navimow app and Map editor" in steps["custom_area_detect"]["description"]\n        assert "{baseline_revision}" in steps["custom_area_detect"]["description"]\n        assert "After it is saved, you can delete the temporary off-limit area" in steps["custom_area_name"]["description"]\n        for key in (\n            "custom_area_map_not_available",\n            "custom_area_refresh_failed",\n            "custom_area_not_detected",\n            "custom_area_multiple_detected",\n            "custom_area_invalid",\n            "custom_area_duplicate",\n        ):\n            assert options["error"][key]\n        assert options["abort"]["no_custom_areas"]\n\n\ndef test_manifest_is_beta31() -> None:\n    manifest = _load(COMPONENT / "manifest.json")\n    assert manifest["version"] == "0.4.3-beta31"\n'''
           (root / 'tests/test_v043_beta31.py').write_text(beta31_test, encoding='utf-8')
 
-          notes = '''# Navimower 0.4.3-beta31\n\n- Fixes the beta30 Custom Area options UI so every new menu item, step title, instruction and error message is visible.\n- The Add Custom Area flow now explicitly tells the user when the baseline is captured and when to create/save the temporary off-limit area in the Navimow app.\n- No Custom Area detection/import logic is changed from beta30.\n'''
+          notes = '''title: Navimower 0.4.3-beta31\n\n- Fixes the beta30 Custom Area options UI so every new menu item, step title, instruction and error message is visible.\n- The Add Custom Area flow now explicitly tells the user when the baseline is captured and when to create/save the temporary off-limit area in the Navimow app.\n- No Custom Area detection/import logic is changed from beta30.\n'''
           (root / '.github/release-notes/0.4.3-beta31.md').write_text(notes, encoding='utf-8')
           PY
 
@@ -157,6 +157,7 @@ jobs:
           git add custom_components/navimower/strings.json \
                   custom_components/navimower/translations/en.json \
                   custom_components/navimower/manifest.json \
+                  tests/test_v043_beta29.py \
                   tests/test_v043_beta30.py \
                   tests/test_v043_beta31.py \
                   .github/release-notes/0.4.3-beta31.md
