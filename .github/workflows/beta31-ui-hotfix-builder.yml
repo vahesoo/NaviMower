@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+
       - name: Apply beta31 UI hotfix
         shell: bash
         run: |
