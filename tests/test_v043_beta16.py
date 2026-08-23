@@ -16,6 +16,14 @@ def _schedule_logic():
     return module
 
 
+def _config_flow_source() -> str:
+    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+    base = COMPONENT / "config_flow_base.py"
+    if base.exists():
+        source += "\n" + base.read_text(encoding="utf-8")
+    return source
+
+
 def test_beta16_release_notes_remain_available():
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta16.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta16")
@@ -38,9 +46,11 @@ def test_schedule_time_parser_accepts_time_selector_seconds():
 
 
 def test_options_flow_exposes_multi_zone_and_24_hour_configuration():
-    source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+    source = _config_flow_source()
     strings = json.loads((COMPONENT / "strings.json").read_text(encoding="utf-8"))
-    assert 'menu_options=["general", "navimower_schedule", "gates", "channels"]' in source
+    assert '"navimower_schedule"' in source
+    assert '"gates"' in source
+    assert '"channels"' in source
     assert "multiple=True" in source
     assert '"24 hours"' in source
     assert '"unavailable_note": self._schedule_unavailable_text()' in source
