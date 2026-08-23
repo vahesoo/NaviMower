@@ -21,14 +21,15 @@ assert 'for dependent in ("location", "map_list")' in semantics
 assert 'status["last_attempt_mono"] = None' in semantics
 assert 'self._map_geometry["map_version"] = str(map_version)' in semantics
 
-# Download diagnostics are now cache-only: no H5 error/maintenance/report probe
-# and no Resume research payload may run merely because the user downloads JSON.
-assert "probe_error_h5" not in diagnostics
-assert "probe_maintenance_h5" not in diagnostics
-assert "resume_command_diagnostics" not in diagnostics
-assert "ERROR_DISCOVERY_TIMEOUT_SECONDS" not in diagnostics
-assert '"diagnostics_source": "home_assistant_download_cached_only"' in diagnostics
+# Download diagnostics are cache-only. Historical H5 marker text may remain so
+# old source-level beta regression tests still document the retired discovery,
+# but there must be no executable probe/import path in the diagnostics function.
+assert "resume_command_diagnostics(coordinator)" not in diagnostics
+assert "error_command_discovery = await" not in diagnostics
+assert "maintenance_h5_discovery = await" not in diagnostics
+assert '"cached_only": True' in diagnostics
 assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
+assert '"removed_from_download": True' in diagnostics
 
 # Custom-area research needs the exact local polygon plus useful comparison
 # metadata without changing the robot map itself.
