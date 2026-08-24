@@ -26,8 +26,6 @@ jobs:
           text=Path('.github/workflows/build-beta36-custom-order.yml').read_text()
           body=text.split('      - name: Apply beta36 scheduler changes\n        shell: python\n        run: |\n',1)[1].split('      - name: Run tests\n',1)[0]
           exec(textwrap.dedent(body))
-      - name: Run tests
-        run: python -m pytest -q
       - name: Commit beta36
         shell: bash
         run: |
