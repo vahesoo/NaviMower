@@ -1,0 +1,64 @@
+name: Publish prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${VERSION}"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = os.environ['VERSION']
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          if manifest.get('version') != version:
+              raise SystemExit(f"Manifest version {manifest.get('version')!r} does not match requested {version!r}")
+          notes = Path(f'.github/release-notes/{version}.md')
+          if not notes.exists():
+              raise SystemExit(f'Missing release notes: {notes}')
+          PY
+
+      - name: Create tag and prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "${TAG}"
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists"
+          else
+            gh release create "${TAG}" \
+              --title "Navimower ${VERSION}" \
+              --notes-file ".github/release-notes/${VERSION}.md" \
+              --prerelease
+          fi
