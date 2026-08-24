@@ -20,6 +20,7 @@ from .const import (
     ACTIVITY_RETURNING,
     DEFAULT_SCHEDULE_END,
     DEFAULT_SCHEDULE_MODE,
+    DEFAULT_SCHEDULE_ORDER_MODE,
     DEFAULT_SCHEDULE_START,
     DOMAIN,
     MQTT_STATE_CHARGING,
@@ -27,9 +28,13 @@ from .const import (
     OPT_SCHEDULE_ENABLED,
     OPT_SCHEDULE_END,
     OPT_SCHEDULE_MODE,
+    OPT_SCHEDULE_ORDER_MODE,
+    OPT_SCHEDULE_CUSTOM_QUEUE,
     OPT_SCHEDULE_START,
     OPT_SCHEDULE_ZONE_IDS,
     SCHEDULE_MODE_CONTINUOUS,
+    SCHEDULE_ORDER_AUTOMATIC,
+    SCHEDULE_ORDER_CUSTOM,
     SCHEDULE_MODE_WINDOW,
     STATE_IDLE_DOCKED_POST,
     STATE_MOWING,
@@ -100,6 +105,9 @@ class NavimowerScheduleController:
         self._mode = mode if mode in {SCHEDULE_MODE_WINDOW, SCHEDULE_MODE_CONTINUOUS} else DEFAULT_SCHEDULE_MODE
         self._start = parse_hhmm(entry.options.get(OPT_SCHEDULE_START), DEFAULT_SCHEDULE_START)
         self._end = parse_hhmm(entry.options.get(OPT_SCHEDULE_END), DEFAULT_SCHEDULE_END)
+        order_mode = str(entry.options.get(OPT_SCHEDULE_ORDER_MODE, DEFAULT_SCHEDULE_ORDER_MODE))
+        self._order_mode = order_mode if order_mode in {SCHEDULE_ORDER_AUTOMATIC, SCHEDULE_ORDER_CUSTOM} else DEFAULT_SCHEDULE_ORDER_MODE
+        self._custom_queue = self._normalize_queue(entry.options.get(OPT_SCHEDULE_CUSTOM_QUEUE, []))
         self._selection_configured = OPT_SCHEDULE_ZONE_IDS in entry.options
         self._selected_zone_ids = self._normalize_zone_ids(entry.options.get(OPT_SCHEDULE_ZONE_IDS, []))
         self._legacy_selection_migration_allowed = self._enabled and not self._selection_configured
@@ -125,12 +133,30 @@ class NavimowerScheduleController:
         return result
 
     @staticmethod
+    def _normalize_queue(values: Any) -> list[int]:
+        if isinstance(values, str):
+            values = [item.strip() for item in values.split(",") if item.strip()]
+        if not isinstance(values, (list, tuple)):
+            return []
+        result = []
+        for value in values:
+            try:
+                zone_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if zone_id > 0:
+                result.append(zone_id)
+        return result
+
+    @staticmethod
     def _empty_runtime() -> dict[str, Any]:
         return {
             "window_token": None,
             "round_index": 1,
             "round_started_at": None,
             "completed_zone_ids_in_window": [],
+            "completed_queue_slots": [],
+            "active_queue_slot": None,
             "active_zone_id": None,
             "active_cycle_id": None,
             "active_zone_baseline_completed_at": None,
@@ -220,6 +246,8 @@ class NavimowerScheduleController:
         return {
             "enabled": self._enabled,
             "mode": self._mode,
+            "order_mode": self._order_mode,
+            "custom_queue": list(self._custom_queue),
             "start": format_hhmm(self._start),
             "end": format_hhmm(self._end),
             "selected_zone_ids": sorted(self._selected_zone_ids),
@@ -381,6 +409,21 @@ class NavimowerScheduleController:
             len(proven),
         )
 
+    def _custom_queue_entries(self) -> list[dict[str, Any]]:
+        eligible = {int(row["id"]): row for row in self._eligible_zones() if row.get("id") is not None}
+        entries = []
+        for slot, zone_id in enumerate(self._custom_queue):
+            if zone_id in eligible and zone_id in self._selected_zone_ids:
+                entries.append({"slot": slot, "zone_id": zone_id, "zone": eligible[zone_id]})
+        return entries
+
+    def _next_custom_entry(self) -> dict[str, Any] | None:
+        completed = {int(v) for v in self._runtime.get("completed_queue_slots") or []}
+        for entry in self._custom_queue_entries():
+            if entry["slot"] not in completed:
+                return entry
+        return None
+
     def _eligible_zones(self) -> list[dict[str, Any]]:
         return filter_schedule_zones(
             self._zones(),
@@ -541,6 +584,8 @@ class NavimowerScheduleController:
             self._runtime["round_index"] = 1
             self._runtime["round_started_at"] = _utc_now()
             self._runtime["completed_zone_ids_in_window"] = []
+            self._runtime["completed_queue_slots"] = []
+            self._runtime["active_queue_slot"] = None
             self._runtime["just_completed_zone_id"] = None
             self._runtime["suspended_reason"] = None
             self._runtime["retry_not_before"] = None
@@ -589,33 +634,40 @@ class NavimowerScheduleController:
 
         completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
         eligible = self._eligible_zones()
-        candidate = select_oldest_zone(
+        custom_entry = self._next_custom_entry() if self._order_mode == SCHEDULE_ORDER_CUSTOM else None
+        candidate = custom_entry["zone"] if custom_entry is not None else (None if self._order_mode == SCHEDULE_ORDER_CUSTOM else select_oldest_zone(
             eligible,
             completed_in_window=completed,
             just_completed_zone_id=self._runtime.get("just_completed_zone_id"),
             scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
-        )
+        ))
         if candidate is None and self._mode == SCHEDULE_MODE_CONTINUOUS and eligible:
-            eligible_ids = {int(row["id"]) for row in eligible if row.get("id") is not None}
-            if eligible_ids and eligible_ids.issubset(completed):
+            if self._order_mode == SCHEDULE_ORDER_CUSTOM and self._custom_queue_entries():
+                self._runtime["completed_queue_slots"] = []
                 self._runtime["completed_zone_ids_in_window"] = []
                 self._runtime["just_completed_zone_id"] = None
                 self._runtime["round_index"] = int(self._runtime.get("round_index") or 1) + 1
                 self._runtime["round_started_at"] = _utc_now()
                 await self._save()
-                candidate = select_oldest_zone(
-                    eligible,
-                    completed_in_window=set(),
-                    just_completed_zone_id=None,
-                    scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {},
-                )
+                custom_entry = self._next_custom_entry()
+                candidate = custom_entry["zone"] if custom_entry else None
+            else:
+                eligible_ids = {int(row["id"]) for row in eligible if row.get("id") is not None}
+                if eligible_ids and eligible_ids.issubset(completed):
+                    self._runtime["completed_zone_ids_in_window"] = []
+                    self._runtime["just_completed_zone_id"] = None
+                    self._runtime["round_index"] = int(self._runtime.get("round_index") or 1) + 1
+                    self._runtime["round_started_at"] = _utc_now()
+                    await self._save()
+                    candidate = select_oldest_zone(eligible, completed_in_window=set(), just_completed_zone_id=None, scheduler_completed_at=self._runtime.get("scheduler_completed_at") or {})
         if candidate is None:
             return
         try:
             zone_id = int(candidate["id"])
         except (KeyError, TypeError, ValueError):
             return
-        await self._async_send_mow(zone_id, reset=True, source="navimower_schedule_next_zone")
+        queue_slot = custom_entry["slot"] if self._order_mode == SCHEDULE_ORDER_CUSTOM and custom_entry else None
+        await self._async_send_mow(zone_id, reset=True, source="navimower_schedule_next_zone", queue_slot=queue_slot)
 
     async def _confirm_active_completion(self) -> bool:
         zone_id = self._runtime.get("active_zone_id")
@@ -635,6 +687,12 @@ class NavimowerScheduleController:
         completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
         completed.add(int(zone_id))
         self._runtime["completed_zone_ids_in_window"] = sorted(completed)
+        active_slot = self._runtime.get("active_queue_slot")
+        if active_slot is not None:
+            slots = {int(v) for v in self._runtime.get("completed_queue_slots") or []}
+            slots.add(int(active_slot))
+            self._runtime["completed_queue_slots"] = sorted(slots)
+        self._runtime["active_queue_slot"] = None
         self._runtime["just_completed_zone_id"] = int(zone_id)
         confirmed = dict(self._runtime.get("scheduler_completed_at") or {})
         confirmed[str(zone_id)] = later_iso(confirmed.get(str(zone_id)), stamp) or stamp
@@ -671,6 +729,7 @@ class NavimowerScheduleController:
             source = str(pending.get("source") or "navimower_schedule_next_zone")
             self.coordinator.start_new_mowing_cycle([zone_id], source=source)
             self._runtime["active_zone_id"] = zone_id
+            self._runtime["active_queue_slot"] = pending.get("queue_slot")
             self._runtime["active_cycle_id"] = None
             self._runtime["active_zone_baseline_completed_at"] = baseline
             self._runtime["dispatch_started_at"] = sent_at
@@ -738,7 +797,7 @@ class NavimowerScheduleController:
         self._runtime["last_command_at"] = _utc_now()
         await self._save()
 
-    async def _async_send_mow(self, zone_id: int, *, reset: bool, source: str) -> None:
+    async def _async_send_mow(self, zone_id: int, *, reset: bool, source: str, queue_slot: int | None = None) -> None:
         row = self._zone(zone_id) or {}
         partition_ids = encode_partition_ids([zone_id])
         partition_setup = mow_setup(reset=reset, ordered=False)

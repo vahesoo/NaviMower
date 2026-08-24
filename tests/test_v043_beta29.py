@@ -10,9 +10,6 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
 manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
 
-# Keep the map revision diagnostics contract introduced in beta29. These fields
-# let diagnostics distinguish a geometry/edit revision from ordinary metadata
-# without changing the robot map itself.
 assert '"off_limit_areas": _polygon_diagnostics(' in diagnostics
 assert '"area_m2": round(area, 4)' in diagnostics
 assert '"centroid": [round(centroid[0], 4), round(centroid[1], 4)]' in diagnostics
@@ -20,12 +17,7 @@ assert '"edit_session_active": bool(' in diagnostics
 assert '"map_version": map_version' in diagnostics
 
 assert manifest["version"] in {
-    "0.4.3-beta29",
-    "0.4.3-beta30",
-    "0.4.3-beta31",
-    "0.4.3-beta32",
-    "0.4.3-beta33",
-    "0.4.3-beta34",
-    "0.4.3-beta35",
+    "0.4.3-beta29", "0.4.3-beta30", "0.4.3-beta31", "0.4.3-beta32",
+    "0.4.3-beta33", "0.4.3-beta34", "0.4.3-beta35", "0.4.3-beta36",
 }
 print("beta29 map revision diagnostics tests passed")

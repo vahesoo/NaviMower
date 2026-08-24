@@ -11,9 +11,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def _load_custom_area():
-    spec = importlib.util.spec_from_file_location(
-        "navimower_custom_area_beta33_test", COMPONENT / "custom_area.py"
-    )
+    spec = importlib.util.spec_from_file_location("navimower_custom_area_beta33_test", COMPONENT / "custom_area.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -47,4 +45,4 @@ def test_custom_area_occupancy_requires_fresh_mqtt_xy() -> None:
 
 def test_manifest_keeps_beta33_or_later_043_beta() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] in {"0.4.3-beta33", "0.4.3-beta34", "0.4.3-beta35"}
+    assert manifest["version"] in {"0.4.3-beta33", "0.4.3-beta34", "0.4.3-beta35", "0.4.3-beta36"}
