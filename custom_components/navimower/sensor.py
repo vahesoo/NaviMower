@@ -28,6 +28,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .schedule_status import schedule_status_snapshot
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -558,6 +559,9 @@ async def async_setup_entry(
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = [NavimowSensor(coordinator, desc) for desc in SENSORS]
+    controller = getattr(coordinator, "navimower_schedule", None)
+    if controller is not None and controller.configured:
+        entities.append(NavimowerScheduleStatusSensor(coordinator))
     entities.append(NavimowerMapDataSensor(coordinator, entry.entry_id))
     async_add_entities(entities)
 
@@ -604,6 +608,28 @@ class NavimowSensor(NavimowEntity, SensorEntity):
         if self.entity_description.attrs_fn is None:
             return None
         return self.entity_description.attrs_fn(self.data)
+
+
+class NavimowerScheduleStatusSensor(NavimowEntity, SensorEntity):
+    """Card-friendly state and ordered zone queue for Navimower Schedule."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Navimower schedule status"
+    _attr_icon = "mdi:calendar-sync"
+
+    def __init__(self, coordinator: NavimowCoordinator) -> None:
+        super().__init__(coordinator, "navimower_schedule_status")
+        self.controller = coordinator.navimower_schedule
+
+    @property
+    def native_value(self) -> str:
+        return str(schedule_status_snapshot(self.controller)["state"])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        snapshot = schedule_status_snapshot(self.controller)
+        snapshot.pop("state", None)
+        return snapshot
 
 
 class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
