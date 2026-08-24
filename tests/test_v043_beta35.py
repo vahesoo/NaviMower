@@ -17,3 +17,4 @@ def test_beta35_schedule_status_contract() -> None:
     assert 'class NavimowerScheduleStatusSensor' in sensor
     assert 'super().__init__(coordinator, "navimower_schedule_status")' in sensor
     assert 'NavimowerScheduleStatusSensor(coordinator)' in sensor
+    assert 'from .schedule_status import schedule_status_snapshot' in sensor
