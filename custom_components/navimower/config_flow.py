@@ -17,10 +17,14 @@ from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
 from .config_flow_base import NavimowConfigFlow
 from .config_flow_base import NavimowOptionsFlow as _BaseNavimowOptionsFlow
+from .const import OPT_SCHEDULE_ORDER_MODE, OPT_SCHEDULE_CUSTOM_QUEUE, SCHEDULE_ORDER_AUTOMATIC, SCHEDULE_ORDER_CUSTOM
 from .custom_area import (
     OPT_CUSTOM_AREAS,
     create_custom_area,
@@ -85,11 +89,42 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
             menu_options=[
                 "general",
                 "navimower_schedule",
+                "navimower_schedule_order",
                 "gates",
                 "custom_areas",
                 "channels",
             ],
         )
+
+
+    async def async_step_navimower_schedule_order(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        choices = self._schedule_zone_choices()
+        options = self._options()
+        if user_input is not None:
+            order_mode = str(user_input.get(OPT_SCHEDULE_ORDER_MODE) or SCHEDULE_ORDER_AUTOMATIC)
+            raw = str(user_input.get(OPT_SCHEDULE_CUSTOM_QUEUE) or "")
+            queue = []
+            invalid = []
+            for item in raw.split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                if item not in choices:
+                    invalid.append(item)
+                else:
+                    queue.append(item)
+            if order_mode == SCHEDULE_ORDER_CUSTOM and (invalid or not queue):
+                return self.async_show_form(step_id="navimower_schedule_order", data_schema=self._schedule_order_schema(order_mode, raw), errors={"base": "schedule_custom_queue_invalid"})
+            return self._save(**{OPT_SCHEDULE_ORDER_MODE: order_mode, OPT_SCHEDULE_CUSTOM_QUEUE: queue})
+        mode = str(options.get(OPT_SCHEDULE_ORDER_MODE, SCHEDULE_ORDER_AUTOMATIC))
+        queue = ", ".join(str(v) for v in options.get(OPT_SCHEDULE_CUSTOM_QUEUE, []) or [])
+        return self.async_show_form(step_id="navimower_schedule_order", data_schema=self._schedule_order_schema(mode, queue), description_placeholders={"eligible_zones": ", ".join(f"{z}: {n}" for z,n in choices.items())})
+
+    def _schedule_order_schema(self, mode: str, queue: str) -> vol.Schema:
+        return vol.Schema({
+            vol.Required(OPT_SCHEDULE_ORDER_MODE, default=mode): SelectSelector(SelectSelectorConfig(options=[{"value": SCHEDULE_ORDER_AUTOMATIC, "label": "Automatic order"}, {"value": SCHEDULE_ORDER_CUSTOM, "label": "Custom order"}], mode=SelectSelectorMode.LIST)),
+            vol.Optional(OPT_SCHEDULE_CUSTOM_QUEUE, default=queue): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+        })
 
     async def async_step_custom_areas(
         self, user_input: dict[str, Any] | None = None

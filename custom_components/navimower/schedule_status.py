@@ -75,12 +75,25 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
         diagnostics.get("scheduler_completed_at") or {},
     )
 
-    queue: list[dict[str, Any]] = []
-    for zone_id in completed_ids:
+    if diagnostics.get("order_mode") == "custom":
+        completed_slots = {int(v) for v in diagnostics.get("completed_queue_slots") or []}
+        active_slot = diagnostics.get("active_queue_slot")
+        custom_queue = diagnostics.get("custom_queue") or []
+        custom_items = []
+        for slot, raw in enumerate(custom_queue):
+            try: zone_id = int(raw)
+            except (TypeError, ValueError): continue
+            if zone_id not in by_id: continue
+            status = "completed" if slot in completed_slots else ("active" if active_slot is not None and int(active_slot) == slot else "upcoming")
+            custom_items.append({"slot": slot, "id": zone_id, "name": _zone_name(by_id[zone_id], zone_id), "status": status})
+        queue = custom_items
+    else:
+        queue = []
+    for zone_id in ([] if diagnostics.get("order_mode") == "custom" else completed_ids):
         queue.append({"id": zone_id, "name": _zone_name(by_id[zone_id], zone_id), "status": "completed"})
-    if active_id is not None:
+    if active_id is not None and diagnostics.get("order_mode") != "custom":
         queue.append({"id": active_id, "name": _zone_name(by_id[active_id], active_id), "status": "active"})
-    for zone_id in remaining_ids:
+    for zone_id in ([] if diagnostics.get("order_mode") == "custom" else remaining_ids):
         queue.append({"id": zone_id, "name": _zone_name(by_id[zone_id], zone_id), "status": "upcoming"})
 
     suspended_reason = diagnostics.get("suspended_reason")
@@ -103,6 +116,10 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
         "enabled": bool(diagnostics.get("enabled")),
         "configured": bool(controller.configured),
         "mode": diagnostics.get("mode"),
+        "order_mode": diagnostics.get("order_mode") or "automatic",
+        "custom_queue": diagnostics.get("custom_queue") or [],
+        "active_queue_slot": diagnostics.get("active_queue_slot"),
+        "completed_queue_slots": diagnostics.get("completed_queue_slots") or [],
         "start": diagnostics.get("start"),
         "end": diagnostics.get("end"),
         "window_open": bool(diagnostics.get("window_open")),

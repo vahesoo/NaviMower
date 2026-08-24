@@ -43,6 +43,12 @@ OPT_SCHEDULE_START: Final = "navimower_schedule_start"
 OPT_SCHEDULE_END: Final = "navimower_schedule_end"
 OPT_SCHEDULE_MODE: Final = "navimower_schedule_mode"
 OPT_SCHEDULE_ZONE_IDS: Final = "navimower_schedule_zone_ids"
+OPT_SCHEDULE_ORDER_MODE: Final = "navimower_schedule_order_mode"
+OPT_SCHEDULE_CUSTOM_QUEUE: Final = "navimower_schedule_custom_queue"
+
+SCHEDULE_ORDER_AUTOMATIC: Final = "automatic"
+SCHEDULE_ORDER_CUSTOM: Final = "custom"
+DEFAULT_SCHEDULE_ORDER_MODE: Final = SCHEDULE_ORDER_AUTOMATIC
 
 SCHEDULE_MODE_WINDOW: Final = "window"
 SCHEDULE_MODE_CONTINUOUS: Final = "continuous"
