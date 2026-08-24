@@ -16,3 +16,4 @@ def test_beta35_schedule_status_contract() -> None:
     assert '"round_index": diagnostics.get("round_index") or 1' in helper
     assert 'class NavimowerScheduleStatusSensor' in sensor
     assert 'super().__init__(coordinator, "navimower_schedule_status")' in sensor
+    assert 'NavimowerScheduleStatusSensor(coordinator)' in sensor
