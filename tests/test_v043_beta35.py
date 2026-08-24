@@ -7,7 +7,7 @@ def test_beta35_schedule_status_contract() -> None:
     sensor = (root / "custom_components/navimower/sensor.py").read_text()
     manifest = (root / "custom_components/navimower/manifest.json").read_text()
 
-    assert ('"version": "0.4.3-beta35"' in manifest or '"version": "0.4.3-beta36"' in manifest)
+    assert ('"version": "0.4.3-beta35"' in manifest or '"version": "0.4.3-beta36"' in manifest or '"version": "0.4.3-beta37"' in manifest)
     assert '"queue": queue' in helper
     assert '"completed_zones": completed' in helper
     assert '"active_zone": active' in helper

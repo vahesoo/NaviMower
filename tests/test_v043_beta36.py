@@ -1,7 +1,7 @@
 from pathlib import Path
 
 def test_beta36_version_and_constants():
-    assert '0.4.3-beta36' in Path('custom_components/navimower/manifest.json').read_text()
+    assert any(v in Path('custom_components/navimower/manifest.json').read_text() for v in ('0.4.3-beta36', '0.4.3-beta37'))
     c=Path('custom_components/navimower/const.py').read_text()
     assert 'OPT_SCHEDULE_CUSTOM_QUEUE' in c and 'SCHEDULE_ORDER_CUSTOM' in c
 
@@ -18,5 +18,5 @@ def test_status_is_slot_aware():
 
 def test_options_expose_order_mode():
     s=Path('custom_components/navimower/config_flow.py').read_text()
-    assert 'async_step_navimower_schedule_order' in s
+    assert 'async_step_navimower_schedule' in s
     assert 'Automatic order' in s and 'Custom order' in s

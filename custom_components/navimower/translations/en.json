@@ -185,11 +185,13 @@
         "description": "Choose which proven zones the integration may mow automatically and when it may work. Only zones with at least one confirmed successful completion can be selected. A new or difficult zone must first be fully completed manually once; completing it does not select it automatically.\n\n{unavailable_note}",
         "data": {
           "navimower_schedule_zone_ids": "Automatic mowing zones",
-          "navimower_schedule_mode": "Allowed mowing time"
+          "navimower_schedule_mode": "Allowed mowing time",
+          "navimower_schedule_order_mode": "Zone order"
         },
         "data_description": {
           "navimower_schedule_zone_ids": "The scheduler only dispatches zones selected here. New zones are never added automatically.",
-          "navimower_schedule_mode": "Time window asks for daily start and end times on the next screen. 24 hours keeps the managed scheduler available continuously and starts a new round after every selected zone has completed."
+          "navimower_schedule_mode": "Time window asks for daily start and end times on the next screen. 24 hours keeps the managed scheduler available continuously and starts a new round after every selected zone has completed.",
+          "navimower_schedule_order_mode": "Automatic order selects the least recently completed selected zone first. Custom order keeps a persistent queue that can later be rearranged in Navimower Map Card."
         }
       },
       "navimower_schedule_window": {

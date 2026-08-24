@@ -46,6 +46,7 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
         self._custom_area_baseline: list[list[list[float]]] | None = None
         self._custom_area_baseline_revision: str | None = None
         self._custom_area_candidate: list[list[float]] | None = None
+        self._pending_schedule_order_mode: str | None = None
 
     def _custom_areas(self):
         return parse_custom_areas(self.config_entry.options.get(OPT_CUSTOM_AREAS))
@@ -89,7 +90,6 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
             menu_options=[
                 "general",
                 "navimower_schedule",
-                "navimower_schedule_order",
                 "gates",
                 "custom_areas",
                 "channels",
@@ -97,34 +97,70 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
         )
 
 
-    async def async_step_navimower_schedule_order(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        choices = self._schedule_zone_choices()
-        options = self._options()
-        if user_input is not None:
-            order_mode = str(user_input.get(OPT_SCHEDULE_ORDER_MODE) or SCHEDULE_ORDER_AUTOMATIC)
-            raw = str(user_input.get(OPT_SCHEDULE_CUSTOM_QUEUE) or "")
-            queue = []
-            invalid = []
-            for item in raw.split(","):
-                item = item.strip()
-                if not item:
-                    continue
-                if item not in choices:
-                    invalid.append(item)
-                else:
-                    queue.append(item)
-            if order_mode == SCHEDULE_ORDER_CUSTOM and (invalid or not queue):
-                return self.async_show_form(step_id="navimower_schedule_order", data_schema=self._schedule_order_schema(order_mode, raw), errors={"base": "schedule_custom_queue_invalid"})
-            return self._save(**{OPT_SCHEDULE_ORDER_MODE: order_mode, OPT_SCHEDULE_CUSTOM_QUEUE: queue})
-        mode = str(options.get(OPT_SCHEDULE_ORDER_MODE, SCHEDULE_ORDER_AUTOMATIC))
-        queue = ", ".join(str(v) for v in options.get(OPT_SCHEDULE_CUSTOM_QUEUE, []) or [])
-        return self.async_show_form(step_id="navimower_schedule_order", data_schema=self._schedule_order_schema(mode, queue), description_placeholders={"eligible_zones": ", ".join(f"{z}: {n}" for z,n in choices.items())})
+    def _schedule_order_selector(self, mode: str):
+        return SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    {"value": SCHEDULE_ORDER_AUTOMATIC, "label": "Automatic order"},
+                    {"value": SCHEDULE_ORDER_CUSTOM, "label": "Custom order"},
+                ],
+                mode=SelectSelectorMode.LIST,
+            )
+        )
 
-    def _schedule_order_schema(self, mode: str, queue: str) -> vol.Schema:
-        return vol.Schema({
-            vol.Required(OPT_SCHEDULE_ORDER_MODE, default=mode): SelectSelector(SelectSelectorConfig(options=[{"value": SCHEDULE_ORDER_AUTOMATIC, "label": "Automatic order"}, {"value": SCHEDULE_ORDER_CUSTOM, "label": "Custom order"}], mode=SelectSelectorMode.LIST)),
-            vol.Optional(OPT_SCHEDULE_CUSTOM_QUEUE, default=queue): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-        })
+    def _seed_custom_queue(self, zone_ids: Any) -> list[str]:
+        selected = {str(value) for value in (zone_ids or [])}
+        coordinator = self._coordinator()
+        data = getattr(coordinator, "data", None) or {}
+        rows = []
+        for row in data.get("zone_states") or []:
+            if not isinstance(row, dict):
+                continue
+            zone_id = str(row.get("id") or "")
+            completed = row.get("last_completed_at")
+            if zone_id in selected and completed:
+                rows.append((str(completed), zone_id))
+        rows.sort(key=lambda item: (item[0], item[1]))
+        return [zone_id for _, zone_id in rows]
+
+    def _apply_schedule_order(self, result: ConfigFlowResult, mode: str) -> ConfigFlowResult:
+        if result.get("type") == "form" and result.get("step_id") == "navimower_schedule":
+            schema = dict(result["data_schema"].schema)
+            schema[vol.Required(OPT_SCHEDULE_ORDER_MODE, default=mode)] = self._schedule_order_selector(mode)
+            result["data_schema"] = vol.Schema(schema)
+            return result
+        if result.get("type") == "create_entry":
+            data = dict(result.get("data") or {})
+            data[OPT_SCHEDULE_ORDER_MODE] = mode
+            if mode == SCHEDULE_ORDER_CUSTOM:
+                selected = data.get("navimower_schedule_zone_ids", self._options().get("navimower_schedule_zone_ids", []))
+                existing = list(self._options().get(OPT_SCHEDULE_CUSTOM_QUEUE, []) or [])
+                selected_set = {str(value) for value in (selected or [])}
+                queue = [str(value) for value in existing if str(value) in selected_set]
+                if not queue:
+                    queue = self._seed_custom_queue(selected)
+                data[OPT_SCHEDULE_CUSTOM_QUEUE] = queue
+            result["data"] = data
+        return result
+
+    async def async_step_navimower_schedule(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        options = self._options()
+        mode = str(options.get(OPT_SCHEDULE_ORDER_MODE, SCHEDULE_ORDER_AUTOMATIC))
+        payload = None if user_input is None else dict(user_input)
+        if payload is not None:
+            mode = str(payload.pop(OPT_SCHEDULE_ORDER_MODE, mode) or SCHEDULE_ORDER_AUTOMATIC)
+            if mode not in {SCHEDULE_ORDER_AUTOMATIC, SCHEDULE_ORDER_CUSTOM}:
+                mode = SCHEDULE_ORDER_AUTOMATIC
+            self._pending_schedule_order_mode = mode
+        result = await super().async_step_navimower_schedule(payload)
+        return self._apply_schedule_order(result, mode)
+
+    async def async_step_navimower_schedule_window(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        result = await super().async_step_navimower_schedule_window(user_input)
+        mode = self._pending_schedule_order_mode or str(
+            self._options().get(OPT_SCHEDULE_ORDER_MODE, SCHEDULE_ORDER_AUTOMATIC)
+        )
+        return self._apply_schedule_order(result, mode)
 
     async def async_step_custom_areas(
         self, user_input: dict[str, Any] | None = None
