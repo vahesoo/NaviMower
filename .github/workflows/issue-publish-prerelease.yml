@@ -1,0 +1,70 @@
+name: Issue publish prerelease
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    if: >-
+      startsWith(github.event.issue.title, 'PUBLISH NAVIMOWER PRERELEASE ') &&
+      github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Parse and validate version
+        id: version
+        shell: bash
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+          VERSION="${TITLE#PUBLISH NAVIMOWER PRERELEASE }"
+          test -n "${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          VERSION="${VERSION}" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = os.environ['VERSION']
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          if manifest.get('version') != version:
+              raise SystemExit(f"Manifest version {manifest.get('version')!r} does not match requested {version!r}")
+          notes = Path(f'.github/release-notes/{version}.md')
+          if not notes.exists():
+              raise SystemExit(f'Missing release notes: {notes}')
+          PY
+
+      - name: Create tag and prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "${TAG}"
+          fi
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" --title "Navimower ${VERSION}" --notes-file ".github/release-notes/${VERSION}.md" --prerelease
+          fi
+
+      - name: Confirm and close request
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --body "Published Navimower \`${VERSION}\` as GitHub prerelease and ensured tag \`v${VERSION}\` exists."
+          gh issue close "${{ github.event.issue.number }}" --reason completed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
