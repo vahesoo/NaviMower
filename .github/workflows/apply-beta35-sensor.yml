@@ -1,0 +1,33 @@
+name: Apply beta35 schedule sensor
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'release/0.4.3-beta35'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply sensor patch
+        run: python scripts/apply_beta35_schedule_sensor.py
+      - name: Commit generated sensor
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- custom_components/navimower/sensor.py; then
+            echo 'Sensor patch already applied'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add custom_components/navimower/sensor.py
+          git commit -m 'Add Navimower schedule status sensor'
+          git push origin HEAD:${{ github.head_ref }}
