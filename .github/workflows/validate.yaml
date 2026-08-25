@@ -1,8 +1,6 @@
 name: Validate
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -10,37 +8,22 @@ permissions:
   contents: read
 
 jobs:
-  syntax:
+  integration:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
-      - name: Compile Python
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
+
+      - name: Compile integration
         run: python -m compileall -q custom_components/navimower
 
-      - name: Run history and cycle tests
-        run: python tests/test_history_merge.py
-
-      - name: Run map cache migration tests
-        run: python tests/test_map_cache_migration.py
-
-      - name: Run MQTT task lifecycle tests
-        run: python tests/test_mqtt_task_lifecycle.py
-
-      - name: Run navigation intent tests
-        run: python tests/test_navigation_intent.py
-
-      - name: Run progress mapping tests
-        run: python tests/test_progress_mapping.py
-
-      - name: Run state consistency tests
-        run: python tests/test_state_consistency.py
-
-      - name: Run MQTT shutdown hook tests
-        run: python tests/test_mqtt_shutdown_hooks.py
+      - name: Run regression tests
+        run: python -m pytest -q
 
       - name: Validate JSON
         run: |
@@ -54,6 +37,9 @@ jobs:
           test ! -d custom_components/navimower/www
           ! grep -R --line-number --fixed-strings 'add_extra_js_url' custom_components/navimower
           ! grep -R --line-number --fixed-strings '/local/navimower/' custom_components/navimower
+
+      - name: Verify clean test tree
+        run: git diff --exit-code
 
   hacs:
     runs-on: ubuntu-latest

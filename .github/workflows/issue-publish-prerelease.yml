@@ -1,4 +1,4 @@
-name: Issue publish prerelease
+name: Publish prerelease
 
 on:
   issues:
@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
   issues: write
+
+concurrency:
+  group: navimower-prerelease
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -20,7 +24,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Parse and validate version
+      - name: Validate release metadata
         id: version
         shell: bash
         env:
@@ -31,15 +35,21 @@ jobs:
           test -n "${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           VERSION="${VERSION}" python - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
+
           version = os.environ['VERSION']
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"Invalid version: {version!r}")
           manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
           if manifest.get('version') != version:
               raise SystemExit(f"Manifest version {manifest.get('version')!r} does not match requested {version!r}")
           notes = Path(f'.github/release-notes/{version}.md')
-          if not notes.exists():
+          if not notes.is_file():
               raise SystemExit(f'Missing release notes: {notes}')
+          expected = f'title: Navimower {version}\n'
+          if not notes.read_text().startswith(expected):
+              raise SystemExit(f'Release notes must start with {expected.strip()!r}')
           PY
 
       - name: Create tag and prerelease
@@ -50,21 +60,25 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            git tag "${TAG}" "${GITHUB_SHA}"
+          TARGET_SHA="$(git rev-parse HEAD)"
+          git fetch --tags origin
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "${TAG}")"
+            test "${TAG_SHA}" = "${TARGET_SHA}"
+          else
+            git tag "${TAG}" "${TARGET_SHA}"
             git push origin "${TAG}"
           fi
-          if ! gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release create "${TAG}" --title "Navimower ${VERSION}" --notes-file ".github/release-notes/${VERSION}.md" --prerelease
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --prerelease --title "Navimower ${VERSION}" --notes-file ".github/release-notes/${VERSION}.md"
+          else
+            gh release create "${TAG}" --target "${TARGET_SHA}" --title "Navimower ${VERSION}" --notes-file ".github/release-notes/${VERSION}.md" --prerelease
           fi
 
-      - name: Confirm and close request
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "Published Navimower \`${VERSION}\` as GitHub prerelease and ensured tag \`v${VERSION}\` exists."
-          gh issue close "${{ github.event.issue.number }}" --reason completed
+      - name: Confirm request
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --body "Published Navimower \`${VERSION}\` as GitHub prerelease and verified tag \`v${VERSION}\`."
+          gh issue close "${{ github.event.issue.number }}" --reason completed

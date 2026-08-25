@@ -109,13 +109,15 @@ def test_model_specific_brightness_and_h215_lab_gates() -> None:
     assert 'models=("H215",)' in edge_mode
 
 
-def test_release_workflow_supports_stable_and_prerelease_tags() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "publish-prerelease.yaml").read_text()
-    assert "name: Publish integration release" in workflow
-    assert 'RELEASE_ARGS+=(--prerelease)' in workflow
+def test_release_workflow_is_version_agnostic_prerelease_publisher() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "issue-publish-prerelease.yml").read_text()
+    assert "name: Publish prerelease" in workflow
+    assert "PUBLISH NAVIMOWER PRERELEASE " in workflow
+    assert 'manifest.get(\'version\') != version' in workflow
     assert 'gh release create "${TAG}"' in workflow
-    assert '"${RELEASE_ARGS[@]}"' in workflow
-    assert "Skip stable release" not in workflow
+    assert "--prerelease" in workflow
+    assert "beta38" not in workflow.lower()
+    assert "beta39" not in workflow.lower()
 
 
 def test_readme_documents_entities_models_and_testing_scope() -> None:
