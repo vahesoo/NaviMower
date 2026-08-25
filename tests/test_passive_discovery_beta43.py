@@ -1,4 +1,4 @@
-"""Regression guards for Navimower 0.4.3-beta43 passive MQTT discovery."""
+"""Regression guards for the beta43 passive MQTT discovery feature."""
 from __future__ import annotations
 
 import ast
@@ -9,9 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta43_manifest_and_notes() -> None:
+def test_passive_discovery_release_contract_survives_later_betas() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.3-beta43"
+    assert manifest["version"].startswith("0.4.3-beta")
+    beta = int(manifest["version"].rsplit("beta", 1)[1])
+    assert beta >= 43
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta43.md").read_text()
     assert "Passive MQTT discovery" in notes
     assert "gate_required" in notes
