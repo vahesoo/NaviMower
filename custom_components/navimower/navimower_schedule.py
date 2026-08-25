@@ -264,6 +264,8 @@ class NavimowerScheduleController:
             key: row.get(key)
             for key in (
                 "mode",
+                "order_mode",
+                "custom_queue",
                 "start",
                 "end",
                 "selected_zone_ids",
@@ -324,6 +326,28 @@ class NavimowerScheduleController:
             raise ValueError(f"Unknown schedule time key: {key}")
         self._update_options(**{option_key: format_hhmm(new_value)})
         self._queue_evaluation()
+
+    async def async_set_custom_queue(self, zone_ids: list[int]) -> None:
+        """Persist a user-defined custom mowing queue without starting mowing."""
+        queue = self._normalize_queue(zone_ids)
+        selected = set(self._selected_zone_ids)
+        if not queue:
+            raise ValueError("Custom mowing queue may not be empty")
+        unknown = [zone_id for zone_id in queue if zone_id not in selected]
+        if unknown:
+            raise ValueError(f"Queue contains zones outside the selected schedule allowlist: {unknown}")
+        eligible = {int(row["id"]) for row in self._eligible_zones() if row.get("id") is not None}
+        unproven = [zone_id for zone_id in queue if zone_id not in eligible]
+        if unproven:
+            raise ValueError(f"Queue contains zones without a confirmed completed mowing: {unproven}")
+        self._custom_queue = queue
+        self._order_mode = SCHEDULE_ORDER_CUSTOM
+        self._runtime["completed_queue_slots"] = []
+        self._runtime["active_queue_slot"] = None
+        self._update_options(**{OPT_SCHEDULE_CUSTOM_QUEUE: list(queue), OPT_SCHEDULE_ORDER_MODE: SCHEDULE_ORDER_CUSTOM})
+        await self._save()
+        if self._enabled:
+            self._queue_evaluation()
 
     def _update_options(self, **updates: Any) -> None:
         options = dict(self.entry.options)
