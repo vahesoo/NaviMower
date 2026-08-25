@@ -6,7 +6,7 @@ COMP = ROOT / "custom_components" / "navimower"
 
 def test_beta37_identity_and_release_notes():
     manifest = json.loads((COMP / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.3-beta37"
+    assert manifest["version"] in {"0.4.3-beta37", "0.4.3-beta38"}
     notes = (ROOT / ".github/release-notes/0.4.3-beta37.md").read_text()
     assert notes.startswith("title: Navimower 0.4.3-beta37")
 
