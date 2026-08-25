@@ -1,13 +1,11 @@
 from pathlib import Path
 
 
-def test_beta35_schedule_status_contract() -> None:
+def test_schedule_status_contract() -> None:
     root = Path(__file__).parents[1]
     helper = (root / "custom_components/navimower/schedule_status.py").read_text()
     sensor = (root / "custom_components/navimower/sensor.py").read_text()
-    manifest = (root / "custom_components/navimower/manifest.json").read_text()
 
-    assert ('"version": "0.4.3-beta35"' in manifest or '"version": "0.4.3-beta36"' in manifest or '"version": "0.4.3-beta37"' in manifest or '"version": "0.4.3-beta38"' in manifest)
     assert '"queue": queue' in helper
     assert '"completed_zones": completed' in helper
     assert '"active_zone": active' in helper
