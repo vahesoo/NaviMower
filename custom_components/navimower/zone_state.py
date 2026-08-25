@@ -1,4 +1,4 @@
-"""Central per-zone progress model and daily trail preparation.
+"""Central per-zone progress model and current-cycle trail preparation.
 
 The integration owns all progress, area, cycle and route interpretation.  The
 frontend receives already-normalized values and only renders them.
@@ -415,8 +415,8 @@ def zone_model_signature(
 
     Live ``last_mowed_at`` timestamps intentionally do not participate. They
     still update the HA sensor attributes, but must not force a static zone-layer
-    rebuild for every retained mower position. Daily route changes have their own
-    ``daily_trails_revision``.
+    rebuild for every retained mower position. Current-cycle route changes have
+    their own ``daily_trails_revision`` compatibility revision.
     """
     return (
         tuple(
@@ -461,7 +461,14 @@ def zone_model_signature(
 def build_daily_trails(
     *, sessions: list[dict[str, Any]], map_zones: list[dict[str, Any]], local_date: date, to_local_date, revision: int,
 ) -> dict[str, Any]:
-    """Keep today's route for the latest confirmed mowing cycle of every zone."""
+    """Keep the latest confirmed mowing-cycle route for every zone.
+
+    ``local_date`` and ``to_local_date`` remain in the compatibility signature,
+    but calendar midnight is intentionally not a route boundary. A zone keeps
+    all completed-session fragments since its latest confirmed reset/completion
+    boundary until the next cycle actually enters that zone.
+    """
+    del to_local_date
     by_zone: dict[int, dict[str, Any]] = {}
     boundary_before_next: set[int] = set()
     ordered = sorted((item for item in sessions if isinstance(item, dict)), key=lambda item: as_int(item.get("started_at_ms")) or 0)
@@ -497,7 +504,7 @@ def build_daily_trails(
         for raw in points:
             if not isinstance(raw, list) or len(raw) < 3: continue
             stamp = as_int(raw[0]); x, y = as_float(raw[1]), as_float(raw[2])
-            if stamp is None or x is None or y is None or to_local_date(stamp) != local_date:
+            if stamp is None or x is None or y is None:
                 flush(); current_zone = None; continue
             zone_id = as_int(raw[7]) if len(raw) > 7 else None
             if zone_id is None: zone_id = zone_id_for_point(x, y, map_zones)
@@ -524,4 +531,4 @@ def build_daily_trails(
     for zone_id in sorted(by_zone):
         row = deepcopy(by_zone[zone_id]); row["segments"] = [segment for segment in row["segments"] if len(segment) >= 2]; row["render_point_count"] = sum(len(segment) for segment in row["segments"])
         if row["segments"]: result.append(row)
-    return {"date": local_date.isoformat(), "revision": revision, "zones": result}
+    return {"date": local_date.isoformat(), "scope": "current_cycle", "revision": revision, "zones": result}
