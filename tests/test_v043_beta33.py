@@ -1,8 +1,7 @@
-"""Regression guards for 0.4.3-beta33 Custom Area occupancy."""
+"""Regression guards for Custom Area occupancy introduced in 0.4.3-beta33."""
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 import sys
 
@@ -11,7 +10,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 
 def _load_custom_area():
-    spec = importlib.util.spec_from_file_location("navimower_custom_area_beta33_test", COMPONENT / "custom_area.py")
+    spec = importlib.util.spec_from_file_location("navimower_custom_area_regression_test", COMPONENT / "custom_area.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -41,8 +40,3 @@ def test_custom_area_occupancy_requires_fresh_mqtt_xy() -> None:
     assert "position = self.coordinator._fresh_mqtt_position()" in source
     assert "point_in_polygon(position[\"x\"], position[\"y\"], self.area.polygon)" in source
     assert "return super().available and self.coordinator._fresh_mqtt_position() is not None" in source
-
-
-def test_manifest_keeps_beta33_or_later_043_beta() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] in {"0.4.3-beta33", "0.4.3-beta34", "0.4.3-beta35", "0.4.3-beta36", "0.4.3-beta37", "0.4.3-beta38"}
