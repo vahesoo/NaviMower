@@ -1,7 +1,7 @@
 from pathlib import Path
 
 def test_beta36_version_and_constants():
-    assert any(v in Path('custom_components/navimower/manifest.json').read_text() for v in ('0.4.3-beta36', '0.4.3-beta37'))
+    assert any(v in Path('custom_components/navimower/manifest.json').read_text() for v in ('0.4.3-beta36', '0.4.3-beta37', '0.4.3-beta38'))
     c=Path('custom_components/navimower/const.py').read_text()
     assert 'OPT_SCHEDULE_CUSTOM_QUEUE' in c and 'SCHEDULE_ORDER_CUSTOM' in c
 

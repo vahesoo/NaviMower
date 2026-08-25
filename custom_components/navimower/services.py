@@ -46,6 +46,7 @@ install_runtime_extensions()
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
 SERVICE_RESUME = "resume"
+SERVICE_SET_SCHEDULE_QUEUE = "set_schedule_queue"
 SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 
@@ -83,6 +84,8 @@ MOW_SCHEMA = vol.Schema(
         vol.Optional("reset", default=True): cv.boolean,
     }
 )
+
+SET_SCHEDULE_QUEUE_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string, vol.Required("zones"): vol.All(cv.ensure_list, [vol.Coerce(int)])})
 
 RESUME_SCHEMA = vol.Schema(
     {
@@ -255,6 +258,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
+    async def _set_schedule_queue(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        controller = getattr(coordinator, "navimower_schedule", None)
+        if controller is None:
+            raise ServiceValidationError("Navimower Schedule controller is not available")
+        try:
+            await controller.async_set_custom_queue([int(v) for v in call.data.get("zones") or []])
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+        except Exception as err:
+            raise HomeAssistantError(f"Navimower set_schedule_queue failed: {err}") from err
+
     async def _resume(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         try:
@@ -290,6 +305,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
         )
     if not hass.services.has_service(DOMAIN, SERVICE_MOW):
         hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE_QUEUE):
+        hass.services.async_register(DOMAIN, SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, schema=SET_SCHEDULE_QUEUE_SCHEMA)
     if not hass.services.has_service(DOMAIN, SERVICE_RESUME):
         hass.services.async_register(
             DOMAIN,

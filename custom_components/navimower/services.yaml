@@ -132,3 +132,20 @@ mark_all_notifications_read:
       selector:
         device:
           integration: navimower
+
+set_schedule_queue:
+  name: Set Navimower custom schedule queue
+  description: Persist the ordered Custom queue without enabling or starting Navimower Schedule. Zones may repeat.
+  fields:
+    device_id:
+      name: Mower
+      required: false
+      selector:
+        device:
+          integration: navimower
+    zones:
+      name: Ordered zones
+      description: Selected, previously completed schedule zone IDs in mowing order. IDs may repeat.
+      required: true
+      selector:
+        object:
