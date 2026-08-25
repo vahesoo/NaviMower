@@ -509,6 +509,26 @@ class NavimowerScheduleController:
             return mqtt_state == MQTT_STATE_CHARGING
         return str(data.get("state_code") or "") == STATE_IDLE_DOCKED_POST
 
+    def _charging_interruption_confirmed(self) -> bool:
+        """Return whether the notification state proved a low-battery charging pause."""
+        center = getattr(self.coordinator, "notification_center", None)
+        return getattr(center, "interrupted_reason", None) == "charging"
+
+    async def _capture_charging_interruption(self) -> None:
+        """Retain the active scheduler zone while the mower charges itself."""
+        zone_id = self._runtime.get("active_zone_id")
+        if zone_id is None or self._runtime.get("resume_pending"):
+            return
+        self._runtime["resume_pending"] = True
+        self._runtime["interrupted_zone_id"] = int(zone_id)
+        self._runtime["interrupted_cycle_id"] = self._runtime.get("active_cycle_id")
+        self._runtime["progress_before_interrupt"] = self._progress_for_zone(int(zone_id))
+        self._runtime["pending_command"] = None
+        self._runtime["last_command"] = f"charging_pause:{zone_id}"
+        self._runtime["last_command_at"] = _utc_now()
+        self._runtime["last_error"] = None
+        await self._save()
+
     def _pending_mow_confirmed(self, pending: dict[str, Any], data: dict[str, Any]) -> bool:
         """Confirm a scheduler start from vendor state and the commanded target."""
         if not self._vendor_mowing(data):
@@ -519,9 +539,6 @@ class NavimowerScheduleController:
         observed_zone = _as_int(data.get("active_zone_progress_zone_id"))
         if observed_zone == zone_id:
             return True
-        # A start from dock/paused has a real vendor transition from non-mowing
-        # to mowing. A seamless next-zone handoff starts while the previous zone
-        # still reports mowing, so that case waits for the target zone to change.
         return pending.get("vendor_mowing_at_send") is False
 
     def _sync_active_cycle_id(self) -> bool:
@@ -628,13 +645,25 @@ class NavimowerScheduleController:
         if self._runtime.get("suspended_reason"):
             return
 
+        if (
+            self._runtime.get("active_zone_id") is not None
+            and not self._runtime.get("resume_pending")
+            and self._charging_interruption_confirmed()
+        ):
+            await self._capture_charging_interruption()
+
         if self._runtime.get("resume_pending"):
             if activity == ACTIVITY_MOWING:
                 self._runtime["resume_pending"] = False
+                self._runtime["interrupted_zone_id"] = None
+                self._runtime["interrupted_cycle_id"] = None
+                self._runtime["progress_before_interrupt"] = None
                 self._runtime["pending_command"] = None
                 self._runtime["last_command"] = "retained_task_already_mowing"
                 self._runtime["last_command_at"] = _utc_now()
                 await self._save()
+                return
+            if self._vendor_charging(data):
                 return
             await self._continue_interrupted_task(activity)
             return
@@ -647,8 +676,6 @@ class NavimowerScheduleController:
             return
         if not self._retry_ready():
             return
-        # Charging is a normal mower-owned interruption. Do not start another
-        # scheduler task while the mower itself reports 0102/MQTT charging.
         if self._vendor_charging(data):
             return
         if activity not in {ACTIVITY_DOCKED, ACTIVITY_PAUSED} and not (
@@ -766,6 +793,9 @@ class NavimowerScheduleController:
         if kind in {"resume", "continue"} and activity == ACTIVITY_MOWING:
             self._runtime["pending_command"] = None
             self._runtime["resume_pending"] = False
+            self._runtime["interrupted_zone_id"] = None
+            self._runtime["interrupted_cycle_id"] = None
+            self._runtime["progress_before_interrupt"] = None
             self._runtime["last_error"] = None
             await self._save()
         elif kind == "dock" and activity in {ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
