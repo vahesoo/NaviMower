@@ -62,6 +62,11 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 # releases use only Home Assistant's native Download diagnostics path.
 _DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}
 
+# beta43 temporarily re-enables only passive discovery for the controlled gate
+# transition field test. Keep the historical deprecated set unchanged so stable
+# cleanup semantics remain explicit and the switch is easy to retire again.
+_BETA43_REENABLED_DIAGNOSTICS_OPTIONS = {"passive_discovery"}
+
 # The standalone map card, Mow Now dialog and schedule editor are distributed
 # from the separate navimower-map-card HACS dashboard repository.
 
@@ -185,12 +190,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Restore local data, then start private cloud and OAuth/MQTT in parallel."""
     async_register_oauth_implementation(hass)
 
-    # Remove beta-only diagnostics options even when the user upgrades without
-    # opening the options flow. This also guarantees passive discovery cannot
-    # remain enabled from an earlier beta configuration.
+    # Remove retired broad diagnostics options even when the user upgrades
+    # without opening the options flow. beta43 deliberately keeps only the
+    # bounded passive-discovery switch while the gate transition is field-tested.
     cleaned_options = dict(entry.options)
     removed = [
-        key for key in _DEPRECATED_DIAGNOSTICS_OPTIONS if key in cleaned_options
+        key
+        for key in _DEPRECATED_DIAGNOSTICS_OPTIONS
+        if key in cleaned_options
+        and key not in _BETA43_REENABLED_DIAGNOSTICS_OPTIONS
     ]
     for key in removed:
         cleaned_options.pop(key, None)
