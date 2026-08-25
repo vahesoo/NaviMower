@@ -1,35 +1,27 @@
 name: Remote beta build
-
 on:
   issues:
     types: [opened]
-
 permissions:
   contents: write
   issues: write
-
 jobs:
   build:
-    if: >-
-      github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA37 BUILD' &&
-      github.event.issue.user.login == github.repository_owner
+    if: github.event.issue.title == 'RUN NAVIMOWER 0.4.3-BETA38 BUILD' && github.event.issue.user.login == github.repository_owner
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      BUILD_BRANCH: release/0.4.3-beta37
+      BUILD_BRANCH: release/0.4.3-beta38
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.BUILD_BRANCH }}
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
-
+          python-version: '3.14'
       - name: Install test dependencies
         run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml
-
       - name: Build and validate beta
         id: build
         continue-on-error: true
@@ -38,44 +30,25 @@ jobs:
           set -o pipefail
           exec > >(tee /tmp/remote-beta-build.log) 2>&1
           set -euo pipefail
-          python .github/scripts/beta37_builder.py
+          python .github/scripts/beta38_builder.py
           python -m pytest -q
           python -m compileall -q custom_components/navimower
           git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add custom_components/navimower/config_flow.py \
-                  custom_components/navimower/strings.json \
-                  custom_components/navimower/translations/en.json \
-                  custom_components/navimower/manifest.json \
-                  .github/release-notes/0.4.3-beta37.md \
-                  tests/test_v043_beta29.py \
-                  tests/test_v043_beta33.py \
-                  tests/test_v043_beta35.py \
-                  tests/test_v043_beta36.py \
-                  tests/test_v043_beta37.py
-          git commit -m "Prepare Navimower 0.4.3-beta37 schedule order UX"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add custom_components/navimower/services.py custom_components/navimower/services.yaml custom_components/navimower/navimower_schedule.py custom_components/navimower/manifest.json .github/release-notes/0.4.3-beta38.md tests/test_v043_beta38.py
+          git commit -m 'Prepare Navimower 0.4.3-beta38 queue API'
           git push origin HEAD:${BUILD_BRANCH}
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Comment success
         if: steps.build.outcome == 'success'
-        shell: bash
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta37 remote build succeeded. Full tests, compileall and diff-check passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
+          gh issue comment "${{ github.event.issue.number }}" --body "0.4.3-beta38 remote build succeeded. Full tests, compileall and diff-check passed; branch \`${BUILD_BRANCH}\` was pushed at \`${{ steps.build.outputs.commit }}\`."
           gh issue close "${{ github.event.issue.number }}" --reason completed
-
       - name: Comment failure
         if: steps.build.outcome != 'success'
-        shell: bash
         run: |
           tail -n 260 /tmp/remote-beta-build.log > /tmp/build-tail.txt || true
-          {
-            echo '0.4.3-beta37 remote build failed before publishing the completed release branch.'
-            echo
-            echo '```text'
-            cat /tmp/build-tail.txt
-            echo '```'
-          } > /tmp/failure-comment.md
+          { echo '0.4.3-beta38 remote build failed.'; echo; echo '```text'; cat /tmp/build-tail.txt; echo '```'; } > /tmp/failure-comment.md
           gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/failure-comment.md
           exit 1
