@@ -45,6 +45,46 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Return cached MQTT navigation fields needed to research gate timing."""
+    location = getattr(coordinator, "_mqtt_location", None)
+    location = location if isinstance(location, dict) else {}
+    keys = (
+        "vehicle_state",
+        "action",
+        "sub_action",
+        "work_action",
+        "work_sub_action",
+        "work_mode",
+        "work_target_zone",
+        "mow_boundary",
+        "partition_ids",
+        "mow_progress",
+        "work_progress",
+        "mowing_percentage",
+        "mow_start_type",
+        "task_delay",
+        "pose_time",
+        "state_time",
+    )
+    cached = {key: deepcopy(location.get(key)) for key in keys if key in location}
+    return {
+        "cached_location": cached,
+        "pose_age_s": data.get("mqtt_pose_age"),
+        "action_age_s": data.get("mqtt_action_age"),
+        "vehicle_state": data.get("mqtt_vehicle_state"),
+        "physical_zone_id": data.get("current_physical_zone_id"),
+        "physical_zone": data.get("current_physical_zone"),
+        "physical_zone_source": data.get("current_physical_zone_source"),
+        "physical_zone_source_age_s": data.get("current_physical_zone_source_age"),
+        "target_zone_ids": deepcopy(data.get("target_zone_ids") or []),
+        "target_zone_source": data.get("target_zone_source"),
+        "zone_transition": data.get("zone_transition"),
+        "gate_states": deepcopy(data.get("gate_states") or {}),
+        "gate_arrival_guards": deepcopy(data.get("gate_arrival_guards") or {}),
+    }
+
+
 def _polygon_diagnostics(polygons: Any) -> list[dict[str, Any]]:
     """Return stable local-map geometry summaries for off-limit experiments."""
     result: list[dict[str, Any]] = []
@@ -138,6 +178,16 @@ async def async_get_config_entry_diagnostics(
     mqtt_health = (
         mqtt_bridge.diagnostic_health()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_health")
+        else None
+    )
+    mqtt_inventory = (
+        mqtt_bridge.diagnostic_inventory()
+        if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory")
+        else None
+    )
+    mqtt_discovery = (
+        mqtt_bridge.diagnostic_discovery()
+        if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_discovery")
         else None
     )
     private_polling = (
@@ -240,6 +290,9 @@ async def async_get_config_entry_diagnostics(
                 ),
             )
         ),
+        "mqtt_navigation": sanitize(_mqtt_navigation_diagnostics(coordinator, data)),
+        "mqtt_inventory": sanitize(deepcopy(mqtt_inventory)),
+        "mqtt_discovery": sanitize(deepcopy(mqtt_discovery)),
         "telemetry": sanitize(
             _selected(
                 data,
@@ -349,7 +402,9 @@ async def async_get_config_entry_diagnostics(
         "mqtt_health": sanitize(deepcopy(mqtt_health)),
         "raw": sanitize(raw_for_diagnostics),
         "notes": [
-            "0.4.3-beta29 Download diagnostics are cached-only and makes no extra vendor or H5 requests.",
+            "0.4.3-beta42 adds cached MQTT navigation fields and passive MQTT discovery output for controlled gate-transition research.",
+            "Download diagnostics remain cached-only and make no extra vendor or H5 requests.",
+            "Enable Passive MQTT discovery temporarily when raw event/location samples are needed; samples are sanitized by the existing discovery pipeline.",
             "Clear/Resume/Reboot discovery, Mowing Reports research and Maintenance research payloads are retired from normal diagnostics.",
             "index2.mapVersion is the fast vendor map revision signal; a change forces location/map-list and map geometry refresh in the same private-cloud poll.",
             "Off-limit polygons remain local map X/Y coordinates and are included for temporary-off-limit custom-area experiments.",
