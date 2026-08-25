@@ -14,5 +14,7 @@ def test_map_payload_exposes_persistent_custom_areas() -> None:
     assert '"custom_areas": [' in source
     assert "area.as_dict()" in source
     assert "coordinator.entry.options.get(OPT_CUSTOM_AREAS)" in source
-    assert "_with_custom_areas(coordinator, await coordinator.async_map_payload())" in source
-    assert "return _with_custom_areas(coordinator, payload)" in source
+    assert "await coordinator.async_map_payload()" in source
+    assert "coordinator._map_payload_with_sessions(sessions, daily_trails)" in source
+    assert "return _with_card_metadata(coordinator, await coordinator.async_map_payload())" in source
+    assert "return _with_card_metadata(coordinator, payload)" in source
