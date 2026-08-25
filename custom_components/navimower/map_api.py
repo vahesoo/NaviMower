@@ -6,6 +6,7 @@ from typing import Any
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
@@ -31,10 +32,42 @@ def _query_enabled(request: web.Request, key: str) -> bool:
     return str(value).strip().lower() not in _FALSE_QUERY_VALUES
 
 
-def _with_custom_areas(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach persistent NaviMower-owned Custom Area geometry to map payloads."""
+def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
+    """Return stable HA identifiers the Map Card otherwise has to rediscover.
+
+    Entity-registry lookups are O(1) server-side dictionary reads and avoid one
+    full ``config/entity_registry/list`` websocket response per card instance in
+    the browser.  Entity IDs are resolved at response time so user-renamed
+    entities remain supported.
+    """
+    hass = coordinator.hass
+    sn = str(coordinator.sn)
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+
+    def entity_id(domain: str, key: str) -> str | None:
+        return entity_registry.async_get_entity_id(domain, DOMAIN, f"{sn}_{key}")
+
+    device = device_registry.async_get_device(identifiers={(DOMAIN, sn)})
+    return {
+        "device_id": device.id if device is not None else None,
+        "entities": {
+            "mower": entity_id("lawn_mower", "mower"),
+            "map_data": entity_id("sensor", "map_data"),
+            "schedule_status": entity_id("sensor", "navimower_schedule_status"),
+            "managed_schedule": entity_id("switch", "navimower_schedule"),
+            "native_schedule": entity_id("switch", "mowing_schedule_enabled"),
+            "schedule_start": entity_id("time", "navimower_schedule_start"),
+            "schedule_end": entity_id("time", "navimower_schedule_end"),
+        },
+    }
+
+
+def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach small frontend metadata and persistent Custom Area geometry."""
     return {
         **payload,
+        "frontend": _frontend_metadata(coordinator),
         "custom_areas": [
             area.as_dict()
             for area in parse_custom_areas(
@@ -59,7 +92,7 @@ async def _async_map_payload(
     """
     if include_sessions and include_daily_trails:
         # Historical contract before Custom Areas: return await coordinator.async_map_payload()
-        return _with_custom_areas(coordinator, await coordinator.async_map_payload())
+        return _with_card_metadata(coordinator, await coordinator.async_map_payload())
 
     sessions = (
         await coordinator.history.async_card_sessions() if include_sessions else []
@@ -104,7 +137,7 @@ async def _async_map_payload(
     if not include_daily_trails:
         payload.pop("daily_trails", None)
         payload.pop("daily_trails_revision", None)
-    return _with_custom_areas(coordinator, payload)
+    return _with_card_metadata(coordinator, payload)
 
 
 class NavimowerMapView(HomeAssistantView):
