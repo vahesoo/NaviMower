@@ -17,6 +17,11 @@ def test_map_api_exposes_frontend_entity_metadata() -> None:
     for key in (
         '"mower"',
         '"map_data"',
+        '"position_x"',
+        '"position_y"',
+        '"heading"',
+        '"battery"',
+        '"current_physical_zone"',
         '"schedule_status"',
         '"managed_schedule"',
         '"native_schedule"',
@@ -25,7 +30,7 @@ def test_map_api_exposes_frontend_entity_metadata() -> None:
     ):
         assert key in source
     assert "async_get_entity_id" in source
-    assert "config/entity_registry/list" not in source
+    assert "entity_registry.async_get_entity_id" in source
 
 
 def test_lightweight_and_full_map_payloads_share_frontend_metadata() -> None:
