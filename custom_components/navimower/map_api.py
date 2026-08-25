@@ -36,9 +36,9 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     """Return stable HA identifiers the Map Card otherwise has to rediscover.
 
     Entity-registry lookups are O(1) server-side dictionary reads and avoid one
-    full ``config/entity_registry/list`` websocket response per card instance in
-    the browser.  Entity IDs are resolved at response time so user-renamed
-    entities remain supported.
+    or more full ``config/entity_registry/list`` websocket responses per card
+    instance in the browser. Entity IDs are resolved at response time so
+    user-renamed entities remain supported.
     """
     hass = coordinator.hass
     sn = str(coordinator.sn)
@@ -54,6 +54,12 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
             "map_data": entity_id("sensor", "map_data"),
+            "position_x": entity_id("sensor", "position_x"),
+            "position_y": entity_id("sensor", "position_y"),
+            "heading": entity_id("sensor", "heading"),
+            "battery": entity_id("sensor", "battery"),
+            "current_physical_zone": entity_id("sensor", "current_physical_zone"),
+            "native_schedule_data": entity_id("sensor", "schedule"),
             "schedule_status": entity_id("sensor", "navimower_schedule_status"),
             "managed_schedule": entity_id("switch", "navimower_schedule"),
             "native_schedule": entity_id("switch", "mowing_schedule_enabled"),
