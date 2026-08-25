@@ -36,6 +36,7 @@ from .custom_area import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_PASSIVE_DISCOVERY_OPTION = "passive_discovery"
 
 
 class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
@@ -80,6 +81,42 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
                 status["last_attempt_mono"] = None
                 status["last_attempt_utc"] = None
         await coordinator.async_request_refresh()
+
+    def _save(self, **updates: Any) -> ConfigFlowResult:
+        """Save production options while keeping the beta43 discovery switch."""
+        options = self._options()
+        options.pop("diagnostics_detail", None)
+        options.update(updates)
+        return self.async_create_entry(data=options)
+
+    async def async_step_general(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Temporarily expose passive MQTT discovery for gate-state field tests."""
+        if user_input is not None:
+            enabled = bool(user_input.get(_PASSIVE_DISCOVERY_OPTION, False))
+            payload = dict(user_input)
+            payload.pop(_PASSIVE_DISCOVERY_OPTION, None)
+            result = await super().async_step_general(payload)
+            if result.get("type") == "create_entry":
+                data = dict(result.get("data") or {})
+                data[_PASSIVE_DISCOVERY_OPTION] = enabled
+                result["data"] = data
+            return result
+
+        result = await super().async_step_general(None)
+        if result.get("type") == "form" and result.get("step_id") == "general":
+            schema = dict(result["data_schema"].schema)
+            schema[
+                vol.Required(
+                    _PASSIVE_DISCOVERY_OPTION,
+                    default=bool(
+                        self._options().get(_PASSIVE_DISCOVERY_OPTION, False)
+                    ),
+                )
+            ] = bool
+            result["data_schema"] = vol.Schema(schema)
+        return result
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
