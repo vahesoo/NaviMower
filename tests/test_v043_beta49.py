@@ -12,19 +12,16 @@ def test_beta49_release_notes_present() -> None:
     assert notes.startswith("title: Navimower 0.4.3-beta49\n")
 
 
-def test_beta49_failed_regional_login_logs_all_attempts_safely() -> None:
+def test_beta49_regional_login_still_tracks_attempts_safely() -> None:
     source = (COMPONENT / "api" / "__init__.py").read_text(encoding="utf-8")
     assert "self._reported_region" in source
     assert "self._mower_login_attempts" in source
-    assert '"Navimower private mower login failed: account_region=%s, "' in source
-    assert '"reported_region=%s, attempts=%s"' in source
     assert "for host in self.mower_host_candidates" in source
     assert '"host": host' in source
-    assert '"code": str(getattr(err, "code", "unknown"))' in source
-    assert '"desc": str(getattr(err, "desc", "") or "")[:160]' in source
-    warning_block = source[
-        source.index("        if attempts:"):
-        source.index("        if last_error is not None:", source.index("        if attempts:"))
-    ]
-    for secret in ("access_token", "refresh_token", "device_id", "vehicle_sn"):
+    assert 'account_region=%s' in source
+    assert 'reported_region=%s' in source
+    warning_start = source.index('            _LOGGER.warning(\n                "Navimower private mower login variants failed:')
+    warning_end = source.index("        if self._shared_auth_list_attempts:", warning_start)
+    warning_block = source[warning_start:warning_end]
+    for secret in ("access_token", "refresh_token", "device_id", "vehicle_sn", "self._uid"):
         assert secret not in warning_block
