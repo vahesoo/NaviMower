@@ -142,6 +142,59 @@ class NavimowCloudClient(_NavimowCloudClient):
         except urllib.error.URLError as err:
             raise NavimowError("network", str(err.reason)) from err
 
+    def bootstrap_shared_auth_list(self) -> list[dict[str, Any]]:
+        """Try the read-only auth list without a mower-login uid.
+
+        Some shared accounts can authenticate with Passport but do not receive a
+        uid from ``/user/user/login``. The auth-list response itself can carry the
+        shared account's ``auth_uid``. Probe the same bounded regional mower-host
+        set using the normal access token and an empty uid, learn that uid when
+        present, and retain the host that produced the shared vehicle list.
+        """
+        start_host = self._host
+        start_source = self._host_source
+        for host in self.mower_host_candidates:
+            self._host = host
+            try:
+                body = self._common_params(
+                    access_token=self._tokens.access_token,
+                    uid="",
+                )
+                result = self._raw("/vehicle/vehicle/auth-list", body)
+            except NavimowError as err:
+                _LOGGER.debug(
+                    "Navimow shared auth-list bootstrap host %s failed (code=%s)",
+                    host,
+                    getattr(err, "code", "unknown"),
+                )
+                continue
+            code = result.get("code") if isinstance(result, dict) else None
+            if code != _client.CODE_OK:
+                _LOGGER.debug(
+                    "Navimow shared auth-list bootstrap host %s returned code=%s",
+                    host,
+                    code,
+                )
+                continue
+            data = result.get("data") if isinstance(result, dict) else None
+            items = data if isinstance(data, list) else (data or {}).get("list") or []
+            if not items:
+                continue
+            uid = items[0].get("auth_uid") or items[0].get("authUid")
+            if not uid:
+                continue
+            self._uid = str(uid)
+            source = start_source if host == start_host else "shared_auth_list_probe"
+            self.set_host(host, source=source)
+            _LOGGER.info(
+                "Navimow shared account uid bootstrapped from auth-list on %s",
+                host,
+            )
+            return items
+        self._host = start_host
+        self._host_source = start_source
+        return []
+
     def mower_login(self) -> str:
         """Register the app/device identity and retain the first usable mower host."""
         start_host = self._host
@@ -172,9 +225,12 @@ class NavimowCloudClient(_NavimowCloudClient):
             self.set_host(host, source=source)
             return uid
         self._mower_login_attempts = attempts
-        # Restore the original route so a caller can report stable diagnostics.
+        # Restore the original route before the read-only shared-account fallback.
         self._host = start_host
         self._host_source = start_source
+        shared_items = self.bootstrap_shared_auth_list()
+        if shared_items and self._uid:
+            return self._uid
         if attempts:
             attempt_text = "; ".join(
                 f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'})"
