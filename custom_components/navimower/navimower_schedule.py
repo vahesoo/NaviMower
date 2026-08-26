@@ -64,6 +64,7 @@ _CONTINUE_CONFIRM_SECONDS = 120
 _MOW_CONFIRM_SECONDS = 120
 _DOCK_RETRY_SECONDS = 60
 _RETRY_NEW_MOW_SECONDS = 30
+_LOW_BATTERY_RESUME_GRACE_SECONDS = 180
 
 
 def schedule_store(hass: HomeAssistant, entry_id: str) -> Store:
@@ -164,9 +165,11 @@ class NavimowerScheduleController:
             "just_completed_zone_id": None,
             "scheduler_completed_at": {},
             "resume_pending": False,
+            "interrupted_reason": None,
             "interrupted_zone_id": None,
             "interrupted_cycle_id": None,
             "progress_before_interrupt": None,
+            "charging_limit_reached_at": None,
             "pending_command": None,
             "retry_not_before": None,
             "last_command": None,
@@ -273,7 +276,9 @@ class NavimowerScheduleController:
                 "window_open",
                 "active_zone_id",
                 "resume_pending",
+                "interrupted_reason",
                 "interrupted_zone_id",
+                "charging_limit_reached_at",
                 "last_command",
                 "last_error",
                 "suspended_reason",
@@ -460,6 +465,13 @@ class NavimowerScheduleController:
             return True, "continuous"
         return window_state(now, self._start, self._end)
 
+    def _window_open_now(self) -> bool:
+        """Re-read the clock immediately before any interrupted-task command."""
+        if not self._enabled:
+            return False
+        open_now, _ = self._window_state(dt_util.now())
+        return open_now
+
     def _zone(self, zone_id: int | None) -> dict[str, Any] | None:
         if zone_id is None:
             return None
@@ -509,25 +521,98 @@ class NavimowerScheduleController:
             return mqtt_state == MQTT_STATE_CHARGING
         return str(data.get("state_code") or "") == STATE_IDLE_DOCKED_POST
 
+    @staticmethod
+    def _charging_limit_percent(data: dict[str, Any]) -> int | None:
+        """Return the mower/user charging limit used by the HA number entity."""
+        value = _as_int((data.get("settings") or {}).get("charging_limit"))
+        return value if value is not None and 1 <= value <= 100 else None
+
+    def _clear_interruption_runtime(self) -> None:
+        self._runtime["resume_pending"] = False
+        self._runtime["interrupted_reason"] = None
+        self._runtime["interrupted_zone_id"] = None
+        self._runtime["interrupted_cycle_id"] = None
+        self._runtime["progress_before_interrupt"] = None
+        self._runtime["charging_limit_reached_at"] = None
+
     def _charging_interruption_confirmed(self) -> bool:
         """Return whether the notification state proved a low-battery charging pause."""
         center = getattr(self.coordinator, "notification_center", None)
         return getattr(center, "interrupted_reason", None) == "charging"
 
     async def _capture_charging_interruption(self) -> None:
-        """Retain the active scheduler zone while the mower charges itself."""
+        """Retain a mower-owned low-battery interruption without forcing Resume."""
         zone_id = self._runtime.get("active_zone_id")
         if zone_id is None or self._runtime.get("resume_pending"):
             return
         self._runtime["resume_pending"] = True
+        self._runtime["interrupted_reason"] = "low_battery"
         self._runtime["interrupted_zone_id"] = int(zone_id)
         self._runtime["interrupted_cycle_id"] = self._runtime.get("active_cycle_id")
         self._runtime["progress_before_interrupt"] = self._progress_for_zone(int(zone_id))
+        self._runtime["charging_limit_reached_at"] = None
         self._runtime["pending_command"] = None
         self._runtime["last_command"] = f"charging_pause:{zone_id}"
         self._runtime["last_command_at"] = _utc_now()
         self._runtime["last_error"] = None
         await self._save()
+
+    async def _evaluate_low_battery_resume(self, data: dict[str, Any]) -> None:
+        """Let the mower self-resume; use charging limit plus grace as fallback."""
+        zone_id = self._runtime.get("interrupted_zone_id") or self._runtime.get("active_zone_id")
+        if zone_id is None:
+            self._clear_interruption_runtime()
+            await self._save()
+            return
+
+        battery = _as_int(data.get("battery"))
+        limit = self._charging_limit_percent(data)
+        reached_at = self._runtime.get("charging_limit_reached_at")
+        if battery is None or limit is None or battery < limit:
+            if reached_at is not None:
+                self._runtime["charging_limit_reached_at"] = None
+                await self._save()
+            return
+
+        if reached_at is None:
+            reached_at = _utc_now()
+            self._runtime["charging_limit_reached_at"] = reached_at
+            self._runtime["last_command"] = f"charging_limit_reached:{zone_id}:{battery}/{limit}"
+            self._runtime["last_command_at"] = reached_at
+            self._runtime["last_error"] = None
+            await self._save()
+            return
+
+        age = _age_seconds(reached_at)
+        if age is None or age < _LOW_BATTERY_RESUME_GRACE_SECONDS:
+            return
+
+        # Re-read live data and the wall clock immediately before fallback.
+        fresh_data = self.coordinator.data or {}
+        if self._vendor_mowing(fresh_data):
+            self._clear_interruption_runtime()
+            self._runtime["pending_command"] = None
+            self._runtime["last_command"] = "retained_task_already_mowing"
+            self._runtime["last_command_at"] = _utc_now()
+            self._runtime["last_error"] = None
+            await self._save()
+            return
+
+        fresh_battery = _as_int(fresh_data.get("battery"))
+        fresh_limit = self._charging_limit_percent(fresh_data)
+        if fresh_battery is None or fresh_limit is None or fresh_battery < fresh_limit:
+            self._runtime["charging_limit_reached_at"] = None
+            await self._save()
+            return
+        if fresh_data.get("error") is True or fresh_data.get("problem_latched") is True:
+            return
+        if not self._window_open_now():
+            return
+
+        await self._continue_interrupted_task(
+            source="navimower_schedule_charge_limit_fallback",
+            continue_source="navimower_schedule_charge_limit_continue_fallback",
+        )
 
     def _pending_mow_confirmed(self, pending: dict[str, Any], data: dict[str, Any]) -> bool:
         """Confirm a scheduler start from vendor state and the commanded target."""
@@ -640,32 +725,45 @@ class NavimowerScheduleController:
         await self._reconcile_unconfirmed_mow_start()
 
         if not in_window:
-            await self._enforce_closed_window(activity)
+            await self._enforce_closed_window(data, activity)
             return
         if self._runtime.get("suspended_reason"):
             return
 
+        # Upgrade a beta40-beta46 persisted low-battery interruption safely.
+        if (
+            self._runtime.get("resume_pending")
+            and self._runtime.get("interrupted_reason") is None
+            and self._charging_interruption_confirmed()
+        ):
+            self._runtime["interrupted_reason"] = "low_battery"
+            self._runtime["charging_limit_reached_at"] = None
+            await self._save()
+
         if (
             self._runtime.get("active_zone_id") is not None
             and not self._runtime.get("resume_pending")
+            and not self._vendor_mowing(data)
             and self._charging_interruption_confirmed()
         ):
             await self._capture_charging_interruption()
 
         if self._runtime.get("resume_pending"):
-            if activity == ACTIVITY_MOWING:
-                self._runtime["resume_pending"] = False
-                self._runtime["interrupted_zone_id"] = None
-                self._runtime["interrupted_cycle_id"] = None
-                self._runtime["progress_before_interrupt"] = None
+            if self._vendor_mowing(data):
+                self._clear_interruption_runtime()
                 self._runtime["pending_command"] = None
                 self._runtime["last_command"] = "retained_task_already_mowing"
                 self._runtime["last_command_at"] = _utc_now()
+                self._runtime["last_error"] = None
                 await self._save()
                 return
-            if self._vendor_charging(data):
+            if self._runtime.get("interrupted_reason") == "low_battery":
+                await self._evaluate_low_battery_resume(data)
                 return
-            await self._continue_interrupted_task(activity)
+            await self._continue_interrupted_task(
+                source="navimower_schedule_window_resume",
+                continue_source="navimower_schedule_window_continue_fallback",
+            )
             return
 
         if self._runtime.get("active_zone_id") is not None:
@@ -755,10 +853,7 @@ class NavimowerScheduleController:
         self._runtime["active_cycle_id"] = None
         self._runtime["active_zone_baseline_completed_at"] = None
         self._runtime["dispatch_started_at"] = None
-        self._runtime["resume_pending"] = False
-        self._runtime["interrupted_zone_id"] = None
-        self._runtime["interrupted_cycle_id"] = None
-        self._runtime["progress_before_interrupt"] = None
+        self._clear_interruption_runtime()
         self._runtime["pending_command"] = None
         self._runtime["retry_not_before"] = None
         self._runtime["last_command"] = f"zone_completed:{zone_id}"
@@ -793,28 +888,40 @@ class NavimowerScheduleController:
             self._runtime["last_error"] = None
             await self._save()
             return
-        if kind in {"resume", "continue"} and activity == ACTIVITY_MOWING:
+        if kind in {"resume", "continue"} and self._vendor_mowing(data):
             self._runtime["pending_command"] = None
-            self._runtime["resume_pending"] = False
-            self._runtime["interrupted_zone_id"] = None
-            self._runtime["interrupted_cycle_id"] = None
-            self._runtime["progress_before_interrupt"] = None
+            self._clear_interruption_runtime()
             self._runtime["last_error"] = None
             await self._save()
         elif kind == "dock" and activity in {ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
             self._runtime["pending_command"] = None
             await self._save()
 
-    async def _enforce_closed_window(self, activity: Any) -> None:
+    async def _enforce_closed_window(self, data: dict[str, Any], activity: Any) -> None:
         zone_id = self._runtime.get("active_zone_id")
+        changed = False
         if zone_id is not None and not self._runtime.get("resume_pending"):
             self._runtime["resume_pending"] = True
+            self._runtime["interrupted_reason"] = "window_closed"
             self._runtime["interrupted_zone_id"] = int(zone_id)
             self._runtime["interrupted_cycle_id"] = self._runtime.get("active_cycle_id")
             self._runtime["progress_before_interrupt"] = self._progress_for_zone(int(zone_id))
+            self._runtime["charging_limit_reached_at"] = None
+            changed = True
+        elif self._runtime.get("resume_pending") and self._runtime.get("interrupted_reason") is None:
+            self._runtime["interrupted_reason"] = (
+                "low_battery" if self._charging_interruption_confirmed() else "window_closed"
+            )
+            changed = True
+
+        pending = self._runtime.get("pending_command")
+        if isinstance(pending, dict) and pending.get("kind") in {"resume", "continue"}:
+            self._runtime["pending_command"] = None
+            changed = True
+        if changed:
             await self._save()
 
-        if activity not in {ACTIVITY_MOWING, ACTIVITY_PAUSED}:
+        if not self._vendor_mowing(data) and activity != ACTIVITY_PAUSED:
             return
         pending = self._runtime.get("pending_command")
         age = self._pending_age()
@@ -822,34 +929,60 @@ class NavimowerScheduleController:
             return
         await self._async_send_dock("navimower_schedule_window_closed")
 
-    async def _continue_interrupted_task(self, activity: Any) -> None:
+    async def _continue_interrupted_task(self, *, source: str, continue_source: str) -> None:
         zone_id = self._runtime.get("interrupted_zone_id") or self._runtime.get("active_zone_id")
         if zone_id is None:
-            self._runtime["resume_pending"] = False
+            self._clear_interruption_runtime()
             await self._save()
             return
+
+        fresh_data = self.coordinator.data or {}
+        if self._vendor_mowing(fresh_data):
+            self._clear_interruption_runtime()
+            self._runtime["pending_command"] = None
+            self._runtime["last_command"] = "retained_task_already_mowing"
+            self._runtime["last_command_at"] = _utc_now()
+            self._runtime["last_error"] = None
+            await self._save()
+            return
+        if fresh_data.get("error") is True or fresh_data.get("problem_latched") is True:
+            return
+
         pending = self._runtime.get("pending_command")
         age = self._pending_age()
         if isinstance(pending, dict):
             kind = pending.get("kind")
             if kind == "resume" and age is not None and age >= _RESUME_CONFIRM_SECONDS:
+                if not self._window_open_now():
+                    return
                 self._runtime["pending_command"] = None
-                await self._async_send_mow(int(zone_id), reset=False, source="navimower_schedule_continue_fallback")
+                await self._async_send_mow(int(zone_id), reset=False, source=continue_source)
             elif kind == "continue" and age is not None and age >= _CONTINUE_CONFIRM_SECONDS:
                 self._runtime["pending_command"] = None
                 self._runtime["suspended_reason"] = "interrupted_task_continue_not_confirmed"
                 self._runtime["last_error"] = "Resume and one-zone continue were not confirmed; automatic reset was refused"
                 await self._save()
             return
-        if activity in {ACTIVITY_ERROR, ACTIVITY_RETURNING}:
+
+        # This second clock read is intentional: a window can close between the
+        # scheduler tick and the actual command path, especially after a grace wait.
+        if not self._window_open_now():
             return
         try:
-            await async_resume_task(self.coordinator, source="navimower_schedule_window_resume")
+            await async_resume_task(self.coordinator, source=source)
         except Exception as err:
             self._runtime["last_error"] = f"Resume failed: {type(err).__name__}: {err}"
-            await self._async_send_mow(int(zone_id), reset=False, source="navimower_schedule_continue_fallback")
+            if not self._window_open_now():
+                await self._save()
+                return
+            await self._async_send_mow(int(zone_id), reset=False, source=continue_source)
             return
-        self._runtime["pending_command"] = {"kind": "resume", "zone_id": int(zone_id), "sent_at": _utc_now()}
+        self._runtime["pending_command"] = {
+            "kind": "resume",
+            "zone_id": int(zone_id),
+            "sent_at": _utc_now(),
+            "source": source,
+        }
         self._runtime["last_command"] = f"resume:{zone_id}"
         self._runtime["last_command_at"] = _utc_now()
         await self._save()
