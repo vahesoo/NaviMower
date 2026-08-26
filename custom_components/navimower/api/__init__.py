@@ -109,7 +109,9 @@ class NavimowCloudClient(_NavimowCloudClient):
         state = super().session_state()
         return {
             **state,
-            "region": canonical_region(state.get("region") or self._region),
+            # Persist Passport's raw region (not the routing alias) so a future
+            # re-auth still sends e.g. `ore` to /user/user/login.
+            "region": self._tokens.region or self._reported_region or state.get("region") or self._region,
             "host": self._host,
             "host_source": self._host_source,
         }
@@ -162,11 +164,12 @@ class NavimowCloudClient(_NavimowCloudClient):
         start_source = self._host_source
         attempts: list[dict[str, Any]] = []
         self._shared_auth_list_attempts = []
+        raw_region = self._tokens.region or self._reported_region or self._region
         login_fields = {
             "uuid": self._tokens.uuid,
             "token": self._tokens.access_token,
             "refresh_token": self._tokens.refresh_token,
-            "region": self._region,
+            "region": raw_region,
         }
         for host in self.mower_host_candidates:
             self._host = host
@@ -245,11 +248,12 @@ class NavimowCloudClient(_NavimowCloudClient):
         last_error: NavimowError | None = None
         attempts: list[dict[str, Any]] = []
         self._mower_login_attempts = []
+        raw_region = self._tokens.region or self._reported_region or self._region
         field4 = {
             "uuid": self._tokens.uuid,
             "token": self._tokens.access_token,
             "refresh_token": self._tokens.refresh_token,
-            "region": self._region,
+            "region": raw_region,
         }
         for host in self.mower_host_candidates:
             self._host = host
