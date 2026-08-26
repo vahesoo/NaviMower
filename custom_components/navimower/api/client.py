@@ -228,7 +228,7 @@ class NavimowCloudClient:
             uid = self._extract_uid(result)
         if not uid:
             code = result.get("code") if isinstance(result, dict) else None
-            self._record_discovery(path, None, code)
+            self._record_discovery("/user/user/login", None, code)
             desc = str(result.get("desc", "")) if isinstance(result, dict) else str(result)
             raise NavimowAuthError(code, f"mower login returned no uid: {desc}")
         self._uid = str(uid)
