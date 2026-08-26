@@ -10,6 +10,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
+from .current_cycle_render import CurrentCycleRenderManager
 from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
 
 _REGISTERED_KEY = f"{DOMAIN}_map_api_registered"
@@ -83,6 +84,29 @@ def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, 
     }
 
 
+def _map_zones(coordinator: Any) -> list[dict[str, Any]]:
+    """Return current static map-zone geometry without an extra cloud request."""
+    data = coordinator.data or {}
+    map_data = data.get("map") or coordinator._map_snapshot(
+        coordinator._map_geometry or {},
+        cutting_height_supported=data.get("cutting_height_supported"),
+    )
+    return [
+        dict(item)
+        for item in (map_data or {}).get("zones") or []
+        if isinstance(item, dict)
+    ]
+
+
+async def _async_current_cycle_render(coordinator: Any) -> dict[str, Any]:
+    """Return one integration-owned, cached current-cycle mowing swath."""
+    manager = getattr(coordinator, "current_cycle_render_manager", None)
+    if manager is None:
+        manager = CurrentCycleRenderManager(coordinator)
+        coordinator.current_cycle_render_manager = manager
+    return await manager.async_get(_map_zones(coordinator))
+
+
 async def _async_map_payload(
     coordinator: Any,
     *,
@@ -91,25 +115,23 @@ async def _async_map_payload(
 ) -> dict[str, Any]:
     """Build only the map payload sections requested by the frontend.
 
-    Older cards omit both query parameters and keep the original complete
-    response. Newer cards can skip retained session points and daily trail
-    geometry, avoiding their storage reads, simplification work, JSON encoding,
-    transfer, and browser parsing on every dashboard load.
+    ``current_cycle_render`` is always returned. It is a compact SVG-ready
+    artifact owned entirely by the integration, so lightweight cards can omit
+    retained sessions/daily trail geometry without having to reconstruct cycle
+    boundaries or rasterize mowing swaths in the browser.
     """
+    current_cycle_render = await _async_current_cycle_render(coordinator)
+
     if include_sessions and include_daily_trails:
-        # Historical contract before Custom Areas: return await coordinator.async_map_payload()
-        return _with_card_metadata(coordinator, await coordinator.async_map_payload())
+        payload = await coordinator.async_map_payload()
+        payload["current_cycle_render"] = current_cycle_render
+        return _with_card_metadata(coordinator, payload)
 
     sessions = (
         await coordinator.history.async_card_sessions() if include_sessions else []
     )
     daily_trails = None
     if include_daily_trails:
-        data = coordinator.data or {}
-        map_data = data.get("map") or coordinator._map_snapshot(
-            coordinator._map_geometry or {},
-            cutting_height_supported=data.get("cutting_height_supported"),
-        )
         today = dt_util.now().date().isoformat()
         daily_cache_key = (
             today,
@@ -123,16 +145,13 @@ async def _async_map_payload(
             daily_trails = coordinator._daily_trails_cache
         else:
             daily_trails = await coordinator.history.async_daily_zone_trails(
-                [
-                    dict(item)
-                    for item in (map_data or {}).get("zones") or []
-                    if isinstance(item, dict)
-                ]
+                _map_zones(coordinator)
             )
             coordinator._daily_trails_cache_key = daily_cache_key
             coordinator._daily_trails_cache = daily_trails
 
     payload = coordinator._map_payload_with_sessions(sessions, daily_trails)
+    payload["current_cycle_render"] = current_cycle_render
     if not include_sessions:
         for key in (
             "sessions",
