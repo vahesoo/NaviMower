@@ -33,7 +33,10 @@ class NavimowCloudClient(_NavimowCloudClient):
 
     def __init__(self, *args: Any, host: str | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._region = canonical_region(getattr(self, "_region", None))
+        initial_region = getattr(self, "_region", None)
+        self._reported_region = str(initial_region or "")
+        self._region = canonical_region(initial_region)
+        self._mower_login_attempts: list[dict[str, str]] = []
         cached = _RESOLVED_MOWER_HOSTS.get(self.device_id)
         preferred = mower_hosts(self._region)
         selected = normalize_mower_host(host) or cached or (preferred[0] if preferred else None)
@@ -53,6 +56,16 @@ class NavimowCloudClient(_NavimowCloudClient):
     def host_source(self) -> str:
         """How the current private-cloud host was selected."""
         return self._host_source
+
+    @property
+    def reported_region(self) -> str:
+        """Raw account region reported by Passport before canonical aliases."""
+        return self._reported_region
+
+    @property
+    def mower_login_attempts(self) -> tuple[dict[str, str], ...]:
+        """Sanitized host/code/description rows from the latest mower login."""
+        return tuple(deepcopy(self._mower_login_attempts))
 
     @property
     def mower_host_candidates(self) -> tuple[str, ...]:
@@ -84,14 +97,18 @@ class NavimowCloudClient(_NavimowCloudClient):
     ) -> Tokens:
         """Resolve the private account region, then authenticate there."""
         self._tokens = _passport.login(email, password, region)
-        self._region = canonical_region(self._tokens.region or region)
+        reported = self._tokens.region or region
+        self._reported_region = str(reported or "")
+        self._region = canonical_region(reported)
         self._select_region_default()
         return self._tokens
 
     def refresh_session(self) -> Tokens:
         """Refresh passport tokens against the account's owning region."""
         self._tokens = _passport.refresh(self._tokens, self._region)
-        self._region = canonical_region(self._tokens.region or self._region)
+        reported = self._tokens.region or self._reported_region or self._region
+        self._reported_region = str(reported or "")
+        self._region = canonical_region(reported)
         self._select_region_default()
         return self._tokens
 
@@ -130,24 +147,46 @@ class NavimowCloudClient(_NavimowCloudClient):
         start_host = self._host
         start_source = self._host_source
         last_error: NavimowError | None = None
+        attempts: list[dict[str, str]] = []
+        self._mower_login_attempts = []
         for host in self.mower_host_candidates:
             self._host = host
             try:
                 uid = super().mower_login()
             except NavimowError as err:
                 last_error = err
+                row = {
+                    "host": host,
+                    "code": str(getattr(err, "code", "unknown")),
+                    "desc": str(getattr(err, "desc", "") or "")[:160],
+                }
+                attempts.append(row)
                 _LOGGER.debug(
                     "Navimow private mower host %s was not usable (code=%s)",
                     host,
-                    getattr(err, "code", "unknown"),
+                    row["code"],
                 )
                 continue
+            self._mower_login_attempts = attempts
             source = start_source if host == start_host else "region_probe"
             self.set_host(host, source=source)
             return uid
+        self._mower_login_attempts = attempts
         # Restore the original route so a caller can report stable diagnostics.
         self._host = start_host
         self._host_source = start_source
+        if attempts:
+            attempt_text = "; ".join(
+                f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'})"
+                for row in attempts
+            )
+            _LOGGER.warning(
+                "Navimower private mower login failed: account_region=%s, "
+                "reported_region=%s, attempts=%s",
+                self._region,
+                self._reported_region or "unknown",
+                attempt_text,
+            )
         if last_error is not None:
             raise last_error
         raise NavimowError("no_host", "no private mower-cloud host responded")
