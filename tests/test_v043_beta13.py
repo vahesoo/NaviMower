@@ -23,8 +23,10 @@ def test_schedule_is_disabled_by_default_and_mutually_exclusive():
 
 def test_resume_then_continue_without_automatic_reset_fallback():
     source = (COMPONENT / "navimower_schedule.py").read_text(encoding="utf-8")
-    assert 'async_resume_task(self.coordinator, source="navimower_schedule_window_resume")' in source
-    assert 'reset=False, source="navimower_schedule_continue_fallback"' in source
+    assert 'await async_resume_task(self.coordinator, source=source)' in source
+    assert 'reset=False, source=continue_source' in source
+    assert 'source="navimower_schedule_window_resume"' in source
+    assert 'continue_source="navimower_schedule_window_continue_fallback"' in source
     assert 'automatic reset was refused' in source
     assert 'interrupted_task_continue_failed' in source
 
