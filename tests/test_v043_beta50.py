@@ -22,7 +22,8 @@ def test_beta50_shared_auth_list_bootstrap_contract() -> None:
     assert 'access_token=self._tokens.access_token' in source
     assert 'uid=""' in source
     assert 'items[0].get("auth_uid") or items[0].get("authUid")' in source
-    assert 'source="shared_auth_list_probe"' in source
+    assert '"shared_auth_list_probe"' in source
+    assert "self.set_host(host, source=source)" in source
     mower_login = source[source.index("    def mower_login"):source.index("    def errors", source.index("    def mower_login"))]
     assert "shared_items = self.bootstrap_shared_auth_list()" in mower_login
     assert "if shared_items and self._uid:" in mower_login
