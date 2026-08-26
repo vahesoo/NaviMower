@@ -149,80 +149,102 @@ class NavimowCloudClient(_NavimowCloudClient):
             raise NavimowError("network", str(err.reason)) from err
 
     def bootstrap_shared_auth_list(self) -> list[dict[str, Any]]:
-        """Try the read-only auth list without a mower-login uid.
+        """Try read-only auth-list variants before a mower-login uid exists.
 
-        Some shared accounts can authenticate with Passport but do not receive a
-        uid from ``/user/user/login``. The auth-list response itself can carry the
-        shared account's ``auth_uid``. Probe the same bounded regional mower-host
-        set using the normal access token and an empty uid, learn that uid when
-        present, and retain the host that produced the shared vehicle list.
+        US shared accounts can authenticate with Passport while ``/user/user/login``
+        returns no uid. Beta51 proved that a normal post-login ``access_token``
+        body is rejected with ``401900 token empty``. Probe two login-style
+        payloads instead: first the exact mower-login identity fields with an
+        empty common access token, then the same payload with ``access_token``
+        populated as well. Both calls are read-only.
 
-        Diagnostics are intentionally value-free: host, business code/description,
-        response container type, item count and first-item key names only. No uid,
-        serial, token or other payload value is logged.
+        Diagnostics are intentionally value-free: host, payload variant, business
+        code/description, response container type, item count and first-item key
+        names only. No uid, serial, token or other payload value is logged.
         """
         start_host = self._host
         start_source = self._host_source
         attempts: list[dict[str, Any]] = []
         self._shared_auth_list_attempts = []
+        login_fields = {
+            "uuid": self._tokens.uuid,
+            "token": self._tokens.access_token,
+            "refresh_token": self._tokens.refresh_token,
+            "region": self._region,
+        }
         for host in self.mower_host_candidates:
             self._host = host
-            row: dict[str, Any] = {
-                "host": host,
-                "code": "unknown",
-                "desc": "",
-                "data_type": "none",
-                "item_count": 0,
-                "first_item_keys": [],
-            }
-            try:
-                body = self._common_params(
-                    access_token=self._tokens.access_token,
-                    uid="",
-                )
-                result = self._raw("/vehicle/vehicle/auth-list", body)
-            except NavimowError as err:
-                row["code"] = str(getattr(err, "code", "unknown"))
-                row["desc"] = str(getattr(err, "desc", "") or "")[:160]
-                attempts.append(row)
-                continue
-
-            code = result.get("code") if isinstance(result, dict) else None
-            desc = str(result.get("desc", "")) if isinstance(result, dict) else ""
-            data = result.get("data") if isinstance(result, dict) else None
-            if isinstance(data, list):
-                items = data
-            elif isinstance(data, dict) and isinstance(data.get("list"), list):
-                items = data["list"]
-            else:
-                items = []
-            first = items[0] if items and isinstance(items[0], dict) else None
-            row.update(
-                {
-                    "code": str(code),
-                    "desc": desc[:160],
-                    "data_type": type(data).__name__ if data is not None else "none",
-                    "item_count": len(items),
-                    "first_item_keys": (
-                        sorted(str(key) for key in first.keys())[:32] if first else []
-                    ),
+            variants = (
+                (
+                    "login_style",
+                    {**login_fields, **self._common_params(access_token="", uid="")},
+                ),
+                (
+                    "login_style_plus_access_token",
+                    {
+                        **login_fields,
+                        **self._common_params(
+                            access_token=self._tokens.access_token,
+                            uid="",
+                        ),
+                    },
+                ),
+            )
+            for variant, body in variants:
+                row: dict[str, Any] = {
+                    "host": host,
+                    "variant": variant,
+                    "code": "unknown",
+                    "desc": "",
+                    "data_type": "none",
+                    "item_count": 0,
+                    "first_item_keys": [],
                 }
-            )
-            attempts.append(row)
-            if code != _client.CODE_OK or not items:
-                continue
-            uid = items[0].get("auth_uid") or items[0].get("authUid")
-            if not uid:
-                continue
-            self._uid = str(uid)
-            self._shared_auth_list_attempts = attempts
-            source = start_source if host == start_host else "shared_auth_list_probe"
-            self.set_host(host, source=source)
-            _LOGGER.info(
-                "Navimow shared account uid bootstrapped from auth-list on %s",
-                host,
-            )
-            return items
+                try:
+                    result = self._raw("/vehicle/vehicle/auth-list", body)
+                except NavimowError as err:
+                    row["code"] = str(getattr(err, "code", "unknown"))
+                    row["desc"] = str(getattr(err, "desc", "") or "")[:160]
+                    attempts.append(row)
+                    continue
+
+                code = result.get("code") if isinstance(result, dict) else None
+                desc = str(result.get("desc", "")) if isinstance(result, dict) else ""
+                data = result.get("data") if isinstance(result, dict) else None
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict) and isinstance(data.get("list"), list):
+                    items = data["list"]
+                else:
+                    items = []
+                first = items[0] if items and isinstance(items[0], dict) else None
+                row.update(
+                    {
+                        "code": str(code),
+                        "desc": desc[:160],
+                        "data_type": type(data).__name__ if data is not None else "none",
+                        "item_count": len(items),
+                        "first_item_keys": (
+                            sorted(str(key) for key in first.keys())[:32] if first else []
+                        ),
+                    }
+                )
+                attempts.append(row)
+                if code != _client.CODE_OK or not items:
+                    continue
+                uid = items[0].get("auth_uid") or items[0].get("authUid")
+                if not uid:
+                    continue
+                self._uid = str(uid)
+                self._shared_auth_list_attempts = attempts
+                source = start_source if host == start_host else "shared_auth_list_probe"
+                self.set_host(host, source=source)
+                _LOGGER.info(
+                    "Navimow shared account uid bootstrapped from auth-list on %s (%s)",
+                    host,
+                    variant,
+                )
+                return items
 
         self._shared_auth_list_attempts = attempts
         self._host = start_host
@@ -267,8 +289,9 @@ class NavimowCloudClient(_NavimowCloudClient):
             return self._uid
         if self._shared_auth_list_attempts:
             shared_attempt_text = "; ".join(
-                f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'}, "
-                f"data_type={row['data_type']}, item_count={row['item_count']}, "
+                f"{row['host']}[{row['variant']}] (code={row['code']}, "
+                f"desc={row['desc'] or '-'}, data_type={row['data_type']}, "
+                f"item_count={row['item_count']}, "
                 f"first_item_keys={','.join(row['first_item_keys']) or '-'})"
                 for row in self._shared_auth_list_attempts
             )
