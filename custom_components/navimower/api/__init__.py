@@ -225,9 +225,12 @@ class NavimowCloudClient(_NavimowCloudClient):
             self.set_host(host, source=source)
             return uid
         self._mower_login_attempts = attempts
-        # Restore the original route so a caller can report stable diagnostics.
+        # Restore the original route before the read-only shared-account fallback.
         self._host = start_host
         self._host_source = start_source
+        shared_items = self.bootstrap_shared_auth_list()
+        if shared_items and self._uid:
+            return self._uid
         if attempts:
             attempt_text = "; ".join(
                 f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'})"
