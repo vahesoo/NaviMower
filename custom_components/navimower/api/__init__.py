@@ -37,6 +37,7 @@ class NavimowCloudClient(_NavimowCloudClient):
         self._reported_region = str(initial_region or "")
         self._region = canonical_region(initial_region)
         self._mower_login_attempts: list[dict[str, str]] = []
+        self._shared_auth_list_attempts: list[dict[str, Any]] = []
         cached = _RESOLVED_MOWER_HOSTS.get(self.device_id)
         preferred = mower_hosts(self._region)
         selected = normalize_mower_host(host) or cached or (preferred[0] if preferred else None)
@@ -66,6 +67,11 @@ class NavimowCloudClient(_NavimowCloudClient):
     def mower_login_attempts(self) -> tuple[dict[str, str], ...]:
         """Sanitized host/code/description rows from the latest mower login."""
         return tuple(deepcopy(self._mower_login_attempts))
+
+    @property
+    def shared_auth_list_attempts(self) -> tuple[dict[str, Any], ...]:
+        """Value-free structural diagnostics from the latest shared bootstrap."""
+        return tuple(deepcopy(self._shared_auth_list_attempts))
 
     @property
     def mower_host_candidates(self) -> tuple[str, ...]:
@@ -150,11 +156,25 @@ class NavimowCloudClient(_NavimowCloudClient):
         shared account's ``auth_uid``. Probe the same bounded regional mower-host
         set using the normal access token and an empty uid, learn that uid when
         present, and retain the host that produced the shared vehicle list.
+
+        Diagnostics are intentionally value-free: host, business code/description,
+        response container type, item count and first-item key names only. No uid,
+        serial, token or other payload value is logged.
         """
         start_host = self._host
         start_source = self._host_source
+        attempts: list[dict[str, Any]] = []
+        self._shared_auth_list_attempts = []
         for host in self.mower_host_candidates:
             self._host = host
+            row: dict[str, Any] = {
+                "host": host,
+                "code": "unknown",
+                "desc": "",
+                "data_type": "none",
+                "item_count": 0,
+                "first_item_keys": [],
+            }
             try:
                 body = self._common_params(
                     access_token=self._tokens.access_token,
@@ -162,28 +182,40 @@ class NavimowCloudClient(_NavimowCloudClient):
                 )
                 result = self._raw("/vehicle/vehicle/auth-list", body)
             except NavimowError as err:
-                _LOGGER.debug(
-                    "Navimow shared auth-list bootstrap host %s failed (code=%s)",
-                    host,
-                    getattr(err, "code", "unknown"),
-                )
+                row["code"] = str(getattr(err, "code", "unknown"))
+                row["desc"] = str(getattr(err, "desc", "") or "")[:160]
+                attempts.append(row)
                 continue
+
             code = result.get("code") if isinstance(result, dict) else None
-            if code != _client.CODE_OK:
-                _LOGGER.debug(
-                    "Navimow shared auth-list bootstrap host %s returned code=%s",
-                    host,
-                    code,
-                )
-                continue
+            desc = str(result.get("desc", "")) if isinstance(result, dict) else ""
             data = result.get("data") if isinstance(result, dict) else None
-            items = data if isinstance(data, list) else (data or {}).get("list") or []
-            if not items:
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and isinstance(data.get("list"), list):
+                items = data["list"]
+            else:
+                items = []
+            first = items[0] if items and isinstance(items[0], dict) else None
+            row.update(
+                {
+                    "code": str(code),
+                    "desc": desc[:160],
+                    "data_type": type(data).__name__ if data is not None else "none",
+                    "item_count": len(items),
+                    "first_item_keys": (
+                        sorted(str(key) for key in first.keys())[:32] if first else []
+                    ),
+                }
+            )
+            attempts.append(row)
+            if code != _client.CODE_OK or not items:
                 continue
             uid = items[0].get("auth_uid") or items[0].get("authUid")
             if not uid:
                 continue
             self._uid = str(uid)
+            self._shared_auth_list_attempts = attempts
             source = start_source if host == start_host else "shared_auth_list_probe"
             self.set_host(host, source=source)
             _LOGGER.info(
@@ -191,6 +223,8 @@ class NavimowCloudClient(_NavimowCloudClient):
                 host,
             )
             return items
+
+        self._shared_auth_list_attempts = attempts
         self._host = start_host
         self._host_source = start_source
         return []
@@ -231,6 +265,17 @@ class NavimowCloudClient(_NavimowCloudClient):
         shared_items = self.bootstrap_shared_auth_list()
         if shared_items and self._uid:
             return self._uid
+        if self._shared_auth_list_attempts:
+            shared_attempt_text = "; ".join(
+                f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'}, "
+                f"data_type={row['data_type']}, item_count={row['item_count']}, "
+                f"first_item_keys={','.join(row['first_item_keys']) or '-'})"
+                for row in self._shared_auth_list_attempts
+            )
+            _LOGGER.warning(
+                "Navimower shared auth-list bootstrap did not yield uid: attempts=%s",
+                shared_attempt_text,
+            )
         if attempts:
             attempt_text = "; ".join(
                 f"{row['host']} (code={row['code']}, desc={row['desc'] or '-'})"
