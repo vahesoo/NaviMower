@@ -56,7 +56,12 @@ class PassportAuthError(PassportError):
 
 @dataclass
 class Tokens:
-    """Passport session tokens."""
+    """Passport session tokens.
+
+    ``region`` intentionally keeps the raw code returned by Passport. Host
+    selection canonicalizes aliases separately (for example ``ore -> us``), but
+    mower-cloud login must receive the vendor's raw code.
+    """
 
     access_token: str
     refresh_token: str
@@ -143,12 +148,12 @@ def _extract_tokens(data: dict) -> Tokens:
         access_token=str(data.get("access_token", "")),
         refresh_token=str(data.get("refresh_token", "")),
         uuid=str(data.get("uuid") or ""),
-        region=canonical_region(raw_region) if raw_region else "",
+        region=str(raw_region) if raw_region else "",
     )
 
 
 def lookup_region(email: str, hosts: tuple[str, ...] | None = None) -> str | None:
-    """Return the region that owns an account, without sending its password."""
+    """Return the raw region code that owns an account, without its password."""
     params = {"account": email, "device": DEVICE}
     last_transport_error: PassportError | None = None
     for host in hosts or ALL_PASSPORT_HOSTS:
@@ -160,10 +165,13 @@ def lookup_region(email: str, hosts: tuple[str, ...] | None = None) -> str | Non
             continue
         code = str(result.get("resultCode"))
         if code == _RESULT_OK:
-            raw_region = (result.get("data") or {}).get("region")
-            region = canonical_region(raw_region)
-            _LOGGER.debug("Navimow private account region resolved to %s", region)
-            return region
+            raw_region = str((result.get("data") or {}).get("region") or "")
+            _LOGGER.debug(
+                "Navimow private account region resolved: raw=%s routing=%s",
+                raw_region or "unknown",
+                canonical_region(raw_region),
+            )
+            return raw_region or None
         if code != RESULT_ACCOUNT_NOT_EXISTS:
             _LOGGER.debug("Navimow region lookup returned code %s", code)
     if last_transport_error is not None:
@@ -174,18 +182,18 @@ def lookup_region(email: str, hosts: tuple[str, ...] | None = None) -> str | Non
 
 
 def login(username: str, password: str, region: str | None = None) -> Tokens:
-    """Log in on the account's owning region and return refreshable tokens."""
+    """Log in on the account's owning region and keep its raw region code."""
     discovered = region is None
     if region is None:
-        resolved = lookup_region(username)
-        if resolved is None:
+        account_region = lookup_region(username)
+        if account_region is None:
             raise PassportAuthError(
                 RESULT_ACCOUNT_NOT_EXISTS,
                 "account not found on any known regional passport service",
             )
-        selected_region = canonical_region(resolved)
     else:
-        selected_region = canonical_region(region)
+        account_region = str(region)
+    selected_region = canonical_region(account_region)
     params = {"username": username, "password": password, "device": DEVICE}
     last_error: PassportAuthError | None = None
     last_transport_error: PassportError | None = None
@@ -199,8 +207,12 @@ def login(username: str, password: str, region: str | None = None) -> Tokens:
         code = str(result.get("resultCode"))
         if code == _RESULT_OK:
             tokens = _extract_tokens(result.get("data") or {})
-            tokens.region = canonical_region(tokens.region or selected_region)
-            _LOGGER.debug("Navimow passport login ok: %s", tokens.redacted())
+            tokens.region = tokens.region or account_region
+            _LOGGER.debug(
+                "Navimow passport login ok: %s routing_region=%s",
+                tokens.redacted(),
+                canonical_region(tokens.region),
+            )
             return tokens
         last_error = PassportAuthError(code, str(result.get("resultDesc", "")))
         # Wrong server is retryable. Wrong credentials or another business error
@@ -222,8 +234,9 @@ def login(username: str, password: str, region: str | None = None) -> Tokens:
 
 
 def refresh(tokens: Tokens, region: str | None = None) -> Tokens:
-    """Refresh passport tokens through the known owning region."""
-    selected_region = canonical_region(region or tokens.region or DEFAULT_REGION)
+    """Refresh tokens while retaining Passport's raw account region code."""
+    raw_region = tokens.region or str(region or DEFAULT_REGION)
+    selected_region = canonical_region(region or raw_region or DEFAULT_REGION)
     params = {
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
@@ -243,8 +256,12 @@ def refresh(tokens: Tokens, region: str | None = None) -> Tokens:
         if not new.uuid:
             new.uuid = tokens.uuid
         if not new.region:
-            new.region = selected_region
-        _LOGGER.debug("Navimow passport refresh ok: %s", new.redacted())
+            new.region = raw_region
+        _LOGGER.debug(
+            "Navimow passport refresh ok: %s routing_region=%s",
+            new.redacted(),
+            canonical_region(new.region),
+        )
         return new
     if last_error is not None:
         raise last_error
