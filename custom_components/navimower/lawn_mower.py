@@ -170,6 +170,8 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         return {
             "state_code": data.get("state_code"),
             "state": data.get("state"),
+            "model": data.get("model") or self.coordinator.entry.data.get("model"),
+            "vehicle_type": self.coordinator.vehicle_type,
             "map_editing": state_code in MAP_EDIT_STATES,
             "current_zone": data.get("current_zone"),
             "current_physical_zone": data.get("current_physical_zone"),
