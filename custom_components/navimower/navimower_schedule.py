@@ -678,9 +678,12 @@ class NavimowerScheduleController:
             return
         if self._vendor_charging(data):
             return
-        if activity not in {ACTIVITY_DOCKED, ACTIVITY_PAUSED} and not (
-            completed_now and activity == ACTIVITY_MOWING
-        ):
+        direct_handoff = (
+            completed_now
+            and activity in {ACTIVITY_MOWING, ACTIVITY_RETURNING}
+            and not self._charging_interruption_confirmed()
+        )
+        if activity not in {ACTIVITY_DOCKED, ACTIVITY_PAUSED} and not direct_handoff:
             return
 
         completed = {int(value) for value in self._runtime.get("completed_zone_ids_in_window") or []}
@@ -896,6 +899,7 @@ class NavimowerScheduleController:
         self._runtime["pending_command"] = {
             "kind": "mow" if reset else "continue",
             "zone_id": zone_id,
+            "queue_slot": queue_slot,
             "reset": reset,
             "sent_at": sent_at,
             "source": source,
