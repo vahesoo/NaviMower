@@ -29,7 +29,8 @@ def test_closed_window_is_a_hard_outer_gate_even_when_scheduler_is_suspended():
     enforce_start = source.index("    async def _enforce_closed_window")
     enforce_end = source.index("    async def _continue_interrupted_task", enforce_start)
     enforce = source[enforce_start:enforce_end]
-    assert "ACTIVITY_MOWING, ACTIVITY_PAUSED" in enforce
+    assert "self._vendor_mowing(data)" in enforce
+    assert "activity != ACTIVITY_PAUSED" in enforce
     assert 'await self._async_send_dock("navimower_schedule_window_closed")' in enforce
     assert 'self._runtime["resume_pending"] = True' in enforce
     assert 'self._runtime["progress_before_interrupt"]' in enforce
