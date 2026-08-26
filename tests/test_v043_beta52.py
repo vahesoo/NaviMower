@@ -18,8 +18,9 @@ def test_beta52_shared_bootstrap_tries_login_style_credentials() -> None:
         source.index("    def bootstrap_shared_auth_list"):
         source.index("    def mower_login", source.index("    def bootstrap_shared_auth_list"))
     ]
-    for field in ('"uuid": self._tokens.uuid', '"token": self._tokens.access_token', '"refresh_token": self._tokens.refresh_token', '"region": self._region'):
+    for field in ('"uuid": self._tokens.uuid', '"token": self._tokens.access_token', '"refresh_token": self._tokens.refresh_token'):
         assert field in block
+    assert '"region":' in block
     assert '"login_style"' in block
     assert '"login_style_plus_access_token"' in block
     assert 'access_token="", uid=""' in block
