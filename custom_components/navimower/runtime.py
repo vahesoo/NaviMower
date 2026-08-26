@@ -11,6 +11,7 @@ from .capability_profile import install_capability_profile
 from .navigation_fallback import install_navigation_fallback
 from .notification_feed import install_notification_feed
 from .private_cloud_region import install_private_cloud_region
+from .schedule_pause_semantics import install_schedule_pause_semantics
 from .state_semantics import install_state_semantics
 
 
@@ -22,3 +23,4 @@ def install_runtime_extensions() -> None:
     install_capability_profile()
     install_navigation_fallback()
     install_notification_feed()
+    install_schedule_pause_semantics()
