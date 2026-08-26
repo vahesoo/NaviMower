@@ -149,3 +149,20 @@ set_schedule_queue:
       required: true
       selector:
         object:
+
+reset_schedule:
+  name: Reset Navimower schedule
+  description: >-
+    Clear the integration-owned scheduler's current round, queue position and
+    retained task ownership. This action does not itself send Mow, Resume or Dock.
+    If Navimower Schedule is enabled, its next eligible zone is treated as a new
+    mowing cycle and may therefore start from scratch. Reset is refused while the
+    mower is mowing or returning; pause or dock it first.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
