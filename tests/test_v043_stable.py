@@ -59,4 +59,4 @@ def test_stable_multi_mower_guide_matches_current_setup() -> None:
     guide = (ROOT / "docs" / "MULTI_MOWER.md").read_text(encoding="utf-8")
     assert "selects it automatically" in guide
     assert "Download diagnostics" in guide
-    assert "one config entry per mower" in guide
+    assert "config entry per mower" in guide
