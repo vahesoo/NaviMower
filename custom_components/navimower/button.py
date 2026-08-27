@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -41,7 +40,6 @@ class NavimowerScheduleResetButton(NavimowEntity, ButtonEntity):
 
     _attr_name = "Reset schedule progress"
     _attr_icon = "mdi:calendar-refresh"
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: NavimowCoordinator) -> None:
         super().__init__(coordinator, "navimower_schedule_reset")
