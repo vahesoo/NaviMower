@@ -1,4 +1,4 @@
-"""Regression contracts for Navimower 0.4.3-beta6 and later 0.4.3 betas."""
+"""Regression contracts for Navimower 0.4.3-beta6 and later 0.4.3 releases."""
 from __future__ import annotations
 
 import ast
@@ -35,11 +35,9 @@ def _compiled_patterns(source: str) -> dict[str, str]:
     return rows
 
 
-def test_beta6_version_notes_and_changelog() -> None:
+def test_beta6_release_notes_and_changelog() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    version = manifest["version"]
-    assert version.startswith("0.4.3-beta")
-    assert int(version.rsplit("beta", 1)[1]) >= 6
+    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta6.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta6")
     assert "Parts maintenance" in notes
