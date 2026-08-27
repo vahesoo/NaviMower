@@ -120,12 +120,13 @@ def test_release_workflow_is_version_agnostic_prerelease_publisher() -> None:
     assert "beta39" not in workflow.lower()
 
 
-def test_readme_documents_entities_models_and_testing_scope() -> None:
+def test_readme_documents_current_model_and_capability_scope() -> None:
     readme = (ROOT / "README.md").read_text()
-    assert "### Entity reference and model support" in readme
-    assert "Primary field testing has been performed on an **H215**" in readme
-    assert "Night light brightness" in readme
+    assert "## Mower settings and controls" in readme
+    assert "## i2 AWD and capability-driven support" in readme
+    assert "Night light" in readme
     assert "Terrain adapt" in readme
+    assert "capability" in readme.lower()
     # README documents current behavior. Release-by-release history belongs in
     # CHANGELOG.md instead of being duplicated in embedded version sections.
     assert "[CHANGELOG.md](CHANGELOG.md)" in readme
