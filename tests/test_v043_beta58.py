@@ -56,6 +56,6 @@ def test_beta58_readme_covers_options_custom_area_and_card_compatibility() -> No
     assert "Reset schedule progress" in readme
 
 
-def test_beta58_release_family_remains_043_beta() -> None:
+def test_beta58_release_family_remains_043() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.3-beta")
+    assert manifest["version"].startswith("0.4.3")
