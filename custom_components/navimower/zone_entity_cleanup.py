@@ -22,6 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 _INSTALLED = False
 _ORIGINAL_ASYNC_SETUP_ENTRY = platform.async_setup_entry
 _ZONE_METRIC_KEYS = tuple(metric.key for metric in platform.ZONE_METRICS)
+_ZONE_METRIC_PARSE_ORDER = tuple(
+    sorted(_ZONE_METRIC_KEYS, key=len, reverse=True)
+)
 
 
 def _authoritative_zone_ids(coordinator: Any) -> set[int] | None:
@@ -51,7 +54,10 @@ def _zone_registry_key(unique_id: str, mower_sn: str) -> tuple[int, str] | None:
     if not unique_id.startswith(prefix):
         return None
     tail = unique_id[len(prefix) :]
-    for metric in _ZONE_METRIC_KEYS:
+    # Longer metric names must be checked first because ``mowed_area`` also
+    # ends with ``_area``. A failed shorter suffix parse must never hide a later
+    # valid metric match.
+    for metric in _ZONE_METRIC_PARSE_ORDER:
         suffix = f"_{metric}"
         if not tail.endswith(suffix):
             continue
@@ -59,7 +65,7 @@ def _zone_registry_key(unique_id: str, mower_sn: str) -> tuple[int, str] | None:
         try:
             return int(raw_zone_id), metric
         except (TypeError, ValueError):
-            return None
+            continue
     return None
 
 
