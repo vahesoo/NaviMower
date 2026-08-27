@@ -40,11 +40,9 @@ def _compiled_patterns(source: str) -> dict[str, tuple[str, int]]:
     return rows
 
 
-def test_beta8_version_notes_and_changelog() -> None:
+def test_beta8_release_notes_and_changelog() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    version = manifest["version"]
-    assert version.startswith("0.4.3-beta")
-    assert int(version.rsplit("beta", 1)[1]) >= 8
+    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta8.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta8")
     assert "candidate-routing" in notes

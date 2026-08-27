@@ -27,7 +27,8 @@ assert '"last_mowed_at": observed_iso' in history
 assert 'record["last_started_at"] = observed_iso' in history
 assert "if cutting:" in history
 
-# Keep this historical semantic test valid for later 0.4.3 betas; each new beta
-# owns its exact-version assertion in its own regression test.
-assert manifest["version"].startswith("0.4.3-beta")
+# Keep this historical semantic test valid for the complete 0.4.3 line,
+# including the final stable release. Exact current-version assertions belong in
+# the current release regression file instead of an old beta contract.
+assert manifest["version"].startswith("0.4.3")
 print("beta28 map-edit timestamp regression tests passed")

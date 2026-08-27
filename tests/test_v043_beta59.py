@@ -1,7 +1,6 @@
 """Dependency-free regression coverage for 0.4.3-beta59."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
@@ -66,6 +65,11 @@ def test_beta59_architecture_guard_lists_current_semantic_layers() -> None:
         assert f'"{call}"' in source
 
 
-def test_beta59_manifest_version() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta59"
+def test_beta59_release_contract_is_retained() -> None:
+    notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta59.md").read_text(
+        encoding="utf-8"
+    )
+    assert notes.startswith("title: Navimower 0.4.3-beta59")
+    assert "Mowed area" in notes
+    assert "Reset schedule progress" in notes
+    assert "Gate required" in notes
