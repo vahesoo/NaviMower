@@ -1,4 +1,4 @@
-"""Dependency-free regressions for Navimower v0.3.4-beta2."""
+"""Dependency-free regressions for Navimower v0.3.4-beta2 behavior retained today."""
 from __future__ import annotations
 
 import importlib.util
@@ -29,11 +29,14 @@ def _load_account_module():
 
 
 def _config_flow_source() -> str:
-    """Return production flow plus any current options-flow extension."""
+    """Return production flow plus current semantic setup extensions."""
     source = (COMPONENT / "config_flow.py").read_text()
     base = COMPONENT / "config_flow_base.py"
     if base.exists():
         source += "\n" + base.read_text()
+    semantics = COMPONENT / "setup_flow_semantics.py"
+    if semantics.exists():
+        source += "\n" + semantics.read_text()
     return source
 
 
@@ -54,12 +57,14 @@ def test_same_account_uses_one_deterministic_private_identity() -> None:
     assert account.shared_private_device_id([], "new@example.com") is None
 
 
-def test_config_flow_reuses_account_identity_and_always_confirms_mower() -> None:
+def test_config_flow_reuses_account_identity_and_skips_redundant_single_picker() -> None:
     source = _config_flow_source()
     assert "shared_private_device_id(" in source
     assert "self._async_current_entries()" in source
     assert "return await self.async_step_select_vehicle()" in source
-    assert "if len(remaining) == 1" not in source
+    assert 'result.get("step_id") == "select_vehicle"' in source
+    assert "len(self._vehicles) == 1" in source
+    assert "return await self._prepare_vehicle(self._vehicles[0])" in source
 
 
 def test_options_reload_without_deprecated_update_listener_pairing() -> None:
