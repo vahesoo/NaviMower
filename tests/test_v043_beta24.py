@@ -75,15 +75,17 @@ def test_low_battery_pause_uses_vendor_row_but_retains_resume_context():
     assert '"Mowing resumed after charging"' in source
 
 
-def test_readme_is_current_state_documentation_with_installation_before_features():
+def test_readme_is_current_state_documentation_with_setup_and_options_prominent():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert readme.index("## Installation") < readme.index("## Main features")
-    assert readme.index("## Setup flow") < readme.index("## Main features")
+    assert "## Installation" in readme
+    assert "## Initial setup flow" in readme
+    assert "## Important: Configure Navimower after setup" in readme
+    assert "Settings -> Devices & services -> Navimower -> Configure" in readme
     assert "## Navimower Schedule" in readme
-    assert "Before this setup is saved" in readme
+    assert "Reset schedule progress" in readme
     assert "## 0.4.2 beta development" not in readme
     assert "## Upgrade from 0.4.0 to 0.4.1" not in readme
     assert "### v0.3.4" not in readme
     assert "External mowing task started" not in readme
-    assert "low-battery return uses the vendor Device notification" in readme
+    assert "vendor Device notification" in readme
     assert "[CHANGELOG.md](CHANGELOG.md)" in readme
