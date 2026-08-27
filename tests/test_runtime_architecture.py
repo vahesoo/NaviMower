@@ -14,6 +14,9 @@ SEMANTIC_RUNTIME_FILES = {
     "capability_profile.py",
     "navigation_fallback.py",
     "notification_feed.py",
+    "schedule_pause_semantics.py",
+    "setup_flow_semantics.py",
+    "zone_entity_cleanup.py",
 }
 
 
@@ -48,6 +51,9 @@ def test_semantic_runtime_has_one_composition_point() -> None:
         "install_capability_profile()",
         "install_navigation_fallback()",
         "install_notification_feed()",
+        "install_schedule_pause_semantics()",
+        "install_setup_flow_semantics()",
+        "install_zone_entity_cleanup()",
     ]
     positions = [runtime.index(call) for call in expected]
     assert positions == sorted(positions)
