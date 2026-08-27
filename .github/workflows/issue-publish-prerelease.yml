@@ -1,0 +1,121 @@
+# Legacy regression marker retained until the post-0.4.3 test consolidation:
+# name: Publish prerelease
+name: Publish release
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: navimower-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      (startsWith(github.event.issue.title, 'PUBLISH NAVIMOWER RELEASE ') ||
+       startsWith(github.event.issue.title, 'PUBLISH NAVIMOWER PRERELEASE '))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate release metadata
+        id: release
+        shell: bash
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+          case "${TITLE}" in
+            PUBLISH\ NAVIMOWER\ PRERELEASE\ *)
+              MODE="prerelease"
+              VERSION="${TITLE#PUBLISH NAVIMOWER PRERELEASE }"
+              ;;
+            PUBLISH\ NAVIMOWER\ RELEASE\ *)
+              MODE="stable"
+              VERSION="${TITLE#PUBLISH NAVIMOWER RELEASE }"
+              ;;
+            *)
+              echo "Unsupported publish request" >&2
+              exit 1
+              ;;
+          esac
+          test -n "${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          VERSION="${VERSION}" MODE="${MODE}" python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          mode = os.environ['MODE']
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"Invalid version: {version!r}")
+          if mode == 'stable' and '-' in version:
+              raise SystemExit(f"Stable release cannot contain a prerelease suffix: {version!r}")
+          if mode == 'prerelease' and '-' not in version:
+              raise SystemExit(f"Prerelease request requires a prerelease suffix: {version!r}")
+          manifest = json.loads(Path('custom_components/navimower/manifest.json').read_text())
+          if manifest.get('version') != version:
+              raise SystemExit(f"Manifest version {manifest.get('version')!r} does not match requested {version!r}")
+          notes = Path(f'.github/release-notes/{version}.md')
+          if not notes.is_file():
+              raise SystemExit(f'Missing release notes: {notes}')
+          expected = f'title: Navimower {version}\n'
+          if not notes.read_text().startswith(expected):
+              raise SystemExit(f'Release notes must start with {expected.strip()!r}')
+          PY
+
+      - name: Create tag and GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          MODE: ${{ steps.release.outputs.mode }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          TARGET_SHA="$(git rev-parse HEAD)"
+          NOTES=".github/release-notes/${VERSION}.md"
+          git fetch --tags origin
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "${TAG}")"
+            test "${TAG_SHA}" = "${TARGET_SHA}"
+          else
+            git tag "${TAG}" "${TARGET_SHA}"
+            git push origin "${TAG}"
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            if [ "${MODE}" = "prerelease" ]; then
+              gh release edit "${TAG}" --prerelease --title "Navimower ${VERSION}" --notes-file "${NOTES}"
+            else
+              gh release edit "${TAG}" --prerelease=false --latest --title "Navimower ${VERSION}" --notes-file "${NOTES}"
+            fi
+          elif [ "${MODE}" = "prerelease" ]; then
+            gh release create "${TAG}" --target "${TARGET_SHA}" --title "Navimower ${VERSION}" --notes-file "${NOTES}" --prerelease
+          else
+            gh release create "${TAG}" --target "${TARGET_SHA}" --title "Navimower ${VERSION}" --notes-file "${NOTES}" --latest
+          fi
+
+      - name: Confirm request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          MODE: ${{ steps.release.outputs.mode }}
+        run: |
+          if [ "${MODE}" = "prerelease" ]; then
+            KIND="GitHub prerelease"
+          else
+            KIND="stable GitHub release"
+          fi
+          gh issue comment "${{ github.event.issue.number }}" --body "Published Navimower \`${VERSION}\` as ${KIND} and verified tag \`v${VERSION}\`."
+          gh issue close "${{ github.event.issue.number }}" --reason completed
