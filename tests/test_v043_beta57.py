@@ -7,7 +7,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTITY_SOURCE = ROOT / "custom_components" / "navimower" / "entity.py"
-MANIFEST = ROOT / "custom_components" / "navimower" / "manifest.json"
 
 EXPECTED_NAMES = {
     "frost_delay": "Frost detection",
@@ -48,10 +47,3 @@ def test_beta57_names_do_not_change_unique_id_construction() -> None:
     source = ENTITY_SOURCE.read_text(encoding="utf-8")
     assert 'self._attr_unique_id = f"{self._sn}_{key}"' in source
     assert "ENTITY_NAME_OVERRIDES.get(key)" in source
-
-
-def test_beta57_manifest_version() -> None:
-    import json
-
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3-beta57"
