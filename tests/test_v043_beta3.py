@@ -1,8 +1,7 @@
-"""Regression contracts for Navimower 0.4.3-beta3 and later 0.4.3 betas."""
+"""Regression contracts for Navimower 0.4.3-beta3 and later releases."""
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 import re
 
@@ -10,9 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta3_version_notes_and_changelog() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.3")
+def test_beta3_notes_and_changelog() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta3.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta3")
     assert "48 public JavaScript assets" in notes

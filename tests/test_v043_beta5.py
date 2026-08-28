@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 import re
 
@@ -36,8 +35,6 @@ def _compiled_patterns(source: str) -> dict[str, str]:
 
 
 def test_beta5_release_artifacts_remain_in_history() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta5.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta5")
     assert "targeted call-site recovery" in notes

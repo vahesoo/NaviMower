@@ -1,7 +1,6 @@
 """Dependency-free regression coverage for 0.4.3-beta58 behavior."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
@@ -54,8 +53,3 @@ def test_beta58_readme_covers_options_custom_area_and_card_compatibility() -> No
     assert "Off-limit" in readme
     assert "Navimower Map Card 0.3.5 requires Navimower integration 0.4.3 or newer" in readme
     assert "Reset schedule progress" in readme
-
-
-def test_beta58_release_family_remains_043() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.3")

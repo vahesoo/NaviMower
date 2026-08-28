@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_passive_discovery_release_contract_survives_later_043_releases() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"].startswith("0.4.3")
+def test_passive_discovery_release_contract_survives_later_releases() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta43.md").read_text()
     assert "Passive MQTT discovery" in notes
     assert "gate_required" in notes

@@ -1,7 +1,6 @@
 """Stable 0.4.3 release regression coverage."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
@@ -9,10 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_stable_manifest_and_release_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.3"
-
+def test_stable_release_notes_remain_available() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3.md").read_text(
         encoding="utf-8"
     )

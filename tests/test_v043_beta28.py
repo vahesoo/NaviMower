@@ -1,7 +1,6 @@
 """Regression guards for 0.4.3-beta28 map-edit timestamp semantics."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,9 +8,6 @@ ROOT = Path(__file__).resolve().parents[1]
 semantics = (ROOT / "custom_components/navimower/coordinator_semantics.py").read_text()
 init_source = (ROOT / "custom_components/navimower/__init__.py").read_text()
 history = (ROOT / "custom_components/navimower/history.py").read_text()
-manifest = json.loads(
-    (ROOT / "custom_components/navimower/manifest.json").read_text()
-)
 
 # The runtime coordinator must strip the ambiguous vendor coverage timestamps
 # before zone history sees them. Raw vendor fields stay in the base coordinator
@@ -27,8 +23,6 @@ assert '"last_mowed_at": observed_iso' in history
 assert 'record["last_started_at"] = observed_iso' in history
 assert "if cutting:" in history
 
-# Keep this historical semantic test valid for the complete 0.4.3 line,
-# including the final stable release. Exact current-version assertions belong in
-# the current release regression file instead of an old beta contract.
-assert manifest["version"].startswith("0.4.3")
+# This is a historical semantic regression, not a release-line/version guard.
+# Exact manifest-version assertions belong in the current release tests.
 print("beta28 map-edit timestamp regression tests passed")
