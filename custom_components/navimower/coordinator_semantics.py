@@ -14,7 +14,7 @@ from .coordinator import (
 from .georeference import (
     georeference_from_compressed_map_detail,
     georeference_from_plain_map_detail,
-    validate_georeference,
+    update_georeference,
 )
 from .map_identifiers import resolve_map_identifiers
 
@@ -30,10 +30,14 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
         await super().async_load_persistent_state()
-        if self._map_geometry is not None and not self._map_geometry.get("georeference"):
+        if (
+            self._map_geometry is not None
+            and not self._map_geometry.get("georeference")
+            and not self._map_geometry.get("_georeference_calibration")
+        ):
             # v0.4.3 caches contain perfectly usable local geometry but not the
-            # WGS84 tie point needed by multi-mower/site views. Keep displaying
-            # the cached map immediately, then re-decode it on the first poll.
+            # WGS84 tie point/calibration state needed by multi-mower/site views.
+            # Keep displaying the cached map immediately, then re-decode it once.
             self._map_cache_key = None
 
     def _build_zone_details(
@@ -101,7 +105,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         return success
 
     def _maybe_fetch_map(self, raw: dict[str, Any]) -> None:
-        """Decode map geometry plus its WGS84 georeference in one cloud fetch."""
+        """Decode local geometry and any optional vendor WGS84 hint in one fetch."""
         location = raw.get("location") or {}
         map_id, map_base_id, edit_time = resolve_map_identifiers(
             location, raw.get("map_list")
@@ -114,13 +118,13 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             return
 
         geometry: dict[str, Any] | None = None
-        georeference: dict[str, Any] | None = None
+        vendor_georeference: dict[str, Any] | None = None
         try:
             plain = self.client.map_detail_plain(
                 self.sn, str(map_id), str(map_base_id)
             )
             geometry = _parse_map_detail_plain(plain)
-            georeference = georeference_from_plain_map_detail(plain)
+            vendor_georeference = georeference_from_plain_map_detail(plain)
         except NavimowAuthError:
             raise
         except NavimowError:
@@ -132,7 +136,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                     self.sn, str(map_id), str(map_base_id)
                 )
                 geometry = _parse_map_detail(blob)
-                georeference = georeference_from_compressed_map_detail(blob)
+                vendor_georeference = georeference_from_compressed_map_detail(blob)
             except NavimowAuthError:
                 raise
             except NavimowError:
@@ -144,14 +148,18 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         geometry["map_base_id"] = str(map_base_id)
         geometry["edit_time"] = str(edit_time or "")
         geometry["revision"] = "|".join(key)
-        if georeference is not None:
-            geometry["georeference"] = georeference
 
         index2 = raw.get("index2")
         map_version = index2.get("mapVersion") if isinstance(index2, dict) else None
         if _valid_map_version(map_version):
             geometry["map_version"] = str(map_version)
             geometry["revision"] = f"{geometry['revision']}|v:{map_version}"
+
+        # Explicit vendor tie points are a useful bootstrap/check where present,
+        # but the universal path learns from ordinary cloud XY/GPS location pairs.
+        if vendor_georeference is not None:
+            geometry["_vendor_georeference"] = vendor_georeference
+            geometry["georeference"] = vendor_georeference
 
         # Preserve the existing optional station-map behavior. This geometry is
         # in a docking-local frame and is intentionally not georeferenced.
@@ -195,11 +203,10 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         return snapshot
 
     def _parse(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Attach passive XY/GPS validation to the normalized georeference."""
+        """Learn/validate one stable local-map -> WGS84 transform per revision."""
         snapshot = super()._parse(raw)
-        base_georeference = (self._map_geometry or {}).get("georeference")
-        georeference = validate_georeference(
-            base_georeference,
+        georeference = update_georeference(
+            self._map_geometry,
             raw.get("location"),
         )
         snapshot["georeference"] = georeference
