@@ -115,6 +115,33 @@ def _site_bounds(
     }
 
 
+def _site_center(
+    site_bounds: dict[str, float] | None,
+    affine: dict[str, float] | None,
+    georeference: dict[str, Any],
+) -> dict[str, float] | None:
+    """Return one stable site-space point for west/east UI ordering.
+
+    Prefer the decoded map footprint center so controls follow the map's actual
+    placement. If geometry is temporarily unavailable, fall back to the
+    georeference reference point transformed into the common site frame.
+    """
+    if site_bounds is not None:
+        return {
+            "east": (site_bounds["min_east"] + site_bounds["max_east"]) / 2.0,
+            "north": (site_bounds["min_north"] + site_bounds["max_north"]) / 2.0,
+        }
+    if affine is None:
+        return None
+    reference = georeference.get("reference") or {}
+    local_x = _as_float(reference.get("local_x"))
+    local_y = _as_float(reference.get("local_y"))
+    if local_x is None or local_y is None:
+        return None
+    east, north = _transform_point(affine, local_x, local_y)
+    return {"east": east, "north": north}
+
+
 def _svg_matrix(affine: dict[str, float] | None) -> list[float] | None:
     if affine is None:
         return None
@@ -164,6 +191,27 @@ def _merge_site_bounds(bounds: list[dict[str, float]]) -> dict[str, float] | Non
     }
 
 
+def _member_order_key(member: dict[str, Any]) -> tuple[Any, ...]:
+    """Sort members west-to-east without relying on live mower position."""
+    center = member.get("site_center")
+    if isinstance(center, dict):
+        east = _as_float(center.get("east"))
+        north = _as_float(center.get("north"))
+        if east is not None:
+            return (
+                0,
+                east,
+                north if north is not None else 0.0,
+                str(member.get("entry_id") or ""),
+            )
+    return (
+        1,
+        _as_float(member.get("distance_from_anchor_m")) or 0.0,
+        0.0,
+        str(member.get("entry_id") or ""),
+    )
+
+
 def build_site_payload(
     root_entry_id: str,
     coordinators: dict[str, Any],
@@ -195,6 +243,7 @@ def build_site_payload(
         "radius_m": float(radius_m),
         "status": root_status,
         "multi_mower": False,
+        "member_order": "west_to_east",
         "origin": None,
         "combined_site_bounds": None,
         "combined_svg_bounds": None,
@@ -248,6 +297,7 @@ def build_site_payload(
         )
         local_bounds = map_local_bounds(map_data)
         site_bounds = _site_bounds(local_bounds, affine)
+        site_center = _site_center(site_bounds, affine, georeference)
         svg_bounds = _svg_bounds(site_bounds)
         if site_bounds is not None:
             site_bounds_items.append(site_bounds)
@@ -267,9 +317,14 @@ def build_site_payload(
                 "svg_matrix": _svg_matrix(affine),
                 "local_bounds": local_bounds,
                 "site_bounds": site_bounds,
+                "site_center": site_center,
                 "svg_bounds": svg_bounds,
             }
         )
+
+    members.sort(key=_member_order_key)
+    for display_order, member in enumerate(members):
+        member["display_order"] = display_order
 
     combined = _merge_site_bounds(site_bounds_items)
     base["members"] = members
