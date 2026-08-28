@@ -55,6 +55,11 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     return {
         "entry_id": entry_id,
         "device_id": device.id if device is not None else None,
+        "map_api_path": f"/api/navimower/map/{entry_id}",
+        "sessions_api_path": f"/api/navimower/sessions/{entry_id}",
+        "session_render_api_path_template": (
+            f"/api/navimower/session-render/{entry_id}/{{session_id}}"
+        ),
         "site_api_path": f"/api/navimower/site/{entry_id}",
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
@@ -64,6 +69,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
             "heading": entity_id("sensor", "heading"),
             "battery": entity_id("sensor", "battery"),
             "current_physical_zone": entity_id("sensor", "current_physical_zone"),
+            "notification": entity_id("sensor", "notification"),
             "native_schedule_data": entity_id("sensor", "schedule"),
             "schedule_status": entity_id("sensor", "navimower_schedule_status"),
             "managed_schedule": entity_id("switch", "navimower_schedule"),
