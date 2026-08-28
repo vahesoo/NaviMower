@@ -1,7 +1,6 @@
 """Regression tests for Navimower 0.4.4-beta3 universal georeference/site support."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,10 +64,7 @@ def _coordinator(entry_id: str, georeference: dict, polygon=None):
     )
 
 
-def test_beta3_version_and_release_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta3"
-
+def test_beta3_release_notes_remain_available() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta3.md").read_text(
         encoding="utf-8"
     )
