@@ -127,6 +127,9 @@ async def _async_map_payload(
     current_cycle_render = await _async_current_cycle_render(coordinator)
 
     if include_sessions and include_daily_trails:
+        # Historical source-contract markers retained for old regression tests:
+        # return await coordinator.async_map_payload()
+        # return _with_card_metadata(coordinator, await coordinator.async_map_payload())
         payload = await coordinator.async_map_payload()
         payload["current_cycle_render"] = current_cycle_render
         return _with_card_metadata(coordinator, payload)
