@@ -311,6 +311,7 @@ async def async_get_config_entry_diagnostics(
         ),
         "settings": sanitize(deepcopy(settings)),
         "navimower_schedule": sanitize(deepcopy(navimower_schedule_diagnostics)),
+        "georeference": sanitize(deepcopy(data.get("georeference"))),
         "map_edit": sanitize(
             {
                 "state_code": data.get("state_code"),
@@ -404,6 +405,7 @@ async def async_get_config_entry_diagnostics(
         "notes": [
             "0.4.3-beta42 adds cached MQTT navigation fields and passive MQTT discovery output for controlled gate-transition research.",
             "Download diagnostics remain cached-only and make no extra vendor or H5 requests.",
+            "Georeference diagnostics expose local map transform and validation metadata while physical GPS coordinates remain redacted.",
             "Enable Passive MQTT discovery temporarily when raw event/location samples are needed; samples are sanitized by the existing discovery pipeline.",
             "Clear/Resume/Reboot discovery, Mowing Reports research and Maintenance research payloads are retired from normal diagnostics.",
             "index2.mapVersion is the fast vendor map revision signal; a change forces location/map-list and map geometry refresh in the same private-cloud poll.",
