@@ -1,6 +1,5 @@
-"""Regression contracts for Navimower 0.4.3-beta1 and later 0.4.3 betas."""
+"""Regression contracts for Navimower 0.4.3-beta1 and later releases."""
 import ast
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,8 +7,6 @@ COMPONENT = ROOT / "custom_components/navimower"
 
 
 def test_v043_beta1_contract() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"].startswith("0.4.3")
     diagnostics = (COMPONENT / "diagnostics.py").read_text()
     discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
     ast.parse(diagnostics)
