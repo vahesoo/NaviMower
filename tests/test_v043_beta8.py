@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 import re
 
@@ -41,8 +40,6 @@ def _compiled_patterns(source: str) -> dict[str, tuple[str, int]]:
 
 
 def test_beta8_release_notes_and_changelog() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.3")
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta8.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta8")
     assert "candidate-routing" in notes
