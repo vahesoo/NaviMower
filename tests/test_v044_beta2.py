@@ -1,7 +1,6 @@
-"""Regression tests for Navimower 0.4.4-beta2 georeference diagnostics."""
+"""Historical regression tests for Navimower 0.4.4-beta2 diagnostics."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from custom_components.navimower.diagnostics_sanitize import sanitize
@@ -10,10 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta2_version_and_release_notes() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta2"
-
+def test_beta2_release_notes_remain_available() -> None:
+    """Keep beta2 as historical coverage without pinning the current manifest."""
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta2.md").read_text(
         encoding="utf-8"
     )

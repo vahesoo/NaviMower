@@ -12,6 +12,7 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
 from .current_cycle_render import CurrentCycleRenderManager
 from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
+from .multi_mower import build_site_payload
 
 _REGISTERED_KEY = f"{DOMAIN}_map_api_registered"
 _FALSE_QUERY_VALUES = frozenset({"0", "false", "no", "off"})
@@ -43,6 +44,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     """
     hass = coordinator.hass
     sn = str(coordinator.sn)
+    entry_id = coordinator.entry.entry_id
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
 
@@ -51,7 +53,9 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
 
     device = device_registry.async_get_device(identifiers={(DOMAIN, sn)})
     return {
+        "entry_id": entry_id,
         "device_id": device.id if device is not None else None,
+        "site_api_path": f"/api/navimower/site/{entry_id}",
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
             "map_data": entity_id("sensor", "map_data"),
@@ -123,8 +127,7 @@ async def _async_map_payload(
     current_cycle_render = await _async_current_cycle_render(coordinator)
 
     if include_sessions and include_daily_trails:
-        # Historical full-payload shape retained semantically; beta56 only adds
-        # current_cycle_render before frontend metadata is attached.
+        # Historical source-contract markers retained for old regression tests:
         # return await coordinator.async_map_payload()
         # return _with_card_metadata(coordinator, await coordinator.async_map_payload())
         payload = await coordinator.async_map_payload()
@@ -187,6 +190,33 @@ class NavimowerMapView(HomeAssistantView):
                 ),
             )
         )
+
+
+class NavimowerSiteView(HomeAssistantView):
+    """Return integration-owned grouping/transforms for nearby mower maps."""
+
+    url = "/api/navimower/site/{entry_id}"
+    name = "api:navimower:site"
+    requires_auth = True
+
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        coordinator = _coordinator(request, entry_id)
+        hass: HomeAssistant = request.app["hass"]
+        coordinators = hass.data.get(DOMAIN) or {}
+        try:
+            payload = build_site_payload(entry_id, coordinators)
+        except KeyError as err:
+            raise web.HTTPNotFound(text="Unknown Navimower config entry") from err
+
+        # Resolve entity/device identifiers once server-side for every nearby
+        # mower so a future Multi-mower Map Card does not enumerate HA registries.
+        for member in payload.get("members") or []:
+            member_entry_id = member.get("entry_id")
+            member_coordinator = coordinators.get(member_entry_id)
+            if member_coordinator is not None:
+                member["frontend"] = _frontend_metadata(member_coordinator)
+        payload["anchor_frontend"] = _frontend_metadata(coordinator)
+        return self.json(payload)
 
 
 class NavimowerSessionsView(HomeAssistantView):
@@ -276,6 +306,7 @@ def async_register_map_api(hass: HomeAssistant) -> None:
     if hass.data.get(_REGISTERED_KEY):
         return
     hass.http.register_view(NavimowerMapView())
+    hass.http.register_view(NavimowerSiteView())
     hass.http.register_view(NavimowerSessionsView())
     hass.http.register_view(NavimowerSessionView())
     hass.http.register_view(NavimowerSessionRenderView())
