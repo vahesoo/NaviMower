@@ -10,7 +10,6 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
-from . import coordinator as _coordinator
 from .model_capabilities import (
     FAMILY_H2,
     FAMILY_I1,
@@ -276,6 +275,8 @@ def _harden_capability_profile(
 
 
 def _install_snapshot_semantics() -> None:
+    from . import coordinator as _coordinator
+
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_model_capability_semantics_installed", False):
         return
@@ -395,6 +396,8 @@ def _install_number_semantics() -> None:
 
 def install_capability_semantics() -> None:
     """Install conservative model-family gates after legacy capability patches."""
+    from . import coordinator as _coordinator
+
     cls = _coordinator.NavimowCoordinator
     if getattr(cls, "_capability_semantics_installed", False):
         return
