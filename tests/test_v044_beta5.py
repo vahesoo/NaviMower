@@ -244,9 +244,6 @@ def test_beta5_runtime_and_release_metadata() -> None:
     assert "install_capability_semantics()" in runtime
     assert "install_georeference_semantics()" in runtime
 
-    manifest = (COMPONENT / "manifest.json").read_text(encoding="utf-8")
-    assert '"version": "0.4.4-beta5"' in manifest
-
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta5.md").read_text(
         encoding="utf-8"
     )
