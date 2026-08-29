@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
+from .capability_semantics import install_capability_semantics
+from .georeference_semantics import install_georeference_semantics
 from .navigation_fallback import install_navigation_fallback
 from .notification_feed import install_notification_feed
 from .private_cloud_region import install_private_cloud_region
@@ -23,6 +25,8 @@ def install_runtime_extensions() -> None:
     install_private_cloud_region()
     install_capability_extensions()
     install_capability_profile()
+    install_capability_semantics()
+    install_georeference_semantics()
     install_navigation_fallback()
     install_notification_feed()
     install_schedule_pause_semantics()
