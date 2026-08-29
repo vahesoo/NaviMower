@@ -109,6 +109,10 @@ def _strip_untrusted_i1_height(snapshot: dict[str, Any]) -> None:
         detail["cutting_height_mm"] = None
         detail["inherits_global_height"] = None
 
+    for state in snapshot.get("zone_states") or []:
+        if isinstance(state, dict):
+            state["cutting_height_mm"] = None
+
     map_data = snapshot.get("map")
     if isinstance(map_data, dict):
         for zone in map_data.get("zones") or []:
@@ -224,6 +228,10 @@ def _harden_capability_profile(
             if isinstance(item, dict):
                 item["reported"] = True
                 item["supported"] = None
+        height_item = observed.get("cutting_height")
+        if isinstance(height_item, dict) and not family.cutting_height_readable:
+            height_item["reported"] = True
+            height_item["supported"] = False
 
     settings = _set_list(snapshot)
     hardened["settings"] = {
