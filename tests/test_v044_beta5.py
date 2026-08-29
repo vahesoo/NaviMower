@@ -5,9 +5,7 @@ from pathlib import Path
 
 from custom_components.navimower import capability_semantics
 from custom_components.navimower.georeference import offset_wgs84
-from custom_components.navimower.georeference_semantics import (
-    install_georeference_semantics,
-)
+from custom_components.navimower.georeference_semantics import stable_update_georeference
 from custom_components.navimower.model_capabilities import (
     FAMILY_H1,
     FAMILY_H2,
@@ -90,6 +88,7 @@ def test_i1_height_range_is_metadata_not_claimed_current_height() -> None:
                 "inherits_global_height": None,
             }
         ],
+        "zone_states": [{"id": 1, "cutting_height_mm": 20}],
         "map": {"zones": [{"boundary": {"height_set": 316}}]},
         "sessions": [{"cutting_height_mm": 20}],
         "capabilities": {
@@ -110,6 +109,7 @@ def test_i1_height_range_is_metadata_not_claimed_current_height() -> None:
     assert snapshot["settings"]["cut_height"] is None
     assert snapshot["settings"]["cut_height_raw"] == 20
     assert snapshot["zone_details"][0]["cutting_height_mm"] is None
+    assert snapshot["zone_states"][0]["cutting_height_mm"] is None
     assert "height_set" not in snapshot["map"]["zones"][0]["boundary"]
     assert snapshot["sessions"][0]["cutting_height_mm"] is None
 
@@ -123,6 +123,7 @@ def test_i1_height_range_is_metadata_not_claimed_current_height() -> None:
     assert hardened["settings"]["grass_pattern_enhancement"]["reported"] is True
     assert hardened["settings"]["grass_pattern_enhancement"]["writable"] is False
     assert hardened["observed"]["terrain_settings"]["supported"] is None
+    assert hardened["observed"]["cutting_height"]["supported"] is False
 
 
 def test_battery_bounds_are_only_claimed_when_device_info_supplies_them() -> None:
@@ -200,15 +201,12 @@ def _learned_map() -> dict:
 
 
 def test_validated_georeference_is_frozen_until_map_revision_changes() -> None:
-    install_georeference_semantics()
-    from custom_components.navimower import georeference as georef
-
     geometry = _learned_map()
     far = offset_wgs84(58.0, 24.0, 10.0, 0.0)
     assert far is not None
 
     for report_time in range(10, 15):
-        result = georef.update_georeference(
+        result = stable_update_georeference(
             geometry,
             {
                 "posture_x": 0.0,
@@ -225,7 +223,7 @@ def test_validated_georeference_is_frozen_until_map_revision_changes() -> None:
     assert geometry["_georeference_calibration"]["mismatch_count"] >= 5
 
     geometry["revision"] = "map-b"
-    changed = georef.update_georeference(
+    changed = stable_update_georeference(
         geometry,
         {
             "posture_x": 0.0,
