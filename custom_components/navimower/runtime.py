@@ -14,6 +14,7 @@ from .navigation_fallback import install_navigation_fallback
 from .notification_feed import install_notification_feed
 from .private_cloud_region import install_private_cloud_region
 from .schedule_pause_semantics import install_schedule_pause_semantics
+from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
@@ -30,5 +31,6 @@ def install_runtime_extensions() -> None:
     install_navigation_fallback()
     install_notification_feed()
     install_schedule_pause_semantics()
+    install_schedule_round_semantics()
     install_setup_flow_semantics()
     install_zone_entity_cleanup()
