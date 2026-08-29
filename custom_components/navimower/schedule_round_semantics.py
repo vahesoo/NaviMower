@@ -15,8 +15,6 @@ safety gates remain owned by the base scheduler.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from .const import (
     ACTIVITY_MOWING,
     ACTIVITY_RETURNING,
