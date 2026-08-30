@@ -65,7 +65,7 @@ def _geometry_with_five_sample_fit() -> dict:
     }
 
 
-def test_refinement_runs_at_8_to_10_and_again_from_12_samples() -> None:
+def test_refinement_runs_at_8_to_10_and_enters_high_confidence_at_12() -> None:
     geometry = _geometry_with_five_sample_fit()
 
     result = stable_update_georeference(geometry, _location(15.0, 6))
@@ -98,9 +98,12 @@ def test_refinement_runs_at_8_to_10_and_again_from_12_samples() -> None:
     assert result["refinement_stage"] == "high_confidence"
     assert result["calibration"]["last_refinement_sample_count"] == 12
 
+    # Later high-confidence samples are collected, but do not move the map on
+    # every sample.  The next refit milestone is 16.
     result = stable_update_georeference(geometry, _location(36.0, 13))
     assert result["refinement_stage"] == "high_confidence"
-    assert result["calibration"]["last_refinement_sample_count"] == 13
+    assert result["calibration"]["refinement_sample_count"] == 13
+    assert result["calibration"]["last_refinement_sample_count"] == 12
 
 
 def test_stationary_gps_drift_does_not_create_refinement_samples() -> None:
