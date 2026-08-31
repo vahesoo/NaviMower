@@ -83,9 +83,8 @@ resume:
     Ask the mower to resume its vendor-retained interrupted task. This sends the
     dedicated Resume command and does not select zones, send a new Mow command,
     reset mowing progress or start a new Navimower mowing cycle. Paused resume is
-    already known to work. Resume from docked/charging state is included in
-    0.4.2-beta3 for field validation and may depend on mower model, firmware and
-    whether the mower still retains an interrupted task.
+    already known to work. Resume from docked/charging state may depend on mower
+    model, firmware and whether the mower still retains an interrupted task.
   fields:
     device_id:
       name: Mower
@@ -158,6 +157,39 @@ reset_schedule:
     If Navimower Schedule is enabled, its next eligible zone is treated as a new
     mowing cycle and may therefore start from scratch. Reset is refused while the
     mower is mowing or returning; pause or dock it first.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
+relearn_georeference:
+  name: Relearn map georeference
+  description: >-
+    Clear only this mower's learned local-map to WGS84 calibration and immediately
+    start learning it again from fresh location samples. Map geometry, mowing
+    history, Schedule state and other integration data are not reset.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
+export_raw_data:
+  name: Export raw development data
+  description: >-
+    Write an explicit unredacted development capture under
+    /config/navimower_diagnostics/raw/. The file preserves fresh private-cloud
+    responses, full map-detail data, decoded map/calibration state and the latest
+    exact MQTT payload per observed topic. This is separate from Home Assistant
+    Download diagnostics, which remains sanitized for user sharing. Raw exports
+    contain sensitive coordinates and identifiers and must not be published.
   fields:
     device_id:
       name: Mower

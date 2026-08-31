@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,10 @@ def _function_source(path: Path, name: str) -> str:
 
 
 def test_beta10_version_and_runtime_install_order() -> None:
-    assert '"version": "0.4.4-beta10"' in MANIFEST.read_text(encoding="utf-8")
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    version = str(manifest.get("version") or "")
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 10
     source = RUNTIME.read_text(encoding="utf-8")
     assert "from .schedule_ownership_semantics import install_schedule_ownership_semantics" in source
     assert "install_schedule_pause_semantics()" in source

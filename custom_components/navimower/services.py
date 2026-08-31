@@ -1,27 +1,8 @@
-"""Services for Navimower.
-
-- ``navimower.set_schedule`` writes one weekday's plan (enabled + one or more
-  time periods, each optionally restricted to zones) via the proven
-  save-set-data format.
-- ``navimower.mow`` starts mowing now: chosen zones and a ``reset`` flag
-  (True = restart from scratch, False = continue). On models that support
-  custom sequencing, listing zones explicitly also fixes their mowing order.
-  First-generation H-series mowers still accept the selected zones but choose
-  their order themselves.
-- ``navimower.resume`` resumes the vendor-retained interrupted task without
-  selecting zones, resetting progress or starting a new Navimower mowing cycle.
-- ``navimower.mark_notification_read`` opens one Device notification through the
-  same encrypted detail route as the official app and then refreshes the Device
-  feed to confirm the resulting vendor read state.
-- ``navimower.mark_all_notifications_read`` executes the official app's Mark all
-  as read request for the selected mower/account and refreshes the Device feed.
-
-Diagnostics are exposed through Home Assistant's native Download diagnostics
-flow rather than custom development services.
-"""
+"""Services for Navimower."""
 from __future__ import annotations
 
 import voluptuous as vol
+from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
@@ -34,11 +15,13 @@ from .const import (
     encode_partition_ids,
     mow_setup,
 )
+from .georeference_tools import async_relearn_georeference
 from .model_support import supports_ordered_zone_mowing
 from .notification_actions import (
     async_mark_all_notifications_read,
     async_mark_notification_read,
 )
+from .raw_export import async_export_raw_data
 from .resume import async_resume_task
 
 install_runtime_extensions()
@@ -49,6 +32,8 @@ SERVICE_RESUME = "resume"
 SERVICE_SET_SCHEDULE_QUEUE = "set_schedule_queue"
 SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
+SERVICE_RELEARN_GEOREFERENCE = "relearn_georeference"
+SERVICE_EXPORT_RAW_DATA = "export_raw_data"
 
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
@@ -85,13 +70,17 @@ MOW_SCHEMA = vol.Schema(
     }
 )
 
-SET_SCHEDULE_QUEUE_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string, vol.Required("zones"): vol.All(cv.ensure_list, [vol.Coerce(int)])})
-
-RESUME_SCHEMA = vol.Schema(
+SET_SCHEDULE_QUEUE_SCHEMA = vol.Schema(
     {
         vol.Optional("device_id"): cv.string,
+        vol.Required("zones"): vol.All(cv.ensure_list, [vol.Coerce(int)]),
     }
 )
+
+DEVICE_ONLY_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string})
+RESUME_SCHEMA = DEVICE_ONLY_SCHEMA
+RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
+EXPORT_RAW_DATA_SCHEMA = DEVICE_ONLY_SCHEMA
 
 MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
     {
@@ -100,11 +89,7 @@ MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
     }
 )
 
-MARK_ALL_NOTIFICATIONS_READ_SCHEMA = vol.Schema(
-    {
-        vol.Optional("device_id"): cv.string,
-    }
-)
+MARK_ALL_NOTIFICATIONS_READ_SCHEMA = DEVICE_ONLY_SCHEMA
 
 
 def _hhmm_to_min(value: str) -> int:
@@ -264,11 +249,15 @@ def async_setup_services(hass: HomeAssistant) -> None:
         if controller is None:
             raise ServiceValidationError("Navimower Schedule controller is not available")
         try:
-            await controller.async_set_custom_queue([int(v) for v in call.data.get("zones") or []])
+            await controller.async_set_custom_queue(
+                [int(v) for v in call.data.get("zones") or []]
+            )
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
         except Exception as err:
-            raise HomeAssistantError(f"Navimower set_schedule_queue failed: {err}") from err
+            raise HomeAssistantError(
+                f"Navimower set_schedule_queue failed: {err}"
+            ) from err
 
     async def _resume(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
@@ -296,35 +285,59 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 f"Navimow mark_all_notifications_read failed: {err}"
             ) from err
 
-    if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_SET_SCHEDULE,
-            _set_schedule,
-            schema=SET_SCHEDULE_SCHEMA,
+    async def _relearn_georeference(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            result = await async_relearn_georeference(coordinator)
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimower georeference relearn failed: {err}"
+            ) from err
+        persistent_notification.async_create(
+            hass,
+            (
+                "Navimower georeference calibration was cleared for this mower. "
+                "A fresh calibration is now learning from new location samples.\n\n"
+                f"Map revision: `{result.get('map_revision')}`\n"
+                f"Previous samples: `{result.get('previous_sample_count')}`\n"
+                f"Current status: `{result.get('active_status')}`"
+            ),
+            title="Navimower georeference relearn started",
+            notification_id=f"navimower_georeference_relearn_{coordinator.entry.entry_id}",
         )
-    if not hass.services.has_service(DOMAIN, SERVICE_MOW):
-        hass.services.async_register(DOMAIN, SERVICE_MOW, _mow, schema=MOW_SCHEMA)
-    if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE_QUEUE):
-        hass.services.async_register(DOMAIN, SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, schema=SET_SCHEDULE_QUEUE_SCHEMA)
-    if not hass.services.has_service(DOMAIN, SERVICE_RESUME):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_RESUME,
-            _resume,
-            schema=RESUME_SCHEMA,
+
+    async def _export_raw_data(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            path = await async_export_raw_data(hass, coordinator)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimower raw data export failed: {err}"
+            ) from err
+        persistent_notification.async_create(
+            hass,
+            (
+                "Unredacted Navimower raw-data export completed.\n\n"
+                f"File: `{path}`\n\n"
+                "This file intentionally contains exact vendor/map/location values "
+                "and identifiers. Do not publish or attach it publicly."
+            ),
+            title="Navimower raw data export",
+            notification_id="navimower_raw_data_export",
         )
-    if not hass.services.has_service(DOMAIN, SERVICE_MARK_NOTIFICATION_READ):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_MARK_NOTIFICATION_READ,
-            _mark_notification_read,
-            schema=MARK_NOTIFICATION_READ_SCHEMA,
-        )
-    if not hass.services.has_service(DOMAIN, SERVICE_MARK_ALL_NOTIFICATIONS_READ):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_MARK_ALL_NOTIFICATIONS_READ,
-            _mark_all_notifications_read,
-            schema=MARK_ALL_NOTIFICATIONS_READ_SCHEMA,
-        )
+
+    registrations = (
+        (SERVICE_SET_SCHEDULE, _set_schedule, SET_SCHEDULE_SCHEMA),
+        (SERVICE_MOW, _mow, MOW_SCHEMA),
+        (SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, SET_SCHEDULE_QUEUE_SCHEMA),
+        (SERVICE_RESUME, _resume, RESUME_SCHEMA),
+        (SERVICE_MARK_NOTIFICATION_READ, _mark_notification_read, MARK_NOTIFICATION_READ_SCHEMA),
+        (SERVICE_MARK_ALL_NOTIFICATIONS_READ, _mark_all_notifications_read, MARK_ALL_NOTIFICATIONS_READ_SCHEMA),
+        (SERVICE_RELEARN_GEOREFERENCE, _relearn_georeference, RELEARN_GEOREFERENCE_SCHEMA),
+        (SERVICE_EXPORT_RAW_DATA, _export_raw_data, EXPORT_RAW_DATA_SCHEMA),
+    )
+    for service, handler, schema in registrations:
+        if not hass.services.has_service(DOMAIN, service):
+            hass.services.async_register(DOMAIN, service, handler, schema=schema)
