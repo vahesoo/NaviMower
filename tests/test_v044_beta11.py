@@ -92,6 +92,8 @@ def test_raw_export_is_read_only() -> None:
 def test_exact_latest_mqtt_payload_is_retained_bounded() -> None:
     source = _source("raw_mqtt_semantics.py")
     assert 'raw.decode("utf-8", errors="replace")' in source
+    assert '"payload_base64"' in source
+    assert "base64.b64encode(raw)" in source
     assert '"payload_bytes"' in source
     assert "while len(cache) > 64" in source
     assert "sanitize_discovery_payload" not in source
