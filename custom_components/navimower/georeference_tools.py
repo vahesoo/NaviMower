@@ -22,14 +22,17 @@ def _xy(mapping: Any, x_key: str, y_key: str) -> tuple[float, float] | None:
     return (x, y) if x is not None and y is not None else None
 
 
-def local_frame_diagnostics(coordinator: Any) -> dict[str, Any]:
+def local_frame_diagnostics(
+    coordinator: Any,
+    data_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compare map-station, private-cloud and MQTT local coordinate frames.
 
     Station deltas are physically meaningful only while the mower is docked.
     Cloud-vs-MQTT deltas are included with their source timestamps/ages so stale
     samples are visible instead of being silently treated as simultaneous.
     """
-    data = coordinator.data or {}
+    data = data_override if isinstance(data_override, dict) else (coordinator.data or {})
     raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
     cloud = raw.get("location") if isinstance(raw.get("location"), dict) else {}
     mqtt = getattr(coordinator, "_mqtt_location", None)
