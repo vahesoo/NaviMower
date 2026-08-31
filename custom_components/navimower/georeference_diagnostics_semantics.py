@@ -16,7 +16,7 @@ def _parse(self: NavimowCoordinator, raw: dict[str, Any]) -> dict[str, Any]:
     georeference = snapshot.get("georeference")
     if isinstance(georeference, dict):
         decorated = deepcopy(georeference)
-        decorated["local_frame_check"] = local_frame_diagnostics(self)
+        decorated["local_frame_check"] = local_frame_diagnostics(self, snapshot)
         snapshot["georeference"] = decorated
         map_data = snapshot.get("map")
         if isinstance(map_data, dict):
