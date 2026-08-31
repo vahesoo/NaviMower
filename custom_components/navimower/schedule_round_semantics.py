@@ -12,6 +12,8 @@ end remains the hard boundary.
 """
 from __future__ import annotations
 
+from typing import Any, Awaitable, Callable
+
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -24,9 +26,9 @@ from .const import (
 from .navimower_schedule import NavimowerScheduleController, _utc_now
 
 _INSTALLED = False
-_ORIGINAL_CONFIRM_ACTIVE_COMPLETION = NavimowerScheduleController._confirm_active_completion
-_ORIGINAL_ASYNC_SEND_MOW = NavimowerScheduleController._async_send_mow
-_ORIGINAL_EVALUATE_LOCKED = NavimowerScheduleController._evaluate_locked
+_ORIGINAL_CONFIRM_ACTIVE_COMPLETION: Callable[..., Awaitable[bool]] | None = None
+_ORIGINAL_ASYNC_SEND_MOW: Callable[..., Awaitable[None]] | None = None
+_ORIGINAL_EVALUATE_LOCKED: Callable[..., Awaitable[None]] | None = None
 
 
 def _continuous_round_complete(controller: NavimowerScheduleController) -> bool:
@@ -60,6 +62,7 @@ def _continuous_round_complete(controller: NavimowerScheduleController) -> bool:
 async def _confirm_active_completion(self: NavimowerScheduleController) -> bool:
     """Remember when this evaluation completed the final zone of a round."""
     self._defer_continuous_round_handoff = False
+    assert _ORIGINAL_CONFIRM_ACTIVE_COMPLETION is not None
     completed = await _ORIGINAL_CONFIRM_ACTIVE_COMPLETION(self)
     if completed and _continuous_round_complete(self):
         self._defer_continuous_round_handoff = True
@@ -92,6 +95,7 @@ async def _async_send_mow(
         await self._save()
         return
 
+    assert _ORIGINAL_ASYNC_SEND_MOW is not None
     await _ORIGINAL_ASYNC_SEND_MOW(
         self,
         zone_id,
@@ -103,6 +107,7 @@ async def _async_send_mow(
 
 async def _evaluate_locked(self: NavimowerScheduleController) -> None:
     """Advance a completed Time window round while the same window is still open."""
+    assert _ORIGINAL_EVALUATE_LOCKED is not None
     await _ORIGINAL_EVALUATE_LOCKED(self)
 
     if self._mode != SCHEDULE_MODE_WINDOW or not self._enabled:
@@ -137,10 +142,19 @@ async def _evaluate_locked(self: NavimowerScheduleController) -> None:
 
 
 def install_schedule_round_semantics() -> None:
-    """Install safe repeated-round behavior once."""
+    """Install safe repeated-round behavior once after ownership semantics."""
     global _INSTALLED
+    global _ORIGINAL_CONFIRM_ACTIVE_COMPLETION
+    global _ORIGINAL_ASYNC_SEND_MOW
+    global _ORIGINAL_EVALUATE_LOCKED
     if _INSTALLED:
         return
+    # Capture at installation time, not module-import time. Runtime installs the
+    # ownership extension first, so these wrappers must chain through it rather
+    # than bypassing its completion/evaluation guards.
+    _ORIGINAL_CONFIRM_ACTIVE_COMPLETION = NavimowerScheduleController._confirm_active_completion
+    _ORIGINAL_ASYNC_SEND_MOW = NavimowerScheduleController._async_send_mow
+    _ORIGINAL_EVALUATE_LOCKED = NavimowerScheduleController._evaluate_locked
     NavimowerScheduleController._confirm_active_completion = _confirm_active_completion
     NavimowerScheduleController._async_send_mow = _async_send_mow
     NavimowerScheduleController._evaluate_locked = _evaluate_locked
