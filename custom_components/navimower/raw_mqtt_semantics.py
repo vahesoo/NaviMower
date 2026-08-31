@@ -1,6 +1,7 @@
 """Retain bounded exact MQTT payloads for explicit local raw-data exports."""
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -32,7 +33,10 @@ def _record_message_inventory(
         "seen_utc": datetime.now(UTC).isoformat(),
         "incoming_device_id": str(incoming_device_id),
         "payload_bytes": len(raw),
+        # Keep a readable form for ordinary JSON traffic and a byte-exact copy
+        # so even an unexpected non-UTF8 payload is never lost by the exporter.
         "payload_utf8": raw.decode("utf-8", errors="replace"),
+        "payload_base64": base64.b64encode(raw).decode("ascii"),
     }
     # Exact latest message per topic is enough for the explicit snapshot action;
     # bound topic count so leaving this enabled has negligible memory impact.
