@@ -12,7 +12,7 @@ end remains the hard boundary.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 from homeassistant.util import dt as dt_util
 
