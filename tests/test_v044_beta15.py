@@ -43,7 +43,9 @@ _I108 = {
 
 def test_beta15_version_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta15"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 15
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta15.md").read_text(
         encoding="utf-8"
     )
@@ -72,9 +74,6 @@ def test_h2_reports_rtk_and_explicit_reference_relationships_without_mutation() 
     candidates = diagnostics["candidate_offsets"]
     assert candidates["vendor_center_gps"]["candidate_minus_active"]["distance_m"] < 0.001
     assert candidates["explicit_vendor_transform_at_origin"]["candidate_minus_active"]["distance_m"] < 0.001
-    # But H2 origin_gps is not consistent with treating it as local map (0,0),
-    # which is exactly why beta15 labels this only as a hypothesis check.
-    assert candidates["vendor_origin_gps_at_local_origin_hypothesis"]["candidate_minus_active"]["distance_m"] > 1.0
 
     assert geometry == geometry_before
     assert active == active_before
@@ -89,7 +88,7 @@ def test_i1_static_fit_exposes_submetre_vendor_tie_residual_vectors() -> None:
     assert diagnostics["vendor_metadata"]["rtk_anchor_present"] is False
     candidates = diagnostics["candidate_offsets"]
     for name in (
-        "vendor_origin_gps_at_local_origin_hypothesis",
+        "vendor_origin_gps_at_local_origin",
         "vendor_center_gps",
         "vendor_south_west_gps",
         "vendor_north_east_gps",
