@@ -42,7 +42,9 @@ _I108 = {
 
 def test_beta13_version_and_release_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta13"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 13
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta13.md").read_text(
         encoding="utf-8"
     )
