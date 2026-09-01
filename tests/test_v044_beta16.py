@@ -44,7 +44,10 @@ _I108 = {
 
 def test_beta16_version_release_notes_and_runtime_order() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta16"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    beta = int(version.rsplit("beta", 1)[1])
+    assert beta >= 16
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta16.md").read_text(
         encoding="utf-8"
     )
@@ -59,9 +62,14 @@ def test_beta16_version_release_notes_and_runtime_order() -> None:
 
     runtime = (COMPONENT / "runtime.py").read_text(encoding="utf-8")
     x3_index = runtime.index("install_georeference_x3_bias_semantics()")
-    cartographic_index = runtime.index("install_georeference_cartographic_semantics()")
     diagnostics_index = runtime.index("install_georeference_diagnostics_semantics()")
-    assert x3_index < cartographic_index < diagnostics_index
+    assert x3_index < diagnostics_index
+    if beta == 16:
+        assert "install_georeference_cartographic_semantics()" in runtime
+    else:
+        # Later betas keep the beta16 module for direct diagnostics/tests but no
+        # longer apply the undeclared-CRS assumption in production runtime.
+        assert "install_georeference_cartographic_semantics()" not in runtime
 
 
 def test_epsg8366_estonia_offset_matches_proj_reference_value() -> None:
@@ -113,8 +121,10 @@ def test_h2_explicit_vendor_frame_gets_translation_only_cartographic_shift() -> 
         result["reference"]["longitude"],
     )
     assert displacement is not None
-    assert math.isclose(displacement[0], -0.766, abs_tol=0.01)
-    assert math.isclose(displacement[1], -0.520, abs_tol=0.01)
+    # When beta17+ installs ellipsoidal geodesy these values describe the same
+    # physical EPSG displacement instead of the old spherical approximation.
+    assert math.isclose(displacement[0], -0.766, abs_tol=0.02)
+    assert math.isclose(displacement[1], -0.520, abs_tol=0.02)
 
 
 def test_i1_static_vendor_fit_gets_same_cartographic_frame_correction() -> None:
