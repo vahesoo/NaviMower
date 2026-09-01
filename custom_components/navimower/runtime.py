@@ -9,8 +9,8 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
-from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_semantics import install_georeference_diagnostics_semantics
+from .georeference_geodesy_semantics import install_georeference_geodesy_semantics
 from .georeference_semantics import install_georeference_semantics
 from .georeference_static_anchor_semantics import install_georeference_static_anchor_semantics
 from .georeference_x3_bias_semantics import install_georeference_x3_bias_semantics
@@ -33,10 +33,16 @@ def install_runtime_extensions() -> None:
     install_capability_extensions()
     install_capability_profile()
     install_capability_semantics()
+    # Geodetic metre conversion must be installed before any georeference
+    # fitting/validation layer captures or uses the helpers.
+    install_georeference_geodesy_semantics()
     install_georeference_semantics()
     install_georeference_static_anchor_semantics()
     install_georeference_x3_bias_semantics()
-    install_georeference_cartographic_semantics()
+    # beta16's ETRS89/ITRF cartographic translation remains available as an
+    # experimental module, but is intentionally not installed automatically:
+    # the vendor's absolute GNSS CRS is not declared and new raw evidence must
+    # be collected in the vendor geographic frame first.
     install_georeference_diagnostics_semantics()
     install_navigation_fallback()
     install_notification_feed()
