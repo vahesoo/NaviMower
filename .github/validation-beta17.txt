@@ -1,0 +1,1 @@
+Temporary validation trigger for Navimower 0.4.4-beta17 geodesy reset.
