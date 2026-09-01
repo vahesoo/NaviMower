@@ -19,7 +19,8 @@ def _parse(self: NavimowCoordinator, raw: dict[str, Any]) -> dict[str, Any]:
         decorated = deepcopy(georeference)
         decorated["local_frame_check"] = local_frame_diagnostics(self, snapshot)
         geometry = getattr(self, "_map_geometry", None)
-        location = raw.get("location") if isinstance(raw, dict) else None
+        snapshot_raw = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
+        location = snapshot_raw.get("location") if isinstance(snapshot_raw.get("location"), dict) else None
         decorated["reference_candidates"] = reference_candidate_diagnostics(
             geometry,
             georeference,
