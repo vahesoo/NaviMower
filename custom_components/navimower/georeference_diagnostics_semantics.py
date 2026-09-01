@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from .coordinator_semantics import NavimowCoordinator
+from .georeference_reference_diagnostics import reference_candidate_diagnostics
 from .georeference_tools import local_frame_diagnostics
 
 _INSTALLED = False
@@ -17,6 +18,14 @@ def _parse(self: NavimowCoordinator, raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(georeference, dict):
         decorated = deepcopy(georeference)
         decorated["local_frame_check"] = local_frame_diagnostics(self, snapshot)
+        geometry = getattr(self, "_map_geometry", None)
+        location = raw.get("location") if isinstance(raw, dict) else None
+        decorated["reference_candidates"] = reference_candidate_diagnostics(
+            geometry,
+            georeference,
+            location,
+            docked=bool(snapshot.get("docked")),
+        )
         snapshot["georeference"] = decorated
         map_data = snapshot.get("map")
         if isinstance(map_data, dict):
