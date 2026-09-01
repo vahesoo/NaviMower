@@ -6,7 +6,6 @@ import math
 import re
 from typing import Any, Callable
 
-from . import coordinator_semantics as _coordinator_semantics
 from . import georeference as _georeference
 from . import georeference_static_anchor_semantics as _static
 
@@ -225,6 +224,8 @@ def install_georeference_x3_bias_semantics() -> None:
     global _INSTALLED, _ORIGINAL_APPLY, _ORIGINAL_UPDATE, _ORIGINAL_LOAD
     if _INSTALLED:
         return
+
+    from . import coordinator_semantics as _coordinator_semantics
 
     _ORIGINAL_APPLY = _static._apply_x3_rtk_anchor  # noqa: SLF001
     _ORIGINAL_UPDATE = _georeference.update_georeference
