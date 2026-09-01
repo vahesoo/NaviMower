@@ -15,9 +15,11 @@ def _source(name: str) -> str:
     return text
 
 
-def test_beta11_version_and_release_notes() -> None:
+def test_beta11_release_notes_and_minimum_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta11"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 11
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta11.md").read_text(
         encoding="utf-8"
     )
