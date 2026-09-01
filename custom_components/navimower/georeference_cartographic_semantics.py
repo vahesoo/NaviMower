@@ -2,13 +2,13 @@
 
 Navimow map/localization coordinates observed on H2 and i1 behave like a current
 GNSS/ITRF-like dynamic frame, while European cartographic datasets are fixed to
-ETRS89/ETRF.  EPSG:8366 defines the time-dependent ITRF2014 -> ETRF2014
-position-vector transformation.  This module applies only the resulting small
+ETRS89/ETRF. EPSG:8366 defines the time-dependent ITRF2014 -> ETRF2014
+position-vector transformation. This module applies only the resulting small
 horizontal translation to map display georeferences; mower local X/Y, rotation,
 scale and the native GPS device_tracker remain untouched.
 
 The vendor does not declare its absolute GNSS CRS, so this remains an explicit
-field-test assumption.  X3 maps with their vendor RTK_anchor/NRTK-LRTK path are
+field-test assumption. X3 maps with their vendor RTK_anchor/NRTK-LRTK path are
 excluded because that vendor frame correction already owns their translation.
 """
 from __future__ import annotations
@@ -74,11 +74,16 @@ def _coordinate_epoch(
 
     calibration = geometry.get("_georeference_calibration")
     if isinstance(calibration, dict):
-        samples = [item for item in calibration.get("samples") or [] if isinstance(item, dict)]
+        samples = [
+            item
+            for item in calibration.get("samples") or []
+            if isinstance(item, dict)
+        ]
         epochs = [
             value
             for item in samples
-            if (value := _decimal_year_from_timestamp(item.get("report_time"))) is not None
+            if (value := _decimal_year_from_timestamp(item.get("report_time")))
+            is not None
         ]
         if epochs:
             return max(epochs), "latest_georeference_sample"
@@ -128,7 +133,9 @@ def _itrf2014_to_etrf2014_offset(
     cos_phi = math.cos(phi)
     sin_lam = math.sin(lam)
     cos_lam = math.cos(lam)
-    prime_vertical = _GRS80_A_M / math.sqrt(1.0 - eccentricity_sq * sin_phi * sin_phi)
+    prime_vertical = _GRS80_A_M / math.sqrt(
+        1.0 - eccentricity_sq * sin_phi * sin_phi
+    )
 
     x = prime_vertical * cos_phi * cos_lam
     y = prime_vertical * cos_phi * sin_lam
@@ -146,7 +153,11 @@ def _itrf2014_to_etrf2014_offset(
     dx, dy, dz = x2 - x, y2 - y, z2 - z
 
     east_m = -sin_lam * dx + cos_lam * dy
-    north_m = -sin_phi * cos_lam * dx - sin_phi * sin_lam * dy + cos_phi * dz
+    north_m = (
+        -sin_phi * cos_lam * dx
+        - sin_phi * sin_lam * dy
+        + cos_phi * dz
+    )
     up_m = cos_phi * cos_lam * dx + cos_phi * sin_lam * dy + sin_phi * dz
     distance_m = math.hypot(east_m, north_m)
     return {
@@ -156,29 +167,60 @@ def _itrf2014_to_etrf2014_offset(
         "distance_m": distance_m,
         "bearing_deg_from_north": (
             math.degrees(math.atan2(east_m, north_m)) + 360.0
-        ) % 360.0,
+        )
+        % 360.0,
     }
 
 
-def _vendor_support_kind(geometry: dict[str, Any], active: dict[str, Any]) -> str | None:
+def _transform_complete(value: Any) -> bool:
+    """Return whether a vendor transform has the fields needed for projection.
+
+    A raw vendor bootstrap transform intentionally has no ``status=validated``
+    yet, so ``georeference_is_valid`` is too strict for identifying its frame
+    semantics here.
+    """
+    if not isinstance(value, dict):
+        return False
+    reference = value.get("reference") or {}
+    return all(
+        _georeference._float(item) is not None  # noqa: SLF001
+        for item in (
+            reference.get("local_x"),
+            reference.get("local_y"),
+            reference.get("latitude"),
+            reference.get("longitude"),
+            value.get("rotation_rad"),
+        )
+    )
+
+
+def _vendor_support_kind(
+    geometry: dict[str, Any], active: dict[str, Any]
+) -> str | None:
     """Return why this map has a trustworthy vendor-owned local frame."""
     source = active.get("source")
     if source == _X3_SOURCE:
         return None
     if source == _STATIC_SOURCE:
         return "static_vendor_ties"
+
     vendor = geometry.get("_vendor_georeference")
-    if (
-        isinstance(vendor, dict)
-        and vendor.get("source") == "vendor_map_detail"
-        and _georeference.georeference_is_valid(vendor)
+    if not isinstance(vendor, dict):
+        return None
+    vendor_source = vendor.get("source")
+    if vendor_source == _X3_SOURCE:
+        return None
+    if vendor_source == _STATIC_SOURCE or (
+        (vendor.get("static_validation") or {}).get("valid") is True
     ):
+        return "static_vendor_ties"
+    if vendor_source == "vendor_map_detail" and _transform_complete(vendor):
         return "explicit_vendor_map_north_offset"
     return None
 
 
-def _decorate_vendor_metadata(geom: Any, result: Any) -> dict[str, Any] | None:
-    """Retain normalized raw-map evidence needed by diagnostics after reduction."""
+def _decorate_vendor_metadata(geom: Any) -> dict[str, Any] | None:
+    """Retain normalized raw-map evidence needed after geometry reduction."""
     if _ORIGINAL_FROM_GEOMETRY is None:
         return None
     original = _ORIGINAL_FROM_GEOMETRY(geom)
@@ -192,15 +234,29 @@ def _decorate_vendor_metadata(geom: Any, result: Any) -> dict[str, Any] | None:
     anchor = _static._rtk_anchor(geom)  # noqa: SLF001
     center_local = _georeference._xy(geom.get("map_circle_center"))  # noqa: SLF001
     decorated["vendor_metadata"] = {
-        "map_north_offset_present": _georeference._float(geom.get("map_north_offset")) is not None,  # noqa: SLF001
-        "origin_gps_present": _georeference._gps(geom.get("origin_gps")) is not None,  # noqa: SLF001
-        "center_gps_present": _georeference._gps(geom.get("center_gps")) is not None,  # noqa: SLF001
-        "south_west_gps_present": _georeference._gps(geom.get("sw_gps")) is not None,  # noqa: SLF001
-        "north_east_gps_present": _georeference._gps(geom.get("ne_gps")) is not None,  # noqa: SLF001
+        "map_north_offset_present": (
+            _georeference._float(geom.get("map_north_offset")) is not None  # noqa: SLF001
+        ),
+        "origin_gps_present": (
+            _georeference._gps(geom.get("origin_gps")) is not None  # noqa: SLF001
+        ),
+        "center_gps_present": (
+            _georeference._gps(geom.get("center_gps")) is not None  # noqa: SLF001
+        ),
+        "south_west_gps_present": (
+            _georeference._gps(geom.get("sw_gps")) is not None  # noqa: SLF001
+        ),
+        "north_east_gps_present": (
+            _georeference._gps(geom.get("ne_gps")) is not None  # noqa: SLF001
+        ),
         "rtk_anchor_present": anchor is not None,
-        "rtk_bias_present": isinstance(raw_bias, str) and "nrtk_lrtk_bias" in raw_bias,
+        "rtk_bias_present": (
+            isinstance(raw_bias, str) and "nrtk_lrtk_bias" in raw_bias
+        ),
         "rtk_pile_present": isinstance(raw_pile, str) and "LRTK" in raw_pile,
-        "map_circle_center_local": list(center_local) if center_local is not None else None,
+        "map_circle_center_local": (
+            list(center_local) if center_local is not None else None
+        ),
         "map_width_m": _georeference._float(geom.get("map_width")),  # noqa: SLF001
         "map_height_m": _georeference._float(geom.get("map_height")),  # noqa: SLF001
     }
@@ -309,7 +365,9 @@ def _apply_cartographic_frame(
             "north_m": round(correction["north_m"], 3),
             "up_m": round(correction["up_m"], 3),
             "distance_m": round(correction["distance_m"], 3),
-            "bearing_deg_from_north": round(correction["bearing_deg_from_north"], 2),
+            "bearing_deg_from_north": round(
+                correction["bearing_deg_from_north"], 2
+            ),
             "translation_only": True,
         }
     )
@@ -337,9 +395,12 @@ async def _load_persistent_state(self: Any) -> None:
     active = geometry.get("georeference")
     vendor = geometry.get("_vendor_georeference")
     relevant = (
-        isinstance(active, dict) and active.get("source") in {_STATIC_SOURCE, "cloud_location_fit", "vendor_map_detail"}
+        isinstance(active, dict)
+        and active.get("source")
+        in {_STATIC_SOURCE, "cloud_location_fit", "vendor_map_detail"}
     ) or (
-        isinstance(vendor, dict) and vendor.get("source") in {_STATIC_SOURCE, "vendor_map_detail"}
+        isinstance(vendor, dict)
+        and vendor.get("source") in {_STATIC_SOURCE, "vendor_map_detail"}
     )
     if relevant:
         self._map_cache_key = None  # noqa: SLF001
@@ -355,15 +416,17 @@ def install_georeference_cartographic_semantics() -> None:
 
     _ORIGINAL_FROM_GEOMETRY = _georeference.georeference_from_geometry
     _ORIGINAL_UPDATE = _georeference.update_georeference
-    _ORIGINAL_LOAD = _coordinator_semantics.NavimowCoordinator.async_load_persistent_state
+    _ORIGINAL_LOAD = (
+        _coordinator_semantics.NavimowCoordinator.async_load_persistent_state
+    )
 
     _georeference.georeference_from_geometry = _decorate_vendor_metadata
     _georeference.update_georeference = _update
     _coordinator_semantics.update_georeference = _update
-    _coordinator_semantics.NavimowCoordinator.async_load_persistent_state = _load_persistent_state
+    _coordinator_semantics.NavimowCoordinator.async_load_persistent_state = (
+        _load_persistent_state
+    )
     _INSTALLED = True
 
 
-__all__ = [
-    "install_georeference_cartographic_semantics",
-]
+__all__ = ["install_georeference_cartographic_semantics"]
