@@ -104,41 +104,47 @@ def reference_candidate_diagnostics(
         sw_local = (center_local[0] - width / 2.0, center_local[1] - height / 2.0)
         ne_local = (center_local[0] + width / 2.0, center_local[1] + height / 2.0)
 
+    origin_gps = geo._gps(geometry.get("origin_gps"))  # noqa: SLF001
+    center_gps = geo._gps(geometry.get("center_gps"))  # noqa: SLF001
+    sw_gps = geo._gps(geometry.get("sw_gps"))  # noqa: SLF001
+    ne_gps = geo._gps(geometry.get("ne_gps"))  # noqa: SLF001
+    rtk_anchor = _rtk_anchor(geometry)
+
     candidates: dict[str, Any] = {}
     _add_candidate(
         candidates,
-        "vendor_origin_gps",
+        "vendor_origin_gps_at_local_origin_hypothesis",
         _active_point(active, origin_local),
-        geo._gps(geometry.get("origin_gps")),  # noqa: SLF001
-        meaning="vendor origin_gps at local map (0,0)",
+        origin_gps,
+        meaning="hypothesis check: vendor origin_gps interpreted as local map (0,0)",
     )
     _add_candidate(
         candidates,
         "vendor_center_gps",
         _active_point(active, center_local),
-        geo._gps(geometry.get("center_gps")),  # noqa: SLF001
+        center_gps,
         meaning="vendor center_gps at map_circle_center",
     )
     _add_candidate(
         candidates,
         "vendor_south_west_gps",
         _active_point(active, sw_local),
-        geo._gps(geometry.get("sw_gps")),  # noqa: SLF001
+        sw_gps,
         meaning="vendor sw_gps at derived local south-west corner",
     )
     _add_candidate(
         candidates,
         "vendor_north_east_gps",
         _active_point(active, ne_local),
-        geo._gps(geometry.get("ne_gps")),  # noqa: SLF001
+        ne_gps,
         meaning="vendor ne_gps at derived local north-east corner",
     )
     _add_candidate(
         candidates,
-        "rtk_anchor",
+        "rtk_anchor_at_local_origin_hypothesis",
         _active_point(active, origin_local),
-        _rtk_anchor(geometry),
-        meaning="RTK_anchor interpreted as local map (0,0)",
+        rtk_anchor,
+        meaning="hypothesis check: RTK_anchor interpreted as local map (0,0)",
     )
 
     explicit = geo.georeference_from_geometry(geometry)
@@ -191,16 +197,24 @@ def reference_candidate_diagnostics(
                 meaning="live docked GPS treated as the map station local point",
             )
 
+    relations: dict[str, Any] = {}
+    rtk_minus_origin = _vector(origin_gps, rtk_anchor)
+    if rtk_minus_origin is not None:
+        relations["rtk_anchor_minus_origin_gps"] = rtk_minus_origin
+    center_minus_origin = _vector(origin_gps, center_gps)
+    if center_minus_origin is not None:
+        relations["center_gps_minus_origin_gps"] = center_minus_origin
+
     rtk = geometry.get("rtk") if isinstance(geometry.get("rtk"), dict) else {}
     raw_bias = rtk.get("bias") if isinstance(rtk, dict) else None
     raw_pile = rtk.get("pile") if isinstance(rtk, dict) else None
     metadata = {
         "map_north_offset_present": geo._float(geometry.get("map_north_offset")) is not None,  # noqa: SLF001
-        "origin_gps_present": geo._gps(geometry.get("origin_gps")) is not None,  # noqa: SLF001
-        "center_gps_present": geo._gps(geometry.get("center_gps")) is not None,  # noqa: SLF001
-        "south_west_gps_present": geo._gps(geometry.get("sw_gps")) is not None,  # noqa: SLF001
-        "north_east_gps_present": geo._gps(geometry.get("ne_gps")) is not None,  # noqa: SLF001
-        "rtk_anchor_present": _rtk_anchor(geometry) is not None,
+        "origin_gps_present": origin_gps is not None,
+        "center_gps_present": center_gps is not None,
+        "south_west_gps_present": sw_gps is not None,
+        "north_east_gps_present": ne_gps is not None,
+        "rtk_anchor_present": rtk_anchor is not None,
         "rtk_bias_present": isinstance(raw_bias, str) and "nrtk_lrtk_bias" in raw_bias,
         "rtk_pile_present": isinstance(raw_pile, str) and "LRTK" in raw_pile,
         "learned_fit_present": learned is not None,
@@ -217,6 +231,7 @@ def reference_candidate_diagnostics(
         "active_rotation_deg": round(math.degrees(rotation), 4) if rotation is not None else None,
         "vendor_metadata": metadata,
         "candidate_offsets": candidates,
+        "absolute_reference_relations": relations,
     }
 
 
