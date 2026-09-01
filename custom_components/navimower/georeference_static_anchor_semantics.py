@@ -1,18 +1,20 @@
-"""Prefer vendor static map anchors when map-detail proves a stable WGS84 frame."""
+"""Prefer stable vendor map anchors, including X3 RTK origin metadata."""
 from __future__ import annotations
 
 from copy import deepcopy
 import math
+import re
 from typing import Any, Callable
 
 from . import georeference as _georeference
 
 _STATIC_SOURCE = "vendor_map_static_fit"
+_X3_RTK_SOURCE = "x3_rtk_anchor"
 _STATIC_MAX_POINT_ERROR_M = 1.0
 _STATIC_MIN_DIAGONAL_M = 10.0
 _STATIC_MIN_SCALE = 0.97
 _STATIC_MAX_SCALE = 1.03
-_PROBE_MARKER = "static_vendor_anchor_v1"
+_PROBE_MARKER = "x3_rtk_anchor_v2"
 
 _INSTALLED = False
 _ORIGINAL_FROM_GEOMETRY: Callable[[Any], dict[str, Any] | None] | None = None
@@ -74,6 +76,130 @@ def _fit_static_ties(
         calc_north = -dx * math.sin(rotation) + dy * math.cos(rotation)
         residuals.append(math.hypot(calc_east - east, calc_north - north))
     return transform, residuals, observed_scale
+
+
+def _rtk_anchor(geom: dict[str, Any]) -> tuple[float, float, float | None] | None:
+    """Parse ``RTK_anchor: lat lon altitude`` from X3 map-detail metadata."""
+    rtk = geom.get("rtk")
+    if not isinstance(rtk, dict):
+        return None
+    raw = rtk.get("anchor")
+    if not isinstance(raw, str):
+        return None
+    mode = re.search(r"RTK_mode:\s*(\d+)", raw)
+    match = re.search(
+        r"RTK_anchor:\s*([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)(?:\s+([-+]?\d+(?:\.\d+)?))?",
+        raw,
+    )
+    if match is None or (mode is not None and mode.group(1) != "1"):
+        return None
+    latitude = _georeference._float(match.group(1))  # noqa: SLF001
+    longitude = _georeference._float(match.group(2))  # noqa: SLF001
+    altitude = _georeference._float(match.group(3)) if match.group(3) else None  # noqa: SLF001
+    if (
+        latitude is None
+        or longitude is None
+        or not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0)
+        or (abs(latitude) < 1e-12 and abs(longitude) < 1e-12)
+    ):
+        return None
+    return latitude, longitude, altitude
+
+
+def _rtk_pile(geom: dict[str, Any]) -> list[float] | None:
+    """Parse the X3 ``LRTK`` pile record for diagnostics/frame evidence."""
+    rtk = geom.get("rtk")
+    raw = rtk.get("pile") if isinstance(rtk, dict) else None
+    if not isinstance(raw, str):
+        return None
+    match = re.match(
+        r"\s*LRTK\s+([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)",
+        raw,
+    )
+    if match is None:
+        return None
+    return [float(match.group(index)) for index in range(1, 5)]
+
+
+def _rtk_bias(geom: dict[str, Any]) -> dict[str, Any] | None:
+    rtk = geom.get("rtk")
+    raw = rtk.get("bias") if isinstance(rtk, dict) else None
+    if not isinstance(raw, str):
+        return None
+    result: dict[str, Any] = {}
+    match = re.search(
+        r"nrtk_lrtk_bias:\s*([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)\s+([-+]?\d+(?:\.\d+)?)",
+        raw,
+    )
+    if match is not None:
+        result["nrtk_lrtk_bias"] = [float(match.group(i)) for i in range(1, 4)]
+    refined = re.search(r"nrtk_lrtk_bias_refined:\s*(\d+)", raw)
+    if refined is not None:
+        result["refined"] = refined.group(1) == "1"
+    return result or None
+
+
+def _apply_x3_rtk_anchor(
+    geom: dict[str, Any], candidate: dict[str, Any], origin: tuple[float, float]
+) -> dict[str, Any]:
+    """Use X3 RTK anchor as local (0,0) WGS84 translation when available.
+
+    Static map ties still provide rotation/scale evidence. The RTK anchor only
+    replaces their common absolute translation, which is the part observed to be
+    offset on X390 maps.
+    """
+    anchor = _rtk_anchor(geom)
+    pile = _rtk_pile(geom)
+    if anchor is None or pile is None:
+        return candidate
+
+    latitude, longitude, altitude = anchor
+    offset = _georeference.wgs84_offset_m(
+        origin[0], origin[1], latitude, longitude
+    )
+    if offset is None:
+        return candidate
+    east_m, north_m = offset
+
+    result = deepcopy(candidate)
+    result["source"] = _X3_RTK_SOURCE
+    result["anchor_policy"] = "x3_rtk_anchor_primary"
+    result["reference"] = {
+        "local_x": 0.0,
+        "local_y": 0.0,
+        "latitude": latitude,
+        "longitude": longitude,
+    }
+    result["rtk_anchor"] = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "altitude_m": altitude,
+        "local_x": 0.0,
+        "local_y": 0.0,
+    }
+    result["rtk_validation"] = {
+        "status": "validated",
+        "valid": True,
+        "translation_source": "RTK_anchor",
+        "rotation_source": "vendor_static_tie_fit",
+        "map_origin_difference": {
+            "east_m": round(east_m, 3),
+            "north_m": round(north_m, 3),
+            "distance_m": round(math.hypot(east_m, north_m), 3),
+            "bearing_deg_from_north": round(
+                (math.degrees(math.atan2(east_m, north_m)) + 360.0) % 360.0,
+                2,
+            ),
+        },
+        # Vendor LRTK pile uses Y/X ordering in observed X390 payloads; retain
+        # both raw values and the interpreted map-plane pair for diagnostics.
+        "pile_raw": pile,
+        "pile_local_xy_interpreted": [pile[1], pile[0]],
+    }
+    bias = _rtk_bias(geom)
+    if bias is not None:
+        result["rtk_validation"]["bias"] = bias
+    return result
 
 
 def _static_map_georeference(geom: Any) -> dict[str, Any] | None:
@@ -148,7 +274,7 @@ def _static_map_georeference(geom: Any) -> dict[str, Any] | None:
             },
         }
     )
-    return candidate
+    return _apply_x3_rtk_anchor(geom, candidate, origin)
 
 
 def _from_geometry(geom: Any) -> dict[str, Any] | None:
@@ -173,7 +299,7 @@ def _static_primary_active(map_geometry: dict[str, Any], location: Any, result: 
     vendor = map_geometry.get("_vendor_georeference")
     if (
         not isinstance(vendor, dict)
-        or vendor.get("source") != _STATIC_SOURCE
+        or vendor.get("source") not in {_STATIC_SOURCE, _X3_RTK_SOURCE}
         or (vendor.get("static_validation") or {}).get("valid") is not True
     ):
         return None
@@ -185,10 +311,10 @@ def _static_primary_active(map_geometry: dict[str, Any], location: Any, result: 
     active.update(
         {
             "schema_version": 2,
-            "source": _STATIC_SOURCE,
+            "source": vendor.get("source"),
             "status": "validated",
             "map_revision": str(map_geometry.get("revision") or ""),
-            "anchor_policy": "static_map_primary",
+            "anchor_policy": vendor.get("anchor_policy") or "static_map_primary",
             "calibration": _georeference._calibration_summary(calibration),  # noqa: SLF001
         }
     )
@@ -229,7 +355,7 @@ def _update(map_geometry: Any, location: Any) -> dict[str, Any] | None:
 
 
 async def _load_persistent_state(self: Any) -> None:
-    """Force one map-detail refresh for pre-beta12 cloud-only cached maps."""
+    """Force one map-detail refresh for caches that predate X3 RTK anchoring."""
     if _ORIGINAL_LOAD is None:
         return
     await _ORIGINAL_LOAD(self)
@@ -237,18 +363,16 @@ async def _load_persistent_state(self: Any) -> None:
     if not isinstance(geometry, dict) or geometry.get(_PROBE_MARKER):
         return
     georeference = geometry.get("georeference")
-    if (
-        isinstance(georeference, dict)
-        and georeference.get("source") == "cloud_location_fit"
-        and not isinstance(geometry.get("_vendor_georeference"), dict)
-    ):
-        # The old persisted geometry did not retain origin_gps/center_gps/bounds,
-        # so re-download map-detail exactly once and let the new parser inspect it.
+    source = georeference.get("source") if isinstance(georeference, dict) else None
+    if source in {"cloud_location_fit", _STATIC_SOURCE}:
+        # Older persisted geometry does not retain the raw RTK strings. Re-fetch
+        # map-detail once so X3 can discover RTK_anchor while i1 simply rebuilds
+        # the same validated static anchor.
         self._map_cache_key = None  # noqa: SLF001
 
 
 def install_georeference_static_anchor_semantics() -> None:
-    """Install static-anchor detection after the adaptive learned-fit policy."""
+    """Install static/RTK-anchor detection after adaptive learned-fit policy."""
     global _INSTALLED, _ORIGINAL_FROM_GEOMETRY, _ORIGINAL_UPDATE, _ORIGINAL_LOAD
     if _INSTALLED:
         return
