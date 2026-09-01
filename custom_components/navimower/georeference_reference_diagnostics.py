@@ -38,7 +38,19 @@ def _active_point(active: Any, local: tuple[float, float] | None) -> tuple[float
     return geo.local_xy_to_wgs84(active, local[0], local[1])
 
 
-def _rtk_anchor(geometry: dict[str, Any]) -> tuple[float, float] | None:
+def _dict_gps(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, dict):
+        return None
+    latitude = geo._float(value.get("latitude"))  # noqa: SLF001
+    longitude = geo._float(value.get("longitude"))  # noqa: SLF001
+    if latitude is None or longitude is None:
+        return None
+    if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+        return None
+    return latitude, longitude
+
+
+def _raw_rtk_anchor(geometry: dict[str, Any]) -> tuple[float, float] | None:
     rtk = geometry.get("rtk")
     raw = rtk.get("anchor") if isinstance(rtk, dict) else None
     if not isinstance(raw, str):
@@ -53,6 +65,14 @@ def _rtk_anchor(geometry: dict[str, Any]) -> tuple[float, float] | None:
     if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
         return None
     return latitude, longitude
+
+
+def _vendor_georeference(geometry: dict[str, Any]) -> dict[str, Any] | None:
+    vendor = geometry.get("_vendor_georeference")
+    if isinstance(vendor, dict):
+        return vendor
+    candidate = geo.georeference_from_geometry(geometry)
+    return candidate if isinstance(candidate, dict) else None
 
 
 def _learned_fit(geometry: dict[str, Any]) -> dict[str, Any] | None:
@@ -86,7 +106,12 @@ def reference_candidate_diagnostics(
     *,
     docked: bool = False,
 ) -> dict[str, Any]:
-    """Compare all cached absolute map references without changing the map.
+    """Compare cached absolute map references without changing the map.
+
+    Raw map-detail is reduced before it reaches the normal coordinator cache.
+    Beta16 therefore also reads the normalized ``_vendor_georeference`` evidence
+    retained during map decoding instead of assuming the reduced geometry still
+    contains raw ``*_gps`` and ``rtk`` fields.
 
     All exported values are relative metre vectors. Raw WGS84 coordinates are
     deliberately omitted so Home Assistant Download diagnostics stays safe to
@@ -95,29 +120,83 @@ def reference_candidate_diagnostics(
     if not isinstance(geometry, dict) or not isinstance(active, dict):
         return {"read_only": True, "available": False}
 
+    vendor = _vendor_georeference(geometry)
+    vendor = vendor if isinstance(vendor, dict) else {}
+    vendor_meta = vendor.get("vendor_metadata")
+    vendor_meta = vendor_meta if isinstance(vendor_meta, dict) else {}
+    vendor_source = vendor.get("source")
+
     center_local = geo._xy(geometry.get("map_circle_center"))  # noqa: SLF001
-    origin_local = (0.0, 0.0)
+    if center_local is None:
+        center_local = geo._xy(vendor_meta.get("map_circle_center_local"))  # noqa: SLF001
+    if center_local is None and vendor_source == "vendor_map_detail":
+        reference = vendor.get("reference") or {}
+        local_x = geo._float(reference.get("local_x"))  # noqa: SLF001
+        local_y = geo._float(reference.get("local_y"))  # noqa: SLF001
+        if local_x is not None and local_y is not None:
+            center_local = (local_x, local_y)
+
     width = geo._float(geometry.get("map_width"))  # noqa: SLF001
+    if width is None:
+        width = geo._float(geometry.get("width"))  # noqa: SLF001
+    if width is None:
+        width = geo._float(vendor_meta.get("map_width_m"))  # noqa: SLF001
     height = geo._float(geometry.get("map_height"))  # noqa: SLF001
+    if height is None:
+        height = geo._float(geometry.get("height"))  # noqa: SLF001
+    if height is None:
+        height = geo._float(vendor_meta.get("map_height_m"))  # noqa: SLF001
+
+    origin_local = (0.0, 0.0)
     sw_local = ne_local = None
     if center_local is not None and width is not None and height is not None:
         sw_local = (center_local[0] - width / 2.0, center_local[1] - height / 2.0)
         ne_local = (center_local[0] + width / 2.0, center_local[1] + height / 2.0)
 
     origin_gps = geo._gps(geometry.get("origin_gps"))  # noqa: SLF001
+    if origin_gps is None:
+        origin_gps = _dict_gps(vendor.get("origin"))
+
     center_gps = geo._gps(geometry.get("center_gps"))  # noqa: SLF001
+    if center_gps is None:
+        center_gps = _dict_gps(vendor.get("center"))
+    if center_gps is None and vendor_source == "vendor_map_detail":
+        center_gps = _dict_gps(vendor.get("reference"))
+
+    bounds = vendor.get("bounds") if isinstance(vendor.get("bounds"), dict) else {}
     sw_gps = geo._gps(geometry.get("sw_gps"))  # noqa: SLF001
+    if sw_gps is None:
+        sw_gps = _dict_gps(bounds.get("south_west"))
     ne_gps = geo._gps(geometry.get("ne_gps"))  # noqa: SLF001
-    rtk_anchor = _rtk_anchor(geometry)
+    if ne_gps is None:
+        ne_gps = _dict_gps(bounds.get("north_east"))
+
+    rtk_anchor = _dict_gps(vendor.get("rtk_anchor")) or _raw_rtk_anchor(geometry)
 
     candidates: dict[str, Any] = {}
-    _add_candidate(
-        candidates,
-        "vendor_origin_gps_at_local_origin_hypothesis",
-        _active_point(active, origin_local),
-        origin_gps,
-        meaning="hypothesis check: vendor origin_gps interpreted as local map (0,0)",
-    )
+    if vendor_source == "vendor_map_static_fit" or geo._float(geometry.get("map_north_offset")) is None:  # noqa: SLF001
+        _add_candidate(
+            candidates,
+            "vendor_origin_gps_at_local_origin",
+            _active_point(active, origin_local),
+            origin_gps,
+            meaning="static-map vendor origin_gps at local map (0,0)",
+        )
+        _add_candidate(
+            candidates,
+            "vendor_south_west_gps",
+            _active_point(active, sw_local),
+            sw_gps,
+            meaning="static-map vendor sw_gps at derived local south-west corner",
+        )
+        _add_candidate(
+            candidates,
+            "vendor_north_east_gps",
+            _active_point(active, ne_local),
+            ne_gps,
+            meaning="static-map vendor ne_gps at derived local north-east corner",
+        )
+
     _add_candidate(
         candidates,
         "vendor_center_gps",
@@ -125,35 +204,13 @@ def reference_candidate_diagnostics(
         center_gps,
         meaning="vendor center_gps at map_circle_center",
     )
-    _add_candidate(
-        candidates,
-        "vendor_south_west_gps",
-        _active_point(active, sw_local),
-        sw_gps,
-        meaning="vendor sw_gps at derived local south-west corner",
-    )
-    _add_candidate(
-        candidates,
-        "vendor_north_east_gps",
-        _active_point(active, ne_local),
-        ne_gps,
-        meaning="vendor ne_gps at derived local north-east corner",
-    )
-    _add_candidate(
-        candidates,
-        "rtk_anchor_at_local_origin_hypothesis",
-        _active_point(active, origin_local),
-        rtk_anchor,
-        meaning="hypothesis check: RTK_anchor interpreted as local map (0,0)",
-    )
 
-    explicit = geo.georeference_from_geometry(geometry)
-    if explicit is not None:
+    if vendor_source == "vendor_map_detail" and geo.georeference_is_valid(vendor):
         _add_candidate(
             candidates,
             "explicit_vendor_transform_at_origin",
             _active_point(active, origin_local),
-            _active_point(explicit, origin_local),
+            _active_point(vendor, origin_local),
             meaning="explicit map_north_offset vendor transform evaluated at local (0,0)",
         )
 
@@ -205,18 +262,31 @@ def reference_candidate_diagnostics(
     if center_minus_origin is not None:
         relations["center_gps_minus_origin_gps"] = center_minus_origin
 
-    rtk = geometry.get("rtk") if isinstance(geometry.get("rtk"), dict) else {}
-    raw_bias = rtk.get("bias") if isinstance(rtk, dict) else None
-    raw_pile = rtk.get("pile") if isinstance(rtk, dict) else None
+    raw_rtk = geometry.get("rtk") if isinstance(geometry.get("rtk"), dict) else {}
+    raw_bias = raw_rtk.get("bias") if isinstance(raw_rtk, dict) else None
+    raw_pile = raw_rtk.get("pile") if isinstance(raw_rtk, dict) else None
     metadata = {
-        "map_north_offset_present": geo._float(geometry.get("map_north_offset")) is not None,  # noqa: SLF001
-        "origin_gps_present": origin_gps is not None,
-        "center_gps_present": center_gps is not None,
-        "south_west_gps_present": sw_gps is not None,
-        "north_east_gps_present": ne_gps is not None,
-        "rtk_anchor_present": rtk_anchor is not None,
-        "rtk_bias_present": isinstance(raw_bias, str) and "nrtk_lrtk_bias" in raw_bias,
-        "rtk_pile_present": isinstance(raw_pile, str) and "LRTK" in raw_pile,
+        "map_north_offset_present": bool(
+            vendor_meta.get("map_north_offset_present")
+            or vendor_source == "vendor_map_detail"
+            or geo._float(geometry.get("map_north_offset")) is not None  # noqa: SLF001
+            or geo._float(geometry.get("north_offset")) is not None  # noqa: SLF001
+        ),
+        "origin_gps_present": bool(vendor_meta.get("origin_gps_present") or origin_gps is not None),
+        "center_gps_present": bool(vendor_meta.get("center_gps_present") or center_gps is not None),
+        "south_west_gps_present": bool(vendor_meta.get("south_west_gps_present") or sw_gps is not None),
+        "north_east_gps_present": bool(vendor_meta.get("north_east_gps_present") or ne_gps is not None),
+        "rtk_anchor_present": bool(vendor_meta.get("rtk_anchor_present") or rtk_anchor is not None),
+        "rtk_bias_present": bool(
+            vendor_meta.get("rtk_bias_present")
+            or (isinstance(raw_bias, str) and "nrtk_lrtk_bias" in raw_bias)
+            or isinstance((vendor.get("rtk_validation") or {}).get("bias"), dict)
+        ),
+        "rtk_pile_present": bool(
+            vendor_meta.get("rtk_pile_present")
+            or (isinstance(raw_pile, str) and "LRTK" in raw_pile)
+            or (vendor.get("rtk_validation") or {}).get("pile_raw") is not None
+        ),
         "learned_fit_present": learned is not None,
         "station_present": isinstance(geometry.get("station"), dict),
     }
@@ -229,9 +299,11 @@ def reference_candidate_diagnostics(
         "active_source": active.get("source"),
         "active_anchor_policy": active.get("anchor_policy"),
         "active_rotation_deg": round(math.degrees(rotation), 4) if rotation is not None else None,
+        "vendor_source": vendor_source,
         "vendor_metadata": metadata,
         "candidate_offsets": candidates,
         "absolute_reference_relations": relations,
+        "cartographic_frame": dict(active.get("cartographic_frame") or {}),
     }
 
 
