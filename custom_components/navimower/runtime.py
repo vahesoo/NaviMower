@@ -11,6 +11,7 @@ from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
 from .georeference_diagnostics_semantics import install_georeference_diagnostics_semantics
 from .georeference_semantics import install_georeference_semantics
+from .georeference_static_anchor_semantics import install_georeference_static_anchor_semantics
 from .navigation_fallback import install_navigation_fallback
 from .notification_feed import install_notification_feed
 from .private_cloud_region import install_private_cloud_region
@@ -31,6 +32,7 @@ def install_runtime_extensions() -> None:
     install_capability_profile()
     install_capability_semantics()
     install_georeference_semantics()
+    install_georeference_static_anchor_semantics()
     install_georeference_diagnostics_semantics()
     install_navigation_fallback()
     install_notification_feed()
