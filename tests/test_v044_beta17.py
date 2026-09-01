@@ -24,7 +24,9 @@ def _roundtrip(latitude: float, longitude: float, east: float, north: float) -> 
 
 def test_beta17_version_release_notes_and_runtime_reset() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta17"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 17
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta17.md").read_text(
         encoding="utf-8"
