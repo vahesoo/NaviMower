@@ -38,6 +38,14 @@ class ModelCapabilityProfile:
     terrain_adapt: bool = False
     edge_sense: bool = False
     grass_pattern_enhancement: bool = False
+    # ``rain_detection`` is the master rain-behavior switch used on mower
+    # families with separate physical-sensor and forecast toggles.  ``None``
+    # means the family has not been proven either way and legacy field-presence
+    # discovery is retained.  ``physical_rain_sensor`` refers only to the
+    # dedicated hardware-backed Rain sensor switch; forecast weather controls
+    # are intentionally separate.
+    rain_detection: bool | None = None
+    physical_rain_sensor: bool | None = None
 
 
 _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
@@ -56,15 +64,24 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_writable=True,
         terrain_adapt=True,
         edge_sense=True,
+        rain_detection=True,
+        physical_rain_sensor=True,
     ),
     # i1 exposes the physical 20-60 mm range in device metadata, but the user
     # adjusts the deck with the mower's manual knob.  Until a knob-position
     # sensor is proven by before/after diagnostics, do not treat set-list.height
     # as the current deck height and never expose a remote height writer.
+    #
+    # Field validation also shows the i1 weather UI has one shared Rain forecast
+    # switch plus rain delay/time and forecast sensitivity.  The broad vendor
+    # schema may still report rainDetectionSwitch/rainSensor, but i1 has neither
+    # the separate Rain detection control nor a physical rain-sensor control.
     FAMILY_I1: ModelCapabilityProfile(
         family=FAMILY_I1,
         cutting_height_adjustment="manual",
         cutting_height_range_mm=(20, 60),
+        rain_detection=False,
+        physical_rain_sensor=False,
     ),
     FAMILY_I2_AWD: ModelCapabilityProfile(
         family=FAMILY_I2_AWD,
@@ -74,6 +91,11 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_writable=True,
         traction_control=True,
     ),
+    # i2 LiDAR follows the i1-style weather-control architecture in current
+    # field evidence: Rain forecast is the user-facing master weather toggle and
+    # the mower does not have a physical rain sensor.  Keep rain delay/time and
+    # forecast-sensitivity controls discoverable; suppress only the two shared-
+    # schema controls which the mower does not actually expose in the app.
     FAMILY_I2_LIDAR: ModelCapabilityProfile(
         family=FAMILY_I2_LIDAR,
         cutting_height_adjustment="electronic",
@@ -81,6 +103,8 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_readable=True,
         cutting_height_writable=True,
         edge_sense=True,
+        rain_detection=False,
+        physical_rain_sensor=False,
     ),
     FAMILY_I2_UNKNOWN: ModelCapabilityProfile(family=FAMILY_I2_UNKNOWN),
     FAMILY_X3: ModelCapabilityProfile(
@@ -89,6 +113,8 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_range_mm=(20, 70),
         cutting_height_readable=True,
         cutting_height_writable=True,
+        rain_detection=True,
+        physical_rain_sensor=True,
     ),
     FAMILY_X4: ModelCapabilityProfile(
         family=FAMILY_X4,
