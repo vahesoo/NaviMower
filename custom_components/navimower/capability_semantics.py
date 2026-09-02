@@ -305,6 +305,10 @@ def _install_switch_semantics() -> None:
     def model_supported(description: Any, data: dict[str, Any]) -> bool:
         family = _family_profile(data)
         key = description.key
+        if key == "rain_detection" and family.rain_detection is False:
+            return False
+        if key == "rain_sensor" and family.physical_rain_sensor is False:
+            return False
         if key == "traction_control":
             return family.traction_control
         if key == "terrain_adapt":
