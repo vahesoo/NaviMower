@@ -9,6 +9,7 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
+from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_semantics import install_georeference_diagnostics_semantics
 from .georeference_geodesy_semantics import (
     install_georeference_geodesy_semantics,
@@ -42,14 +43,14 @@ def install_runtime_extensions() -> None:
     install_georeference_semantics()
     install_georeference_static_anchor_semantics()
     install_georeference_x3_bias_semantics()
-    # Wrap the final georeference chain after X3 semantics so one old spherical
-    # persisted fit is discarded and every fresh active transform records which
-    # geodesy model produced it.
+    # Wrap the vendor/local georeference chain first so persisted spherical fits
+    # are migrated and every fresh transform records the WGS84 ellipsoid model.
     install_georeference_geodesy_state_semantics()
-    # beta16's ETRS89/ITRF cartographic translation remains available as an
-    # experimental module, but is intentionally not installed automatically:
-    # the vendor's absolute GNSS CRS is not declared and new raw evidence must
-    # be collected in the vendor geographic frame first.
+    # European static orthophotos use the ETRS89/ETRF cartographic frame. Apply
+    # the small EPSG:8366 translation only after the WGS84 ellipsoid pipeline is
+    # complete. The cartographic layer keeps local X/Y, rotation and scale intact
+    # and explicitly excludes X3's vendor RTK-anchor/bias path.
+    install_georeference_cartographic_semantics()
     install_georeference_diagnostics_semantics()
     install_navigation_fallback()
     install_notification_feed()
