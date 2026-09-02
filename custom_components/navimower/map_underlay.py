@@ -255,15 +255,22 @@ class GoogleMapTilesManager:
         language: str,
         region: str,
     ) -> None:
-        """Validate a newly entered API key by creating a satellite session."""
+        """Validate a candidate key without poisoning the saved-key session."""
+        validation_key = f"__validate__:{account_key}"
+        self.invalidate_account(validation_key)
+        try:
+            await self.async_ensure_session(
+                http_session,
+                validation_key,
+                api_key,
+                language=language,
+                region=region,
+            )
+        finally:
+            self.invalidate_account(validation_key)
+        # Validation succeeded. Forget any session made with the previously
+        # stored key so the first request after Options Flow save starts cleanly.
         self.invalidate_account(account_key)
-        await self.async_ensure_session(
-            http_session,
-            account_key,
-            api_key,
-            language=language,
-            region=region,
-        )
 
     async def async_tile(
         self,
