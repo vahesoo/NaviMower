@@ -10,6 +10,9 @@ from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
+from .georeference_diagnostics_frame_semantics import (
+    install_georeference_diagnostics_frame_semantics,
+)
 from .georeference_diagnostics_semantics import install_georeference_diagnostics_semantics
 from .georeference_geodesy_semantics import (
     install_georeference_geodesy_semantics,
@@ -17,6 +20,9 @@ from .georeference_geodesy_semantics import (
 )
 from .georeference_semantics import install_georeference_semantics
 from .georeference_static_anchor_semantics import install_georeference_static_anchor_semantics
+from .georeference_translation_refinement_semantics import (
+    install_georeference_translation_refinement_semantics,
+)
 from .georeference_x3_bias_semantics import install_georeference_x3_bias_semantics
 from .navigation_fallback import install_navigation_fallback
 from .notification_feed import install_notification_feed
@@ -43,14 +49,22 @@ def install_runtime_extensions() -> None:
     install_georeference_semantics()
     install_georeference_static_anchor_semantics()
     install_georeference_x3_bias_semantics()
-    # Wrap the vendor/local georeference chain first so persisted spherical fits
-    # are migrated and every fresh transform records the WGS84 ellipsoid model.
+    # Static vendor ties keep rotation/local geometry authoritative. A mature,
+    # tightly validated cloud XY/GPS fit may refine translation only. X3 is
+    # already excluded because its RTK-anchor/bias path owns translation.
+    install_georeference_translation_refinement_semantics()
+    # Wrap the vendor/local georeference chain so persisted spherical fits are
+    # migrated and every fresh transform records the WGS84 ellipsoid model.
     install_georeference_geodesy_state_semantics()
     # European static orthophotos use the ETRS89/ETRF cartographic frame. Apply
     # the small EPSG:8366 translation only after the WGS84 ellipsoid pipeline is
     # complete. The cartographic layer keeps local X/Y, rotation and scale intact
     # and explicitly excludes X3's vendor RTK-anchor/bias path.
     install_georeference_cartographic_semantics()
+    # Candidate diagnostics compare raw vendor/cloud GPS with the cartographic
+    # active map, so normalize candidates into the same presentation frame before
+    # reporting residual vectors.
+    install_georeference_diagnostics_frame_semantics()
     install_georeference_diagnostics_semantics()
     install_navigation_fallback()
     install_notification_feed()

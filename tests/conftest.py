@@ -28,4 +28,13 @@ def pytest_ignore_collect(collection_path, config) -> bool:  # noqa: ARG001
         beta_name = name.removeprefix("test_v042_").removesuffix(".py")
         if version != f"0.4.2-{beta_name}":
             return True
+
+    # The 0.4.4 georeference investigation intentionally changed temporary
+    # contracts between betas (for example beta17 disabled the cartographic
+    # layer and beta19 restored it). Run only the contract matching the active
+    # 0.4.4 prerelease; permanent behavior belongs in non-versioned tests.
+    if name.startswith("test_v044_beta") and name.endswith(".py"):
+        beta_name = name.removeprefix("test_v044_").removesuffix(".py")
+        if version != f"0.4.4-{beta_name}":
+            return True
     return False
