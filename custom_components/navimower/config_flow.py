@@ -13,6 +13,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.core import callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
@@ -22,9 +23,18 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
+from .account import private_account_entries
 from .config_flow_base import NavimowConfigFlow
 from .config_flow_base import NavimowOptionsFlow as _BaseNavimowOptionsFlow
-from .const import OPT_SCHEDULE_ORDER_MODE, OPT_SCHEDULE_CUSTOM_QUEUE, SCHEDULE_ORDER_AUTOMATIC, SCHEDULE_ORDER_CUSTOM
+from .const import (
+    CONF_EMAIL,
+    DOMAIN,
+    OPT_GOOGLE_MAPS_API_KEY,
+    OPT_SCHEDULE_CUSTOM_QUEUE,
+    OPT_SCHEDULE_ORDER_MODE,
+    SCHEDULE_ORDER_AUTOMATIC,
+    SCHEDULE_ORDER_CUSTOM,
+)
 from .custom_area import (
     OPT_CUSTOM_AREAS,
     create_custom_area,
@@ -34,13 +44,20 @@ from .custom_area import (
     polygon_area_m2,
     polygon_centroid,
 )
+from .map_underlay import (
+    GoogleMapTilesError,
+    get_map_underlay_manager,
+    google_maps_api_key_for_entry,
+    google_session_locale,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _PASSIVE_DISCOVERY_OPTION = "passive_discovery"
+_CLEAR_GOOGLE_MAPS_API_KEY = "clear_google_maps_api_key"
 
 
 class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
-    """Extend the production options flow with Custom Area capture/import."""
+    """Extend production options with Custom Areas and map-underlay setup."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -130,9 +147,103 @@ class NavimowOptionsFlow(_BaseNavimowOptionsFlow):
                 "gates",
                 "custom_areas",
                 "channels",
+                "map_underlay",
             ],
         )
 
+    def _account_entries(self) -> list[Any]:
+        return private_account_entries(
+            self.hass.config_entries.async_entries(DOMAIN),
+            (self.config_entry.data or {}).get(CONF_EMAIL),
+        )
+
+    async def async_step_map_underlay(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Configure one account-scoped Google Map Tiles API key."""
+        errors: dict[str, str] = {}
+        configured = bool(
+            google_maps_api_key_for_entry(self.hass, self.config_entry)
+        )
+        manager = get_map_underlay_manager(self.hass)
+        account_key = manager.account_key(self.config_entry)
+
+        if user_input is not None:
+            clear_key = bool(user_input.get(_CLEAR_GOOGLE_MAPS_API_KEY, False))
+            api_key = str(user_input.get(OPT_GOOGLE_MAPS_API_KEY) or "").strip()
+
+            if clear_key:
+                options = self._options()
+                options.pop(OPT_GOOGLE_MAPS_API_KEY, None)
+                for peer in self._account_entries():
+                    if peer.entry_id == self.config_entry.entry_id:
+                        continue
+                    peer_options = dict(peer.options)
+                    if OPT_GOOGLE_MAPS_API_KEY in peer_options:
+                        peer_options.pop(OPT_GOOGLE_MAPS_API_KEY, None)
+                        self.hass.config_entries.async_update_entry(
+                            peer,
+                            options=peer_options,
+                        )
+                manager.invalidate_account(account_key)
+                return self.async_create_entry(data=options)
+
+            if api_key:
+                language, region = google_session_locale(
+                    self.hass,
+                    self._coordinator(),
+                )
+                try:
+                    await manager.async_validate_key(
+                        async_get_clientsession(self.hass),
+                        account_key,
+                        api_key,
+                        language=language,
+                        region=region,
+                    )
+                except GoogleMapTilesError as err:
+                    errors["base"] = (
+                        "google_maps_api_cannot_connect"
+                        if err.kind == "connection_error"
+                        else "google_maps_api_invalid"
+                    )
+                else:
+                    for peer in self._account_entries():
+                        if peer.entry_id == self.config_entry.entry_id:
+                            continue
+                        peer_options = dict(peer.options)
+                        peer_options[OPT_GOOGLE_MAPS_API_KEY] = api_key
+                        self.hass.config_entries.async_update_entry(
+                            peer,
+                            options=peer_options,
+                        )
+                    return self._save(**{OPT_GOOGLE_MAPS_API_KEY: api_key})
+            elif not errors:
+                # Empty password field means keep the existing shared key.
+                return self._save()
+
+        return self.async_show_form(
+            step_id="map_underlay",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(OPT_GOOGLE_MAPS_API_KEY, default=""): TextSelector(
+                        TextSelectorConfig(
+                            type=TextSelectorType.PASSWORD,
+                            autocomplete="off",
+                        )
+                    ),
+                    vol.Required(
+                        _CLEAR_GOOGLE_MAPS_API_KEY,
+                        default=False,
+                    ): bool,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "google_api_status": "Configured" if configured else "Not configured",
+            },
+        )
 
     def _schedule_order_selector(self, mode: str):
         return SelectSelector(

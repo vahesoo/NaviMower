@@ -62,6 +62,8 @@ def _is_sensitive_key(key: str) -> bool:
         return True
     if "token" in normalized or "password" in normalized or "secret" in normalized:
         return True
+    if normalized == "api_key" or normalized.endswith("_api_key"):
+        return True
     if normalized.endswith("_uid") or normalized.endswith("_uuid"):
         return True
     if "latitude" in normalized or "longitude" in normalized:

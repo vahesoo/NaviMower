@@ -7,11 +7,19 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MAP_API_SCHEMA_VERSION
 from .current_cycle_render import CurrentCycleRenderManager
 from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
+from .map_underlay import (
+    GoogleMapTilesError,
+    get_map_underlay_manager,
+    google_maps_api_key_for_entry,
+    google_session_locale,
+    map_underlay_metadata,
+)
 from .multi_mower import build_site_payload
 
 _REGISTERED_KEY = f"{DOMAIN}_map_api_registered"
@@ -35,7 +43,7 @@ def _query_enabled(request: web.Request, key: str) -> bool:
 
 
 def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
-    """Return stable HA identifiers the Map Card otherwise has to rediscover.
+    """Return stable HA identifiers and integration-owned frontend capabilities.
 
     Entity-registry lookups are O(1) server-side dictionary reads and avoid one
     or more full ``config/entity_registry/list`` websocket responses per card
@@ -47,6 +55,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     entry_id = coordinator.entry.entry_id
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
+    underlay = map_underlay_metadata(coordinator)
 
     def entity_id(domain: str, key: str) -> str | None:
         return entity_registry.async_get_entity_id(domain, DOMAIN, f"{sn}_{key}")
@@ -61,6 +70,8 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
             f"/api/navimower/session-render/{entry_id}/{{session_id}}"
         ),
         "site_api_path": f"/api/navimower/site/{entry_id}",
+        "location": underlay["location"],
+        "map_underlays": underlay["map_underlays"],
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
             "map_data": entity_id("sensor", "map_data"),
@@ -176,6 +187,34 @@ async def _async_map_payload(
         payload.pop("daily_trails", None)
         payload.pop("daily_trails_revision", None)
     return _with_card_metadata(coordinator, payload)
+
+
+def _google_context(request: web.Request, entry_id: str) -> tuple[Any, Any, str, Any, str, str]:
+    """Resolve one configured account-scoped Google backend context."""
+    coordinator = _coordinator(request, entry_id)
+    hass: HomeAssistant = request.app["hass"]
+    api_key = google_maps_api_key_for_entry(hass, coordinator.entry)
+    if not api_key:
+        raise web.HTTPNotFound(text="Google Satellite is not configured")
+    manager = get_map_underlay_manager(hass)
+    language, region = google_session_locale(hass, coordinator)
+    return (
+        coordinator,
+        manager,
+        manager.account_key(coordinator.entry),
+        async_get_clientsession(hass),
+        language,
+        region,
+    )
+
+
+def _google_error_response(err: GoogleMapTilesError) -> web.HTTPException:
+    """Return a stable HA-side error without forwarding Google response bodies."""
+    if err.kind == "authentication_error":
+        return web.HTTPBadGateway(text="Google Map Tiles API authentication failed")
+    if err.kind == "connection_error":
+        return web.HTTPBadGateway(text="Google Map Tiles API could not be reached")
+    return web.HTTPBadGateway(text="Google Map Tiles API request failed")
 
 
 class NavimowerMapView(HomeAssistantView):
@@ -307,8 +346,111 @@ class NavimowerSessionRenderView(HomeAssistantView):
         )
 
 
+class NavimowerGoogleTileView(HomeAssistantView):
+    """Proxy one Google Satellite tile without exposing the user's API key."""
+
+    url = "/api/navimower/underlay/google/{entry_id}/{z}/{x}/{y}"
+    name = "api:navimower:underlay:google:tile"
+    requires_auth = True
+
+    async def get(
+        self,
+        request: web.Request,
+        entry_id: str,
+        z: str,
+        x: str,
+        y: str,
+    ) -> web.Response:
+        try:
+            zoom = int(z)
+            tile_x = int(x)
+            tile_y = int(y)
+        except (TypeError, ValueError) as err:
+            raise web.HTTPBadRequest(text="Invalid Google tile coordinates") from err
+        if zoom < 0 or zoom > 30:
+            raise web.HTTPBadRequest(text="Invalid Google tile zoom")
+        tile_count = 1 << zoom
+        if not (0 <= tile_x < tile_count and 0 <= tile_y < tile_count):
+            raise web.HTTPBadRequest(text="Invalid Google tile coordinates")
+
+        coordinator, manager, account_key, http_session, language, region = (
+            _google_context(request, entry_id)
+        )
+        api_key = google_maps_api_key_for_entry(
+            coordinator.hass,
+            coordinator.entry,
+        )
+        assert api_key is not None
+        try:
+            body, headers = await manager.async_tile(
+                http_session,
+                account_key,
+                api_key,
+                z=zoom,
+                x=tile_x,
+                y=tile_y,
+                language=language,
+                region=region,
+            )
+        except GoogleMapTilesError as err:
+            raise _google_error_response(err) from err
+        return web.Response(body=body, headers=headers)
+
+
+class NavimowerGoogleViewportView(HomeAssistantView):
+    """Proxy Google viewport metadata required for attribution and max zoom."""
+
+    url = "/api/navimower/underlay/google/{entry_id}/viewport"
+    name = "api:navimower:underlay:google:viewport"
+    requires_auth = True
+
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        try:
+            zoom = int(request.query["zoom"])
+            north = float(request.query["north"])
+            south = float(request.query["south"])
+            east = float(request.query["east"])
+            west = float(request.query["west"])
+        except (KeyError, TypeError, ValueError) as err:
+            raise web.HTTPBadRequest(text="Invalid Google viewport parameters") from err
+        if zoom < 0 or zoom > 30 or not (-90 < south < north < 90):
+            raise web.HTTPBadRequest(text="Invalid Google viewport parameters")
+        if not (-180 <= east <= 180 and -180 <= west <= 180):
+            raise web.HTTPBadRequest(text="Invalid Google viewport parameters")
+
+        coordinator, manager, account_key, http_session, language, region = (
+            _google_context(request, entry_id)
+        )
+        api_key = google_maps_api_key_for_entry(
+            coordinator.hass,
+            coordinator.entry,
+        )
+        assert api_key is not None
+        try:
+            payload = await manager.async_viewport(
+                http_session,
+                account_key,
+                api_key,
+                zoom=zoom,
+                north=north,
+                south=south,
+                east=east,
+                west=west,
+                language=language,
+                region=region,
+            )
+        except GoogleMapTilesError as err:
+            raise _google_error_response(err) from err
+        return self.json(
+            {
+                "copyright": payload.get("copyright"),
+                "maxZoomRects": payload.get("maxZoomRects") or [],
+            }
+        )
+
+
 def async_register_map_api(hass: HomeAssistant) -> None:
-    """Register all map/history endpoints once per Home Assistant process."""
+    """Register all map/history/underlay endpoints once per HA process."""
     if hass.data.get(_REGISTERED_KEY):
         return
     hass.http.register_view(NavimowerMapView())
@@ -316,4 +458,6 @@ def async_register_map_api(hass: HomeAssistant) -> None:
     hass.http.register_view(NavimowerSessionsView())
     hass.http.register_view(NavimowerSessionView())
     hass.http.register_view(NavimowerSessionRenderView())
+    hass.http.register_view(NavimowerGoogleTileView())
+    hass.http.register_view(NavimowerGoogleViewportView())
     hass.data[_REGISTERED_KEY] = True

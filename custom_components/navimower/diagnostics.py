@@ -9,8 +9,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .capability_profile import build_capability_profile
-from .const import DOMAIN
+from .const import DOMAIN, OPT_GOOGLE_MAPS_API_KEY
 from .diagnostics_sanitize import sanitize
+from .map_underlay import map_underlay_diagnostics
 from .private_cloud_region import private_cloud_region_diagnostics
 from .state_semantics import error_transition_diagnostics
 
@@ -36,6 +37,13 @@ public H5 error discovery exceeded the diagnostics timeout
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     """Return a compact copy of selected coordinator fields."""
     return {key: deepcopy(data.get(key)) for key in keys if key in data}
+
+
+def _diagnostic_options(entry: ConfigEntry) -> dict[str, Any]:
+    """Return stored options without exporting secret API-key placeholders."""
+    options = deepcopy(dict(entry.options))
+    options.pop(OPT_GOOGLE_MAPS_API_KEY, None)
+    return sanitize(options)
 
 
 def _as_float(value: Any) -> float | None:
@@ -156,7 +164,7 @@ async def async_get_config_entry_diagnostics(
             "note": "integration not loaded; only the stored entry is available",
             "entry": {
                 "data": sanitize(dict(entry.data)),
-                "options": sanitize(dict(entry.options)),
+                "options": _diagnostic_options(entry),
             },
         }
 
@@ -241,7 +249,7 @@ async def async_get_config_entry_diagnostics(
         "cached_only": True,
         "entry": {
             "data": sanitize(deepcopy(dict(entry.data))),
-            "options": sanitize(deepcopy(dict(entry.options))),
+            "options": _diagnostic_options(entry),
         },
         "mower": sanitize(
             _selected(
@@ -312,6 +320,7 @@ async def async_get_config_entry_diagnostics(
         "settings": sanitize(deepcopy(settings)),
         "navimower_schedule": sanitize(deepcopy(navimower_schedule_diagnostics)),
         "georeference": sanitize(deepcopy(data.get("georeference"))),
+        "map_underlay": sanitize(map_underlay_diagnostics(coordinator)),
         "map_edit": sanitize(
             {
                 "state_code": data.get("state_code"),
@@ -406,6 +415,7 @@ async def async_get_config_entry_diagnostics(
             "0.4.3-beta42 adds cached MQTT navigation fields and passive MQTT discovery output for controlled gate-transition research.",
             "Download diagnostics remain cached-only and make no extra vendor or H5 requests.",
             "Georeference diagnostics expose local map transform and validation metadata while physical GPS coordinates remain redacted.",
+            "Map underlay diagnostics expose only configured/availability/session status; the Google API key and Google session token are never exported.",
             "Enable Passive MQTT discovery temporarily when raw event/location samples are needed; samples are sanitized by the existing discovery pipeline.",
             "Clear/Resume/Reboot discovery, Mowing Reports research and Maintenance research payloads are retired from normal diagnostics.",
             "index2.mapVersion is the fast vendor map revision signal; a change forces location/map-list and map geometry refresh in the same private-cloud poll.",
