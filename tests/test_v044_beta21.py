@@ -66,6 +66,8 @@ def test_switch_layer_gates_only_detection_and_physical_sensor() -> None:
 
     # Rain forecast and rain delay stay on their existing shared-schema paths.
     assert 'key="weather_rain"' in switch
+    assert 'translation_key="weather_rain"' in switch
+    assert 'write_key="weatherSwitch"' in switch
     assert 'key="rain_delay_mode"' in switch
     assert 'key="rain_detection"' in switch
     assert 'key="rain_sensor"' in switch
