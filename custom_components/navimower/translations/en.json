@@ -70,13 +70,14 @@
     "step": {
       "init": {
         "title": "Navimower options",
-        "description": "Configure retained trail history, Navimower Schedule, zone-pair gates, virtual Custom Areas and optional legacy local X/Y gate areas.",
+        "description": "Configure retained trail history, Navimower Schedule, zone-pair gates, virtual Custom Areas, optional legacy local X/Y gate areas and map underlay services.",
         "menu_options": {
           "general": "General and trail history",
           "navimower_schedule": "Navimower Schedule",
           "gates": "Gates",
           "channels": "Gate areas",
-          "custom_areas": "Custom areas"
+          "custom_areas": "Custom areas",
+          "map_underlay": "Map underlay"
         }
       },
       "general": {
@@ -93,6 +94,18 @@
           "include_return_trail": "Keep the mower route after cutting ends while it travels back to the dock.",
           "diagnostics_detail": "Extended includes endpoint freshness and MQTT recovery context in manual exports; tokens and account identifiers remain redacted.",
           "passive_discovery": "Temporarily subscribe to all MQTT downlink topics for this mower and retain bounded sanitized samples plus private-cloud response schemas in diagnostics. Enable only while investigating vendor notifications, camera or LiDAR features."
+        }
+      },
+      "map_underlay": {
+        "title": "Map underlay",
+        "description": "Configure optional map background services. Google Satellite API status: {google_api_status}. The Google Map Tiles API key is shared by all Navimower mower entries using the same private-cloud account. Leave the key field empty to keep the existing key. The key remains in Home Assistant and is never sent to the Map Card.",
+        "data": {
+          "google_maps_api_key": "Google Map Tiles API key",
+          "clear_google_maps_api_key": "Remove Google API key"
+        },
+        "data_description": {
+          "google_maps_api_key": "Requires the Google Maps Platform Map Tiles API to be enabled for the key. A newly entered key is validated before it is saved.",
+          "clear_google_maps_api_key": "Remove the shared Google key from every Navimower mower entry using this private-cloud account."
         }
       },
       "gates": {
@@ -249,7 +262,9 @@
       "custom_area_not_detected": "No new off-limit polygon was detected. Make sure you created exactly one new off-limit area in the Navimow app and saved the map, then try again.",
       "custom_area_multiple_detected": "More than one new off-limit polygon was detected. Keep only the single temporary area you want to import, save the map, and try again.",
       "custom_area_invalid": "The detected polygon or Custom Area name is invalid.",
-      "custom_area_duplicate": "A Custom Area with the same name already exists."
+      "custom_area_duplicate": "A Custom Area with the same name already exists.",
+      "google_maps_api_invalid": "Google rejected the Map Tiles API key or its project configuration. Check that Map Tiles API and billing are enabled for the key.",
+      "google_maps_api_cannot_connect": "Home Assistant could not reach the Google Map Tiles API. Try again."
     },
     "abort": {
       "options_saved": "Navimower options were saved and the integration is reloading.",
