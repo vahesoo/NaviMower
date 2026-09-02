@@ -64,11 +64,12 @@ def test_beta16_version_release_notes_and_runtime_order() -> None:
     x3_index = runtime.index("install_georeference_x3_bias_semantics()")
     diagnostics_index = runtime.index("install_georeference_diagnostics_semantics()")
     assert x3_index < diagnostics_index
-    if beta == 16:
+    if beta == 16 or beta >= 19:
+        # beta16 introduced the correction. beta17-beta18 intentionally disabled
+        # it while ellipsoid/vendor-frame evidence was recollected; beta19 restores
+        # the same cartographic layer after the WGS84 ellipsoid pipeline.
         assert "install_georeference_cartographic_semantics()" in runtime
     else:
-        # Later betas keep the beta16 module for direct diagnostics/tests but no
-        # longer apply the undeclared-CRS assumption in production runtime.
         assert "install_georeference_cartographic_semantics()" not in runtime
 
 
