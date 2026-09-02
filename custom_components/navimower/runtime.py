@@ -14,6 +14,7 @@ from .georeference_diagnostics_frame_semantics import (
     install_georeference_diagnostics_frame_semantics,
 )
 from .georeference_diagnostics_semantics import install_georeference_diagnostics_semantics
+from .georeference_frames_semantics import install_georeference_frames_semantics
 from .georeference_geodesy_semantics import (
     install_georeference_geodesy_semantics,
     install_georeference_geodesy_state_semantics,
@@ -66,6 +67,10 @@ def install_runtime_extensions() -> None:
     # reporting residual vectors.
     install_georeference_diagnostics_frame_semantics()
     install_georeference_diagnostics_semantics()
+    # Underlay providers may use a different geographic registration from the
+    # mower's active presentation frame. Export provider-ready frames only after
+    # every georeference layer above has finished composing the active transform.
+    install_georeference_frames_semantics()
     install_navigation_fallback()
     install_notification_feed()
     install_raw_mqtt_semantics()
