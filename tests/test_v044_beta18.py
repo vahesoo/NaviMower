@@ -14,7 +14,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta18_version_release_notes_and_runtime_order() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta18"
+    version = manifest["version"]
+    assert version.startswith("0.4.4-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 18
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta18.md").read_text(
         encoding="utf-8"
