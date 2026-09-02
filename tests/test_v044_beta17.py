@@ -26,7 +26,8 @@ def test_beta17_version_release_notes_and_runtime_reset() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
     version = manifest["version"]
     assert version.startswith("0.4.4-beta")
-    assert int(version.rsplit("beta", 1)[1]) >= 17
+    beta = int(version.rsplit("beta", 1)[1])
+    assert beta >= 17
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.4-beta17.md").read_text(
         encoding="utf-8"
@@ -48,7 +49,14 @@ def test_beta17_version_release_notes_and_runtime_reset() -> None:
     x3 = runtime.index("install_georeference_x3_bias_semantics()")
     diagnostics = runtime.index("install_georeference_diagnostics_semantics()")
     assert geodesy < georef < static < x3 < diagnostics
-    assert "install_georeference_cartographic_semantics()" not in runtime
+    if beta in {17, 18}:
+        # These two betas intentionally collected vendor-frame evidence without
+        # the beta16 ETRS89/ITRF translation in production runtime.
+        assert "install_georeference_cartographic_semantics()" not in runtime
+    else:
+        # beta19 restores the cartographic translation on top of the retained
+        # WGS84 ellipsoid metre model.
+        assert "install_georeference_cartographic_semantics()" in runtime
 
 
 def test_wgs84_ellipsoid_roundtrip_estonia() -> None:
