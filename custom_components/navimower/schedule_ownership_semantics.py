@@ -7,9 +7,10 @@ be enough to adopt or resume a native/manual multi-zone task.
 
 This extension records explicit ownership after a scheduler start is confirmed,
 rejects conflicting live task evidence, and fails closed when upgrading older
-runtime that cannot prove scheduler ownership. Generic Notification Center
-attribution is treated as unknown provenance rather than positive external-task
-evidence when it matches a recent, explicitly confirmed scheduler dispatch.
+runtime that cannot prove scheduler ownership. Notification Center attribution may
+change while the *same* retained task continues (for example after a manual Resume),
+so ownership is preserved only when zone and original task start still match the
+confirmed scheduler dispatch.
 """
 from __future__ import annotations
 
@@ -29,7 +30,8 @@ _ORIGINAL_EVALUATE_LOCKED = NavimowerScheduleController._evaluate_locked
 _ORIGINAL_ADOPT_RETAINED_TASK = pause_semantics._adopt_retained_task
 
 _GENERIC_OBSERVED_TRIGGER = "observed_without_local_command"
-_GENERIC_OBSERVED_MATCH_SECONDS = 180.0
+_MANUAL_RESUME_TRIGGER = "navimower.resume"
+_RETAINED_MATCH_SECONDS = 180.0
 _RECOVERABLE_SUSPENSION = "mow_start_not_confirmed"
 
 
@@ -84,21 +86,21 @@ def _scheduler_task_evidence(task: dict[str, Any] | None, zone_id: int) -> bool:
     return trigger.startswith("navimower_schedule") and task_ids == [zone_id]
 
 
-def _generic_observed_matches_owned_dispatch(
+def _retained_task_matches_owned_dispatch(
     controller: NavimowerScheduleController,
     task: dict[str, Any] | None,
     zone_id: int,
 ) -> bool:
-    """Treat a same-start generic observation as unknown, not external conflict.
+    """Keep ownership when attribution changes but the retained task is unchanged.
 
-    Notification Center deliberately emits ``observed_without_local_command`` when
-    it cannot find a *fresh* command trace. That does not prove another controller
-    started the task. Once Schedule has already confirmed and persisted its own
-    one-zone dispatch, a generic task observed shortly afterwards in that same zone
-    is the same task unless stronger live evidence says otherwise.
+    ``observed_without_local_command`` is intentionally neutral provenance: missing
+    the Notification Center command-attribution window does not prove an external
+    start. A confirmed manual ``navimower.resume`` also resumes the vendor-retained
+    task rather than creating a new mowing task. Either attribution may therefore
+    preserve scheduler ownership only when the one-zone task and original start time
+    still match the explicitly confirmed scheduler dispatch.
 
-    The bounded start-time match is important: stale scheduler ownership must still
-    fail closed if a later manual/native task happens to use the same zone.
+    The bounded start-time match keeps later native/manual same-zone tasks fail-closed.
     """
     if task is None:
         return False
@@ -107,9 +109,11 @@ def _generic_observed_matches_owned_dispatch(
         return False
     if not str(runtime.get("ownership_source") or "").startswith("navimower_schedule"):
         return False
-    if str(task.get("trigger") or "") != _GENERIC_OBSERVED_TRIGGER:
+
+    trigger = str(task.get("trigger") or "")
+    if trigger not in {_GENERIC_OBSERVED_TRIGGER, _MANUAL_RESUME_TRIGGER}:
         return False
-    if str(task.get("origin") or "") not in {"", "observed"}:
+    if str(task.get("origin") or "") not in {"", "observed", "retained"}:
         return False
     if _dedupe_ids(task.get("zone_ids")) != [zone_id]:
         return False
@@ -121,7 +125,7 @@ def _generic_observed_matches_owned_dispatch(
     if dispatch is None or started is None:
         return False
     delta = (started - dispatch).total_seconds()
-    return 0.0 <= delta <= _GENERIC_OBSERVED_MATCH_SECONDS
+    return 0.0 <= delta <= _RETAINED_MATCH_SECONDS
 
 
 def _live_task_conflicts(controller: NavimowerScheduleController, zone_id: int) -> bool:
@@ -145,11 +149,11 @@ def _live_task_conflicts(controller: NavimowerScheduleController, zone_id: int) 
     task_ids = _dedupe_ids(task.get("zone_ids"))
     # Scheduler handoffs may leave Notification Center on the previous scheduler
     # zone because mowing never transitioned through idle. That is still scheduler
-    # provenance. A generic same-zone observation can also be the scheduler task
-    # itself when Notification Center's short command-attribution window was missed.
-    # Explicit native/manual/other-HA task context remains a real conflict.
+    # provenance. Neutral observation or a manual Resume may also describe the same
+    # retained scheduler task if its zone and original start still match.
+    # Explicit native/manual/other-HA *new task* context remains a real conflict.
     if task_ids and not trigger.startswith("navimower_schedule"):
-        if _generic_observed_matches_owned_dispatch(controller, task, zone_id):
+        if _retained_task_matches_owned_dispatch(controller, task, zone_id):
             return False
         return True
     return False
@@ -222,28 +226,66 @@ def _unconfirmed_retry_zone(runtime: dict[str, Any]) -> int | None:
     return zone_id if zone_id is not None and zone_id > 0 else None
 
 
-async def _recover_unconfirmed_same_zone_charging_task(
-    controller: NavimowerScheduleController,
-) -> int | None:
-    """Repair the beta24 ownership-loss state without starting a new mowing task.
-
-    This migration is intentionally narrow. It only repairs a task that Schedule
-    previously rejected as unverified, then retried in the *same* allowed zone,
-    while Notification Center still proves the unfinished one-zone task stopped for
-    charging. No mower command is sent here; the existing low-battery retained-task
-    logic decides later whether the mower self-resumed or needs Resume/continue.
-    """
-    runtime = controller._runtime
-    zone_id = _unconfirmed_retry_zone(runtime)
-    if zone_id is None or zone_id not in controller._selected_zone_ids:
-        return None
-
+def _recovery_zone_is_allowed(controller: NavimowerScheduleController, zone_id: int) -> bool:
+    if zone_id not in controller._selected_zone_ids:
+        return False
     eligible_ids = {
         _as_int(row.get("id"))
         for row in controller._eligible_zones()
         if isinstance(row, dict)
     }
-    if zone_id not in eligible_ids:
+    return zone_id in eligible_ids
+
+
+def _restore_retained_runtime(
+    controller: NavimowerScheduleController,
+    *,
+    zone_id: int,
+    task: dict[str, Any],
+    progress: float,
+    interrupted_reason: str,
+    ownership_source: str,
+    ownership_result: str,
+    command_label: str,
+) -> None:
+    runtime = controller._runtime
+    row = controller._zone(zone_id) or {}
+    queue_slot = pause_semantics._matching_custom_queue_slot(controller, zone_id)
+    started_text = str(task.get("started_at") or _utc_now())
+
+    runtime["active_zone_id"] = zone_id
+    runtime["active_queue_slot"] = queue_slot
+    runtime["active_cycle_id"] = None
+    runtime["active_zone_baseline_completed_at"] = row.get("last_completed_at")
+    runtime["dispatch_started_at"] = started_text
+    runtime["just_completed_zone_id"] = None
+    runtime["resume_pending"] = True
+    runtime["interrupted_reason"] = interrupted_reason
+    runtime["interrupted_zone_id"] = zone_id
+    runtime["interrupted_cycle_id"] = None
+    runtime["progress_before_interrupt"] = progress
+    runtime["charging_limit_reached_at"] = None
+    runtime["pending_command"] = None
+    runtime["retry_not_before"] = None
+    runtime["suspended_reason"] = None
+    runtime["owned_zone_id"] = zone_id
+    runtime["owned_dispatch_started_at"] = started_text
+    runtime["ownership_source"] = ownership_source
+    runtime["last_ownership_result"] = ownership_result
+    runtime["last_command"] = f"{command_label}:{zone_id}"
+    runtime["last_command_at"] = _utc_now()
+    runtime["last_error"] = None
+    controller.coordinator.clear_pending_activity()
+    controller.coordinator.clear_command_target()
+
+
+async def _recover_unconfirmed_same_zone_charging_task(
+    controller: NavimowerScheduleController,
+) -> int | None:
+    """Repair the beta24 charging ownership-loss state without a mower command."""
+    runtime = controller._runtime
+    zone_id = _unconfirmed_retry_zone(runtime)
+    if zone_id is None or not _recovery_zone_is_allowed(controller, zone_id):
         return None
 
     data = controller.coordinator.data or {}
@@ -279,34 +321,86 @@ async def _recover_unconfirmed_same_zone_charging_task(
     if progress is None or not 0.0 < progress < 100.0:
         return None
 
-    row = controller._zone(zone_id) or {}
-    queue_slot = pause_semantics._matching_custom_queue_slot(controller, zone_id)
-    started_text = str(task.get("started_at") or _utc_now())
+    _restore_retained_runtime(
+        controller,
+        zone_id=zone_id,
+        task=task,
+        progress=progress,
+        interrupted_reason="low_battery",
+        ownership_source="navimower_schedule_recovered_same_zone_charging",
+        ownership_result="recovered_unconfirmed_same_zone_charging",
+        command_label="recovered_retained_task",
+    )
+    await controller._save()
+    return zone_id
 
-    runtime["active_zone_id"] = zone_id
-    runtime["active_queue_slot"] = queue_slot
-    runtime["active_cycle_id"] = None
-    runtime["active_zone_baseline_completed_at"] = row.get("last_completed_at")
-    runtime["dispatch_started_at"] = started_text
-    runtime["just_completed_zone_id"] = None
-    runtime["resume_pending"] = True
-    runtime["interrupted_reason"] = "low_battery"
-    runtime["interrupted_zone_id"] = zone_id
-    runtime["interrupted_cycle_id"] = None
-    runtime["progress_before_interrupt"] = progress
-    runtime["charging_limit_reached_at"] = None
-    runtime["pending_command"] = None
-    runtime["retry_not_before"] = None
-    runtime["suspended_reason"] = None
-    runtime["owned_zone_id"] = zone_id
-    runtime["owned_dispatch_started_at"] = started_text
-    runtime["ownership_source"] = "navimower_schedule_recovered_same_zone_charging"
-    runtime["last_ownership_result"] = "recovered_unconfirmed_same_zone_charging"
-    runtime["last_command"] = f"recovered_retained_task:{zone_id}"
-    runtime["last_command_at"] = _utc_now()
-    runtime["last_error"] = None
-    controller.coordinator.clear_pending_activity()
-    controller.coordinator.clear_command_target()
+
+async def _recover_manual_resume_then_night_pause(
+    controller: NavimowerScheduleController,
+) -> int | None:
+    """Recover the field chain: lost ownership -> manual Resume -> night pause.
+
+    This is deliberately narrower than normal retained-task adoption. It requires
+    the exact beta24 ownership-loss signature, the same selected one-zone task, a
+    confirmed manual Navimower Resume, the original low-battery charging pause
+    before the failed reset attempt, and a later night pause. Recovery is allowed
+    only while the managed window is closed, so installing this migration at night
+    cannot immediately wake the mower. The restored interruption is ``window_closed``;
+    the normal Schedule path may continue the retained task when the next window opens.
+    """
+    runtime = controller._runtime
+    zone_id = _unconfirmed_retry_zone(runtime)
+    if zone_id is None or not _recovery_zone_is_allowed(controller, zone_id):
+        return None
+    if controller._window_open_now():
+        return None
+
+    data = controller.coordinator.data or {}
+    if controller._vendor_mowing(data) or data.get("docked") is not True:
+        return None
+
+    center = getattr(controller.coordinator, "notification_center", None)
+    if getattr(center, "interrupted_reason", None) != "night":
+        return None
+    task = _notification_task(controller)
+    if task is None:
+        return None
+    if str(task.get("trigger") or "") != _MANUAL_RESUME_TRIGGER:
+        return None
+    if str(task.get("origin") or "") not in {"", "observed", "retained"}:
+        return None
+    if _dedupe_ids(task.get("zone_ids")) != [zone_id]:
+        return None
+
+    task_started = parse_iso(task.get("started_at"))
+    charging_paused = parse_iso(task.get("charging_paused_at"))
+    failed_at = parse_iso(runtime.get("last_command_at"))
+    night_paused = parse_iso(task.get("night_paused_at"))
+    if None in {task_started, charging_paused, failed_at, night_paused}:
+        return None
+    assert task_started is not None
+    assert charging_paused is not None
+    assert failed_at is not None
+    assert night_paused is not None
+    if not task_started <= charging_paused <= failed_at < night_paused:
+        return None
+
+    progress = _as_float(task.get("progress_before_pause"))
+    if progress is None:
+        progress = _as_float(controller._progress_for_zone(zone_id))
+    if progress is None or not 0.0 < progress < 100.0:
+        return None
+
+    _restore_retained_runtime(
+        controller,
+        zone_id=zone_id,
+        task=task,
+        progress=progress,
+        interrupted_reason="window_closed",
+        ownership_source="navimower_schedule_recovered_manual_resume_night",
+        ownership_result="recovered_manual_resume_night_pause",
+        command_label="recovered_retained_task_after_manual_resume",
+    )
     await controller._save()
     return zone_id
 
@@ -400,8 +494,9 @@ async def _continue_interrupted_task(
 
 
 async def _evaluate_locked(self: NavimowerScheduleController) -> None:
-    """Repair the known beta24 state, then enforce strict ownership normally."""
+    """Repair known retained-task states, then enforce strict ownership normally."""
     await _recover_unconfirmed_same_zone_charging_task(self)
+    await _recover_manual_resume_then_night_pause(self)
 
     zone_id = _as_int(self._runtime.get("active_zone_id"))
     if zone_id is not None and not isinstance(self._runtime.get("pending_command"), dict):
