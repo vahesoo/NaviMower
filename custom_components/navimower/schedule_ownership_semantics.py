@@ -247,7 +247,11 @@ async def _recover_unconfirmed_same_zone_charging_task(
         return None
 
     data = controller.coordinator.data or {}
-    if controller._vendor_mowing(data) or not controller._vendor_charging(data):
+    # The field failure can be downloaded after charging has already completed,
+    # when MQTT reports generic idle (vehicleState=1) instead of Charging. The
+    # retained Notification Center charging reason is the interruption proof; the
+    # current mower only needs to still be safely docked and not cutting.
+    if controller._vendor_mowing(data) or data.get("docked") is not True:
         return None
 
     center = getattr(controller.coordinator, "notification_center", None)
