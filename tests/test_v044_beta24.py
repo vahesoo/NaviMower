@@ -48,6 +48,7 @@ def test_beta24_release_contract() -> None:
     notes = NOTES.read_text()
     for token in (
         "zero-pose",
+        "persisted",
         "vendor_map_detail",
         "OpenStreetMap",
         "Ortofoto",
@@ -72,6 +73,68 @@ def test_zero_pose_sentinel_requires_inconsistent_retained_pose_and_gps() -> Non
     nonzero_pose = dict(location)
     nonzero_pose["posture_y"] = -0.2
     assert pose.zero_pose_sentinel(nonzero_pose) is False
+
+
+def test_persisted_sentinel_sample_is_removed_before_relearning() -> None:
+    geometry = {
+        "_georeference_calibration": {
+            "samples": [
+                {
+                    "x": 0.12,
+                    "y": -2.75,
+                    "latitude": 58.0,
+                    "longitude": 24.0,
+                    "report_time": "good",
+                },
+                {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "latitude": 58.0,
+                    "longitude": 24.0,
+                    "report_time": "poisoned",
+                },
+                {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "latitude": 58.001,
+                    "longitude": 24.0,
+                    "report_time": "different-place",
+                },
+            ],
+            "fit": None,
+        }
+    }
+    removed = pose._purge_persisted_sentinel_samples(  # noqa: SLF001
+        geometry,
+        _sentinel_location(),
+    )
+    calibration = geometry["_georeference_calibration"]
+    assert removed == 1
+    assert [sample["report_time"] for sample in calibration["samples"]] == [
+        "good",
+        "different-place",
+    ]
+    assert calibration["zero_pose_sentinel_purged_samples"] == 1
+    assert calibration["last_zero_pose_sentinel_purge_count"] == 1
+
+
+def test_no_persisted_sample_cleanup_without_confirmed_sentinel() -> None:
+    geometry = {
+        "_georeference_calibration": {
+            "samples": [
+                {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "latitude": 58.0,
+                    "longitude": 24.0,
+                }
+            ]
+        }
+    }
+    location = _sentinel_location()
+    location["posture_x"] = 0.5
+    assert pose._purge_persisted_sentinel_samples(geometry, location) == 0  # noqa: SLF001
+    assert len(geometry["_georeference_calibration"]["samples"]) == 1
 
 
 def test_sentinel_is_never_accepted_as_learning_sample(monkeypatch) -> None:
