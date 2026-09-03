@@ -1,7 +1,7 @@
 """Reject vendor zero-pose sentinels from georeference learning/validation.
 
 Some mower firmwares report a docked/reset placeholder of local ``(0, 0, 0)``
-while retaining the previous geographic position.  That is not a paired
+while retaining the previous geographic position. That is not a paired
 local-X/Y + GPS observation and must therefore never be allowed to invalidate a
 static map transform or enter the learned cloud fit.
 
@@ -90,6 +90,66 @@ def _sentinel_validation(location: Any) -> dict[str, Any]:
     }
 
 
+def _sample_matches_retained_sentinel(sample: Any, location: Any) -> bool:
+    """Match one previously persisted poisoned sample to a confirmed sentinel."""
+    if not isinstance(sample, dict) or not isinstance(location, dict):
+        return False
+    x = _georeference._float(sample.get("x"))  # noqa: SLF001
+    y = _georeference._float(sample.get("y"))  # noqa: SLF001
+    latitude = _georeference._float(sample.get("latitude"))  # noqa: SLF001
+    longitude = _georeference._float(sample.get("longitude"))  # noqa: SLF001
+    retained_latitude = _georeference._float(location.get("latitude"))  # noqa: SLF001
+    retained_longitude = _georeference._float(location.get("longitude"))  # noqa: SLF001
+    if None in (x, y, latitude, longitude, retained_latitude, retained_longitude):
+        return False
+    assert x is not None and y is not None
+    assert latitude is not None and longitude is not None
+    assert retained_latitude is not None and retained_longitude is not None
+    if abs(x) > _ZERO_POSE_EPS or abs(y) > _ZERO_POSE_EPS:
+        return False
+    offset = _georeference.wgs84_offset_m(
+        retained_latitude,
+        retained_longitude,
+        latitude,
+        longitude,
+    )
+    return (
+        offset is not None
+        and math.hypot(offset[0], offset[1]) <= _MAX_RETAINED_GPS_DISTANCE_M
+    )
+
+
+def _purge_persisted_sentinel_samples(
+    map_geometry: Any,
+    location: Any,
+) -> int:
+    """Remove stale zero-pose poison retained before this guard was installed."""
+    if not isinstance(map_geometry, dict) or not zero_pose_sentinel(location):
+        return 0
+    calibration = map_geometry.get("_georeference_calibration")
+    if not isinstance(calibration, dict):
+        return 0
+    samples = [
+        dict(item) for item in calibration.get("samples") or [] if isinstance(item, dict)
+    ]
+    if not samples:
+        return 0
+    retained = [
+        sample
+        for sample in samples
+        if not _sample_matches_retained_sentinel(sample, location)
+    ]
+    removed = len(samples) - len(retained)
+    if removed <= 0:
+        return 0
+    calibration["samples"] = retained
+    calibration["zero_pose_sentinel_purged_samples"] = (
+        int(calibration.get("zero_pose_sentinel_purged_samples") or 0) + removed
+    )
+    calibration["last_zero_pose_sentinel_purge_count"] = removed
+    return removed
+
+
 def _current_location_sample(location: Any) -> dict[str, Any] | None:
     if zero_pose_sentinel(location):
         return None
@@ -168,6 +228,7 @@ def _recover_vendor_map_detail(
 def _update(map_geometry: Any, location: Any) -> dict[str, Any] | None:
     if _ORIGINAL_UPDATE is None:
         return None
+    _purge_persisted_sentinel_samples(map_geometry, location)
     active = _ORIGINAL_UPDATE(map_geometry, location)
     if not isinstance(map_geometry, dict):
         return active
