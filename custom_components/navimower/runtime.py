@@ -19,6 +19,7 @@ from .georeference_geodesy_semantics import (
     install_georeference_geodesy_semantics,
     install_georeference_geodesy_state_semantics,
 )
+from .georeference_pose_semantics import install_georeference_pose_semantics
 from .georeference_semantics import install_georeference_semantics
 from .georeference_static_anchor_semantics import install_georeference_static_anchor_semantics
 from .georeference_translation_refinement_semantics import (
@@ -50,6 +51,10 @@ def install_runtime_extensions() -> None:
     install_georeference_semantics()
     install_georeference_static_anchor_semantics()
     install_georeference_x3_bias_semantics()
+    # Some firmwares zero current local X/Y/heading while docked but retain the
+    # previous GPS point. Reject that inconsistent pair before it can enter
+    # learning or invalidate an explicit vendor map transform.
+    install_georeference_pose_semantics()
     # Static vendor ties keep rotation/local geometry authoritative. A mature,
     # tightly validated cloud XY/GPS fit may refine translation only. X3 is
     # already excluded because its RTK-anchor/bias path owns translation.
