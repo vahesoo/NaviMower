@@ -65,7 +65,7 @@ def test_beta24_false_ownership_failure_has_narrow_recovery_signature() -> None:
     assert 'zone_id not in controller._selected_zone_ids' in recovery
     assert 'controller._eligible_zones()' in recovery
     assert 'controller._vendor_mowing(data)' in recovery
-    assert 'not controller._vendor_charging(data)' in recovery
+    assert 'data.get("docked") is not True' in recovery
     assert 'getattr(center, "interrupted_reason", None) != "charging"' in recovery
     assert 'str(task.get("trigger") or "") != _GENERIC_OBSERVED_TRIGGER' in recovery
     assert '_dedupe_ids(task.get("zone_ids")) != [zone_id]' in recovery
@@ -73,6 +73,13 @@ def test_beta24_false_ownership_failure_has_narrow_recovery_signature() -> None:
     assert 'runtime.get("last_command_at")' in recovery
     assert 'failed_at < paused_at' in recovery
     assert 'not 0.0 < progress < 100.0' in recovery
+
+
+def test_recovery_accepts_safe_docked_idle_after_charging_completed() -> None:
+    recovery = _function_source("_recover_unconfirmed_same_zone_charging_task")
+    assert '_vendor_charging' not in recovery
+    assert 'data.get("docked") is not True' in recovery
+    assert 'interrupted_reason", None) != "charging"' in recovery
 
 
 def test_recovery_restores_retained_low_battery_ownership_without_new_start() -> None:
