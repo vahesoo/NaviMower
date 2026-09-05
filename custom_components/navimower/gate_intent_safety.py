@@ -1,14 +1,14 @@
 """Cancel stale gate intent when a fresh local command keeps the mower in-zone.
 
 A gate transition latch intentionally survives brief vendor target flips while a
-mower is travelling between zones.  That safety becomes harmful when a new,
+mower is travelling between zones. That safety becomes harmful when a new,
 explicit one-zone Home Assistant command starts in the mower's *current* zone:
 an older opposite-zone target can otherwise leave the previous latch asserted
 for the rest of the mowing task.
 
-This layer treats that explicit same-zone command as authoritative.  It clears
+This layer treats that explicit same-zone command as authoritative. It clears
 any conflicting old latch immediately and keeps a short-lived command guard
-until the vendor target confirms the same zone.  During that hand-over a stale
+until the vendor target confirms the same zone. During that hand-over a stale
 vendor target is display/debug evidence only and cannot re-arm the physical gate.
 """
 from __future__ import annotations
@@ -17,11 +17,11 @@ import time
 from typing import Any
 
 from . import coordinator as _coordinator
-from .const import COMMAND_TARGET_TTL_SECONDS
 
 
 _GUARD_SOURCE = "same_zone_command_guard"
 _HA_TARGET_SOURCES = {"ha_command", "ha_command_confirmed"}
+_SAME_ZONE_COMMAND_GATE_GUARD_SECONDS = 120.0
 
 
 def _as_int(value: Any) -> int | None:
@@ -154,12 +154,12 @@ def install_gate_intent_safety() -> None:
         try:
             age = time.monotonic() - float(started_at)
         except (TypeError, ValueError):
-            age = COMMAND_TARGET_TTL_SECONDS + 1
+            age = _SAME_ZONE_COMMAND_GATE_GUARD_SECONDS + 1
 
         if (
             zone_id is None
             or age < 0
-            or age > COMMAND_TARGET_TTL_SECONDS
+            or age > _SAME_ZONE_COMMAND_GATE_GUARD_SECONDS
         ):
             self._same_zone_command_gate_guard = None  # noqa: SLF001
             return result
@@ -204,7 +204,11 @@ def install_gate_intent_safety() -> None:
         # that created a 36->37 latch while Schedule had just dispatched 36).
         # Remove any latch original navigation just re-created and expose the
         # authoritative same-zone target until vendor state converges.
-        if target_ids and target_ids != [zone_id] and target_source not in _HA_TARGET_SOURCES:
+        if (
+            target_ids
+            and target_ids != [zone_id]
+            and target_source not in _HA_TARGET_SOURCES
+        ):
             removed = _clear_conflicting_latches(self, zone_id)
             self._last_target_zone_ids = [zone_id]  # noqa: SLF001
             stale_target_ids = list(target_ids)
