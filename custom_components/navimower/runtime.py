@@ -9,6 +9,7 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
+from .gate_intent_safety import install_gate_intent_safety
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_frame_semantics import (
     install_georeference_diagnostics_frame_semantics,
@@ -77,6 +78,9 @@ def install_runtime_extensions() -> None:
     # every georeference layer above has finished composing the active transform.
     install_georeference_frames_semantics()
     install_navigation_fallback()
+    # Same-zone HA/Schedule commands arbitrate stale gate target latches after
+    # position fallback has produced the final navigation context.
+    install_gate_intent_safety()
     install_notification_feed()
     install_raw_mqtt_semantics()
     install_schedule_pause_semantics()
