@@ -9,7 +9,6 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
-from .gate_intent_safety import install_gate_intent_safety
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_frame_semantics import (
     install_georeference_diagnostics_frame_semantics,
@@ -27,7 +26,10 @@ from .georeference_translation_refinement_semantics import (
     install_georeference_translation_refinement_semantics,
 )
 from .georeference_x3_bias_semantics import install_georeference_x3_bias_semantics
+from .history_performance import install_history_performance
+from .map_api_performance import install_map_api_performance
 from .navigation_fallback import install_navigation_fallback
+from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
 from .private_cloud_region import install_private_cloud_region
 from .raw_mqtt_semantics import install_raw_mqtt_semantics
@@ -78,9 +80,13 @@ def install_runtime_extensions() -> None:
     # every georeference layer above has finished composing the active transform.
     install_georeference_frames_semantics()
     install_navigation_fallback()
-    # Same-zone HA/Schedule commands arbitrate stale gate target latches after
-    # position fallback has produced the final navigation context.
-    install_gate_intent_safety()
+    # Navigation intent is the single post-fallback owner of target freshness,
+    # same-zone command arbitration and strict cloud gate confirmations.
+    install_navigation_intent()
+    # Point-light history reads and phased Map API responses are installed after
+    # navigation has finalized the physical/task context.
+    install_history_performance()
+    install_map_api_performance()
     install_notification_feed()
     install_raw_mqtt_semantics()
     install_schedule_pause_semantics()

@@ -1,29 +1,45 @@
 """Dependency-free helpers for freshness-aware position fallback."""
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
 CLOUD_GATE_FRESH_SECONDS = 30.0
+CLOUD_CLOCK_FUTURE_TOLERANCE_SECONDS = 30.0
 
 
 def _as_float(value: Any) -> float | None:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
-def cloud_report_age(report_time: Any, *, now_epoch: float | None = None) -> float | None:
-    """Return age of the vendor's private-cloud pose timestamp in seconds."""
+def cloud_report_age(
+    report_time: Any,
+    *,
+    now_epoch: float | None = None,
+) -> float | None:
+    """Return a validated private-cloud pose age in seconds.
+
+    A small future skew is tolerated because the mower/cloud and Home Assistant
+    clocks are not guaranteed to be identical. Non-finite timestamps and larger
+    future jumps are rejected instead of being made artificially fresh.
+    """
     value = _as_float(report_time)
     if value is None or value <= 0:
         return None
     if value > 10_000_000_000:
         value /= 1000.0
-    now = time.time() if now_epoch is None else float(now_epoch)
-    # Small negative values can happen because clocks are not perfectly aligned.
-    return max(0.0, now - value)
+    now = _as_float(time.time() if now_epoch is None else now_epoch)
+    if now is None:
+        return None
+    age = now - value
+    if age < -CLOUD_CLOCK_FUTURE_TOLERANCE_SECONDS:
+        return None
+    return max(0.0, age)
 
 
 def choose_position(
@@ -39,7 +55,8 @@ def choose_position(
 
     A caller must pass only an already-fresh MQTT pose. MQTT therefore always
     wins. Private-cloud X/Y remains useful for display even when its vendor
-    timestamp is old, but is gate-usable only while that timestamp is recent.
+    timestamp is old or invalid, but is gate-usable only while that timestamp is
+    recent and finite.
     """
     if isinstance(mqtt_position, dict):
         return {
@@ -52,8 +69,12 @@ def choose_position(
 
     cloud_age = cloud_report_age(cloud_report_time, now_epoch=now_epoch)
     if isinstance(cloud_position, dict):
+        maximum = _as_float(cloud_gate_max_age)
         gate_usable = bool(
-            cloud_age is not None and cloud_age <= float(cloud_gate_max_age)
+            maximum is not None
+            and maximum >= 0
+            and cloud_age is not None
+            and cloud_age <= maximum
         )
         return {
             "position": cloud_position,
