@@ -9,6 +9,7 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
+from .completion_semantics import install_completion_semantics
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_frame_semantics import (
     install_georeference_diagnostics_frame_semantics,
@@ -83,9 +84,10 @@ def install_runtime_extensions() -> None:
     # Navigation intent is the single post-fallback owner of target freshness,
     # same-zone command arbitration and strict cloud gate confirmations.
     install_navigation_intent()
-    # Point-light history reads and phased Map API responses are installed after
-    # navigation has finalized the physical/task context.
+    # Point-light history reads and completion semantics are installed before the
+    # phased Map API so all published map/sensor state sees the protected history.
     install_history_performance()
+    install_completion_semantics()
     install_map_api_performance()
     install_notification_feed()
     install_raw_mqtt_semantics()
