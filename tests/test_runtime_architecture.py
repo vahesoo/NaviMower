@@ -13,6 +13,9 @@ SEMANTIC_RUNTIME_FILES = {
     "capability_extensions.py",
     "capability_profile.py",
     "navigation_fallback.py",
+    "navigation_intent.py",
+    "history_performance.py",
+    "map_api_performance.py",
     "notification_feed.py",
     "schedule_pause_semantics.py",
     "setup_flow_semantics.py",
@@ -50,6 +53,9 @@ def test_semantic_runtime_has_one_composition_point() -> None:
         "install_capability_extensions()",
         "install_capability_profile()",
         "install_navigation_fallback()",
+        "install_navigation_intent()",
+        "install_history_performance()",
+        "install_map_api_performance()",
         "install_notification_feed()",
         "install_schedule_pause_semantics()",
         "install_setup_flow_semantics()",
@@ -57,6 +63,7 @@ def test_semantic_runtime_has_one_composition_point() -> None:
     ]
     positions = [runtime.index(call) for call in expected]
     assert positions == sorted(positions)
+    assert "install_gate_intent_safety()" not in runtime
 
     services = (COMPONENT / "services.py").read_text(encoding="utf-8")
     assert "from .runtime import install_runtime_extensions" in services
