@@ -5,6 +5,8 @@ import ast
 from pathlib import Path
 import re
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -101,5 +103,4 @@ def test_beta8_remains_public_get_only_and_non_mutating() -> None:
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta" in diagnostics
-    assert '"maintenance_h5_discovery"' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)

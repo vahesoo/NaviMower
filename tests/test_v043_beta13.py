@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -48,5 +50,6 @@ def test_external_notification_caveat_removed():
 def test_diagnostics_and_time_controls_are_exposed():
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     time_source = (COMPONENT / "time.py").read_text(encoding="utf-8")
-    assert '"navimower_schedule": sanitize' in diagnostics
+    assert '"navimower_schedule": navimower_schedule_diagnostics' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
     assert 'Navimower schedule {key}' in time_source

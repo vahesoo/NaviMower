@@ -5,6 +5,8 @@ import ast
 import importlib.util
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -67,19 +69,16 @@ def test_mow_command_trace_remains_internal_without_diagnostics_lookup() -> None
     assert "self.coordinator.begin_mow_command_trace(" in mower
     assert "command_status" not in diagnostics
     assert "last_mow_command" not in diagnostics
-    if "error_h5_discovery" in diagnostics:
-        error_discovery = (COMPONENT / "error_h5_discovery.py").read_text()
-        assert "probe_error_h5" in diagnostics
-        assert 'method="GET"' in error_discovery
-        assert '"mutation_calls_executed": False' in error_discovery
-        assert '"live_command_call_executed": False' in error_discovery
-        assert "client.call(" not in error_discovery
-    elif "maintenance_h5_discovery" in diagnostics:
-        maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
-        assert 'method="GET"' in maintenance_discovery
-        assert '"mutation_calls_executed": False' in maintenance_discovery
-    else:
-        assert "makes no extra vendor" in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
+    # Standalone research remains read-only but is not a Download dependency.
+    error_discovery = (COMPONENT / "error_h5_discovery.py").read_text()
+    assert 'method="GET"' in error_discovery
+    assert '"mutation_calls_executed": False' in error_discovery
+    assert '"live_command_call_executed": False' in error_discovery
+    assert "client.call(" not in error_discovery
+    maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
+    assert 'method="GET"' in maintenance_discovery
+    assert '"mutation_calls_executed": False' in maintenance_discovery
 
 
 def test_command_number_extraction_handles_known_response_shapes() -> None:

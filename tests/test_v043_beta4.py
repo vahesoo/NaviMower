@@ -5,6 +5,8 @@ import ast
 from pathlib import Path
 import re
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -78,10 +80,6 @@ def test_beta4_regexes_compile_and_probe_remains_non_mutating() -> None:
     assert "Cookie" not in source
 
 
-def test_beta4_diagnostics_describes_both_contract_families() -> None:
+def test_beta4_research_stays_outside_ordinary_diagnostics() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    assert "probe_maintenance_h5" in diagnostics
-    assert "0.4.3-beta" in diagnostics
-    assert "maintenance" in diagnostics.lower()
-    assert "Mowing Reports" in diagnostics
-    assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)

@@ -5,6 +5,8 @@ import ast
 from pathlib import Path
 import re
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -51,11 +53,9 @@ def test_beta2_patterns_target_real_javascript_syntax() -> None:
     assert "NavimowerDiagnostics/0.4.3-beta" in source
 
 
-def test_beta2_diagnostics_keeps_read_only_maintenance_probe() -> None:
+def test_beta2_read_only_probe_is_separate_from_download() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-    assert "from .maintenance_h5_discovery import probe_maintenance_h5" in diagnostics
-    assert "await hass.async_add_executor_job" in diagnostics
-    assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
     assert '"mutation_calls_executed": False' in discovery
     assert "client.call(" not in discovery
