@@ -5,6 +5,8 @@ import ast
 import json
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -20,16 +22,10 @@ def test_beta12_error_discovery_is_wall_clock_bounded() -> None:
     source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
     ast.parse(source)
     for phrase in (
-        "MAX_ROOT_REQUESTS = 4",
-        "MAX_PREFIX_REQUESTS = 14",
-        "MAX_FULL_MATCHES = 8",
-        "MAX_PROBE_SECONDS = 24.0",
-        "TIMEOUT = 2.5",
-        "def _deadline_fetch",
-        "wall_clock_budget_exhausted",
-        "and not budget_exhausted",
-        '"bounded_by_wall_clock": True',
-        '"budget_exhausted": budget_exhausted',
+        "MAX_ROOT_REQUESTS = 4", "MAX_PREFIX_REQUESTS = 14", "MAX_FULL_MATCHES = 8",
+        "MAX_PROBE_SECONDS = 24.0", "TIMEOUT = 2.5", "def _deadline_fetch",
+        "wall_clock_budget_exhausted", "and not budget_exhausted",
+        '"bounded_by_wall_clock": True', '"budget_exhausted": budget_exhausted',
         '"elapsed_seconds"',
     ):
         assert phrase in source
@@ -43,13 +39,11 @@ def test_beta12_prioritizes_proven_error_command_asset() -> None:
     assert "queue = sorted(candidate_map.values(), key=_candidate_queue_key)" in source
 
 
-def test_beta12_diagnostics_has_outer_timeout_fail_safe() -> None:
+def test_beta12_download_does_not_need_a_crawler_timeout_anymore() -> None:
     source = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    ast.parse(source)
-    assert "ERROR_DISCOVERY_TIMEOUT_SECONDS = 30.0" in source
-    assert "async with asyncio.timeout(ERROR_DISCOVERY_TIMEOUT_SECONDS):" in source
-    assert '"timed_out": True' in source
-    assert "public H5 error discovery exceeded the diagnostics timeout" in source
+    assert_cached_diagnostics_only(source)
+    assert "ERROR_DISCOVERY_TIMEOUT_SECONDS" not in source
+    assert "probe_error_h5" not in source
 
 
 def test_beta12_notification_entity_history_is_recorder_safe() -> None:

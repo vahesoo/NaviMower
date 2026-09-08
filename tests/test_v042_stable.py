@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only, load_redactor
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -24,64 +26,39 @@ def test_v042_stable_release_notes_exist() -> None:
 def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     for section in (
-        "entry",
-        "mower",
-        "connectivity",
-        "private_cloud_region",
-        "capabilities",
-        "positioning",
-        "telemetry",
-        "settings",
-        "map",
-        "history",
-        "problem_history",
-        "latest_notification",
-        "notification_center",
-        "last_resume_command",
-        "private_polling",
-        "mqtt_health",
-        "raw",
+        "entry", "mower", "connectivity", "private_cloud_region", "capabilities",
+        "positioning", "telemetry", "settings", "map", "history", "problem_history",
+        "latest_notification", "notification_center", "last_resume_command",
+        "private_polling", "mqtt_health", "raw",
     ):
         assert f'"{section}"' in diagnostics
 
-    # beta29 intentionally filters bulky maintenance research out of the raw
-    # download while keeping the remainder sanitized.
+    # Keep useful cached data; redact the whole assembled report once.
     assert 'raw_for_diagnostics = deepcopy(raw)' in diagnostics
     assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
-    assert 'sanitize(raw_for_diagnostics)' in diagnostics
+    assert '"raw": raw_for_diagnostics' in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
 
-    if "error_h5_discovery" in diagnostics:
-        error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-        assert "probe_error_h5" in diagnostics
-        assert 'method="GET"' in error_discovery
-        assert '"mutation_calls_executed": False' in error_discovery
-        assert '"live_command_call_executed": False' in error_discovery
-        assert '"notification_detail_call_executed": False' in error_discovery
-        assert "client.call(" not in error_discovery
-        assert "Authorization" not in error_discovery
-        assert "Cookie" not in error_discovery
-    elif "maintenance_h5_discovery" in diagnostics:
-        maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-        assert 'method="GET"' in maintenance_discovery
-        assert '"mutation_calls_executed": False' in maintenance_discovery
-    else:
-        assert "makes no extra vendor" in diagnostics
+    error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
+    assert 'method="GET"' in error_discovery
+    assert '"mutation_calls_executed": False' in error_discovery
+    assert '"live_command_call_executed": False' in error_discovery
+    assert '"notification_detail_call_executed": False' in error_discovery
+    assert "client.call(" not in error_discovery
+    assert "Authorization" not in error_discovery
+    assert "Cookie" not in error_discovery
+    maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
+    assert 'method="GET"' in maintenance_discovery
+    assert '"mutation_calls_executed": False' in maintenance_discovery
 
-    sanitizer = (COMPONENT / "diagnostics_sanitize.py").read_text(encoding="utf-8")
+    redactor = load_redactor()
     for secret in (
-        "access_token",
-        "refresh_token",
-        "password",
-        "vehicle_sn",
-        "device_id",
-        "latitude",
-        "longitude",
-        "ssid",
-        "mac",
+        "access_token", "refresh_token", "password", "vehicle_sn", "device_id",
+        "latitude", "longitude", "ssid", "mac",
     ):
-        assert f'"{secret}"' in sanitizer
+        assert redactor.sanitize({secret: "synthetic"}) == {secret: "<redacted>"}
 
 
 def test_v042_production_architecture_stays_semantic() -> None:

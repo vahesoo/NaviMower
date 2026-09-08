@@ -5,6 +5,8 @@ import ast
 from pathlib import Path
 import re
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -84,11 +86,8 @@ def test_beta6_has_bounded_public_source_map_recovery() -> None:
     assert "SOURCE_MAP_RE" in patterns
     assert re.compile(patterns["SOURCE_MAP_RE"], re.I).search("//# sourceMappingURL=index.js.map")
     for phrase in (
-        "MAX_SOURCE_MAPS",
-        "MAX_SOURCE_MAP",
-        "def _source_map_url",
-        "def _source_map_priority",
-        "def _source_map_findings",
+        "MAX_SOURCE_MAPS", "MAX_SOURCE_MAP", "def _source_map_url",
+        "def _source_map_priority", "def _source_map_findings",
         '"source_map_fetches": source_map_fetches',
         '"source_map_findings": source_map_findings',
         '"source_map_success_count": source_map_success',
@@ -99,14 +98,9 @@ def test_beta6_has_bounded_public_source_map_recovery() -> None:
 def test_beta6_keeps_reports_transport_only_until_crypto_is_proven() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
-        "REPORT_TRANSPORT_TARGETS",
-        '"handleEncipherment"',
-        '"handleDecrypt"',
-        '"keyDataOne"',
-        '"body:{data"',
-        '"live_report_request_executed": False',
-        '"status": "not_assumed"',
-        "p:101 envelope fields d,h,k,p,t",
+        "REPORT_TRANSPORT_TARGETS", '"handleEncipherment"', '"handleDecrypt"',
+        '"keyDataOne"', '"body:{data"', '"live_report_request_executed": False',
+        '"status": "not_assumed"', "p:101 envelope fields d,h,k,p,t",
     ):
         assert phrase in source
     assert "client.call(" not in source
@@ -120,5 +114,4 @@ def test_beta6_remains_public_get_only_and_non_mutating() -> None:
     assert '"public_unauthenticated_h5_only": True' in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta" in diagnostics
-    assert '"maintenance_h5_discovery"' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)

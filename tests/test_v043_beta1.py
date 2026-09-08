@@ -2,6 +2,8 @@
 import ast
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components/navimower"
 
@@ -11,19 +13,12 @@ def test_v043_beta1_contract() -> None:
     discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text()
     ast.parse(diagnostics)
     ast.parse(discovery)
-    # Historical beta1 discovery remains in-tree and read-only, but beta29 no
-    # longer executes or embeds its bulky Maintenance/Mowing Reports payload.
-    assert "probe_maintenance_h5" in diagnostics
-    assert '"maintenance_h5_discovery": maintenance_h5_discovery' in diagnostics
+    # Historical research remains in-tree and read-only, not in the Download.
+    assert_cached_diagnostics_only(diagnostics)
     assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
-    assert '"removed_from_download": True' in diagnostics
     for term in (
-        "resetBlade",
-        "resetKnife",
-        "maintenanceMode",
-        "enterMaintenance",
-        "exitMaintenance",
-        "cutHeight",
+        "resetBlade", "resetKnife", "maintenanceMode", "enterMaintenance",
+        "exitMaintenance", "cutHeight",
     ):
         assert term in discovery
     assert 'method="GET"' in discovery

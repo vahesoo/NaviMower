@@ -1,6 +1,8 @@
 import ast
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only, load_redactor
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -41,21 +43,13 @@ def test_device_tracker_rejects_missing_or_invalid_coordinates():
 
 
 def test_download_diagnostics_still_redacts_geographic_location():
-    sanitize_source = (COMPONENT / "diagnostics_sanitize.py").read_text(encoding="utf-8")
     diagnostics_source = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    ast.parse(sanitize_source)
-    ast.parse(diagnostics_source)
+    assert_cached_diagnostics_only(diagnostics_source)
+    redactor = load_redactor()
     for key in (
-        '"latitude"',
-        '"longitude"',
-        '"last_latitude"',
-        '"last_longitude"',
-        '"origin_gps"',
-        '"center_gps"',
-        '"ne_gps"',
-        '"sw_gps"',
+        "latitude", "longitude", "last_latitude", "last_longitude",
+        "origin_gps", "center_gps", "ne_gps", "sw_gps",
+        "lastLatitude", "lastLongitude", "GPSLatitude", "mapOriginGps",
     ):
-        assert key in sanitize_source
-    assert 'if "latitude" in normalized or "longitude" in normalized:' in sanitize_source
-    assert 'if normalized.endswith("_gps") or normalized.startswith("gps_"):' in sanitize_source
+        assert redactor.sanitize({key: [12.34, 56.78]}) == {key: "<redacted>"}
     assert '"device_tracker_location"' not in diagnostics_source

@@ -4,6 +4,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -35,35 +37,22 @@ def test_beta10_retains_raw_vendor_notification_feed() -> None:
     assert '"variable": deepcopy(data.get("notification_variable"))' in diagnostics
 
 
-def test_beta10_diagnostics_focuses_only_error_action_discovery() -> None:
+def test_beta10_error_context_survives_without_h5_discovery() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    # Keep beta10 discovery evidence in source history while beta29 makes normal
-    # Download diagnostics cached-only and leaves command discovery paused.
-    assert "from .error_h5_discovery import probe_error_h5" in diagnostics
-    assert "probe_error_h5," in diagnostics
-    assert '"paused": True' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
     assert '"error_investigation"' in diagnostics
-    assert '"command_discovery": deepcopy(error_command_discovery)' in diagnostics
-    assert '"removed_from_download": True' in diagnostics
-    assert "error_command_discovery = await" not in diagnostics
+    assert '"private_cloud_canonical_mqtt_transition_trigger"' in diagnostics
+    assert "error_transition_diagnostics(coordinator)" in diagnostics
 
 
 def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
     source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
     ast.parse(source)
     for phrase in (
-        "Clear and resume",
-        "Reboot Mower",
-        "clearError",
-        "rebootMower",
-        "/vehicle/set/send",
-        "c:behavior",
-        "cmdCode",
-        "MAX_PREFIX_REQUESTS =",
-        "PREFIX_BYTES = 768 * 1024",
-        'method="GET"',
-        '"mutation_calls_executed": False',
-        '"live_command_call_executed": False',
+        "Clear and resume", "Reboot Mower", "clearError", "rebootMower",
+        "/vehicle/set/send", "c:behavior", "cmdCode", "MAX_PREFIX_REQUESTS =",
+        "PREFIX_BYTES = 768 * 1024", 'method="GET"',
+        '"mutation_calls_executed": False', '"live_command_call_executed": False',
         '"notification_detail_call_executed": False',
     ):
         assert phrase in source
@@ -75,11 +64,7 @@ def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
 def test_beta10_error_probe_keeps_bounded_evidence() -> None:
     source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
-        '"translation_keys"',
-        '"matched_assets"',
-        '"ui_contexts"',
-        '"command_contexts"',
-        '"prefix_request_count"',
-        '"full_request_count"',
+        '"translation_keys"', '"matched_assets"', '"ui_contexts"',
+        '"command_contexts"', '"prefix_request_count"', '"full_request_count"',
     ):
         assert phrase in source

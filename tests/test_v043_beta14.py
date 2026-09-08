@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -39,8 +41,8 @@ def test_transient_private_endpoint_failures_are_quiet():
     assert 'status["consecutive_failures"] = 0' in source
 
 
-def test_discovery_scope_is_unchanged():
+def test_standalone_discovery_is_bounded_but_not_a_download_dependency():
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-    assert 'ERROR_DISCOVERY_TIMEOUT_SECONDS' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
     assert 'MAX_PROBE_SECONDS = 24.0' in error_discovery

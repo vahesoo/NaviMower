@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from diagnostics_contract import assert_cached_diagnostics_only
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
@@ -62,11 +64,8 @@ def test_beta7_source_map_phase_remains_bounded_after_beta6_404s() -> None:
 def test_beta7_adds_observed_parts_maintenance_correlation_anchors() -> None:
     source = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
     for phrase in (
-        '"Time to clean your mower"',
-        '"Maintenance point reached"',
-        '"review parts usage"',
-        '"start cleaning"',
-        '"reset the timer"',
+        '"Time to clean your mower"', '"Maintenance point reached"',
+        '"review parts usage"', '"start cleaning"', '"reset the timer"',
         '"handleH5MowerSet"',
     ):
         assert phrase in source
@@ -81,5 +80,4 @@ def test_beta7_remains_public_get_only_and_non_mutating() -> None:
     assert "client.call(" not in source
     assert "Authorization" not in source
     assert "Cookie" not in source
-    assert "0.4.3-beta" in diagnostics
-    assert '"maintenance_h5_discovery"' in diagnostics
+    assert_cached_diagnostics_only(diagnostics)
