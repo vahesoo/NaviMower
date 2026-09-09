@@ -29,6 +29,7 @@ from .georeference_translation_refinement_semantics import (
 from .georeference_x3_bias_semantics import install_georeference_x3_bias_semantics
 from .history_performance import install_history_performance
 from .map_api_performance import install_map_api_performance
+from .mowing_pause_status import install_mowing_pause_status
 from .navigation_fallback import install_navigation_fallback
 from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
@@ -90,6 +91,10 @@ def install_runtime_extensions() -> None:
     install_completion_semantics()
     install_map_api_performance()
     install_notification_feed()
+    # Mowing pause classification consumes the notification center's conservative
+    # interruption attribution and the normalized vendor Device feed. Install it
+    # only after the notification transport has wrapped snapshot decoration.
+    install_mowing_pause_status()
     install_raw_mqtt_semantics()
     install_schedule_pause_semantics()
     install_schedule_ownership_semantics()
