@@ -37,6 +37,7 @@ from .private_cloud_region import install_private_cloud_region
 from .raw_mqtt_semantics import install_raw_mqtt_semantics
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
 from .schedule_pause_semantics import install_schedule_pause_semantics
+from .schedule_queue_boundary_semantics import install_schedule_queue_boundary_semantics
 from .schedule_queue_semantics import install_schedule_queue_semantics
 from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
@@ -74,5 +75,6 @@ def install_runtime_extensions() -> None:
     install_schedule_ownership_semantics()
     install_schedule_round_semantics()
     install_schedule_queue_semantics()
+    install_schedule_queue_boundary_semantics()
     install_setup_flow_semantics()
     install_zone_entity_cleanup()
