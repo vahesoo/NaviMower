@@ -12,9 +12,11 @@ from .runtime import install_runtime_extensions
 from .const import (
     ACTIVITY_MOWING,
     DOMAIN,
+    OPT_CHANNELS,
     encode_partition_ids,
     mow_setup,
 )
+from .gate_area_editor import delete_gate_area, upsert_gate_area
 from .georeference_tools import async_relearn_georeference
 from .model_support import supports_ordered_zone_mowing
 from .notification_actions import (
@@ -30,6 +32,8 @@ SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
 SERVICE_RESUME = "resume"
 SERVICE_SET_SCHEDULE_QUEUE = "set_schedule_queue"
+SERVICE_SET_GATE_AREA = "set_gate_area"
+SERVICE_DELETE_GATE_AREA = "delete_gate_area"
 SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 SERVICE_RELEARN_GEOREFERENCE = "relearn_georeference"
@@ -74,6 +78,22 @@ SET_SCHEDULE_QUEUE_SCHEMA = vol.Schema(
     {
         vol.Optional("device_id"): cv.string,
         vol.Required("zones"): vol.All(cv.ensure_list, [vol.Coerce(int)]),
+    }
+)
+
+SET_GATE_AREA_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Optional("gate_area_id"): vol.All(cv.string, vol.Length(max=128)),
+        vol.Required("name"): vol.All(cv.string, vol.Length(min=1, max=64)),
+        vol.Required("polygon"): cv.ensure_list,
+    }
+)
+
+DELETE_GATE_AREA_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Required("gate_area_id"): vol.All(cv.string, vol.Length(min=1, max=128)),
     }
 )
 
@@ -226,22 +246,21 @@ def async_setup_services(hass: HomeAssistant) -> None:
         )
         try:
             result = await coordinator.async_send(
-                coordinator.client.mow_zones,
-                coordinator.sn,
+                client.mow_zones,
+                sn,
                 partition_ids,
                 partition_setup,
             )
-            coordinator.record_mow_command_result(result)
-            if call.data["reset"]:
-                coordinator.start_new_mowing_cycle(
-                    zones, source="navimower.mow_reset"
-                )
+            self.coordinator.record_mow_command_result(result)
+            self.coordinator.start_new_mowing_cycle(
+                region_ids, source="lawn_mower.start_mowing_reset"
+            )
         except Exception as err:
-            coordinator.record_mow_command_error(err)
-            coordinator.clear_pending_activity()
+            self.coordinator.record_mow_command_error(err)
+            self.coordinator.clear_pending_activity()
             if requested_ordered:
-                coordinator.clear_command_target()
-            raise HomeAssistantError(f"Navimow mow failed: {err}") from err
+                self.coordinator.clear_command_target()
+            raise
 
     async def _set_schedule_queue(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
@@ -257,6 +276,48 @@ def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:
             raise HomeAssistantError(
                 f"Navimower set_schedule_queue failed: {err}"
+            ) from err
+
+    async def _set_gate_area(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            channels = upsert_gate_area(
+                coordinator.entry.options.get(OPT_CHANNELS),
+                gate_area_id=call.data.get("gate_area_id"),
+                name=call.data["name"],
+                polygon=call.data["polygon"],
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+        options = dict(coordinator.entry.options)
+        options[OPT_CHANNELS] = channels
+        hass.config_entries.async_update_entry(coordinator.entry, options=options)
+        try:
+            await hass.config_entries.async_reload(coordinator.entry.entry_id)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Gate area was saved but Navimower reload failed: {err}"
+            ) from err
+
+    async def _delete_gate_area(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            channels = delete_gate_area(
+                coordinator.entry.options.get(OPT_CHANNELS),
+                call.data["gate_area_id"],
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+        options = dict(coordinator.entry.options)
+        options[OPT_CHANNELS] = channels
+        hass.config_entries.async_update_entry(coordinator.entry, options=options)
+        try:
+            await hass.config_entries.async_reload(coordinator.entry.entry_id)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Gate area was deleted but Navimower reload failed: {err}"
             ) from err
 
     async def _resume(call: ServiceCall) -> None:
@@ -332,6 +393,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_SET_SCHEDULE, _set_schedule, SET_SCHEDULE_SCHEMA),
         (SERVICE_MOW, _mow, MOW_SCHEMA),
         (SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, SET_SCHEDULE_QUEUE_SCHEMA),
+        (SERVICE_SET_GATE_AREA, _set_gate_area, SET_GATE_AREA_SCHEMA),
+        (SERVICE_DELETE_GATE_AREA, _delete_gate_area, DELETE_GATE_AREA_SCHEMA),
         (SERVICE_RESUME, _resume, RESUME_SCHEMA),
         (SERVICE_MARK_NOTIFICATION_READ, _mark_notification_read, MARK_NOTIFICATION_READ_SCHEMA),
         (SERVICE_MARK_ALL_NOTIFICATIONS_READ, _mark_all_notifications_read, MARK_ALL_NOTIFICATIONS_READ_SCHEMA),
