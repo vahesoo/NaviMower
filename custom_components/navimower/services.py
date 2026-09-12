@@ -246,21 +246,22 @@ def async_setup_services(hass: HomeAssistant) -> None:
         )
         try:
             result = await coordinator.async_send(
-                client.mow_zones,
-                sn,
+                coordinator.client.mow_zones,
+                coordinator.sn,
                 partition_ids,
                 partition_setup,
             )
-            self.coordinator.record_mow_command_result(result)
-            self.coordinator.start_new_mowing_cycle(
-                region_ids, source="lawn_mower.start_mowing_reset"
-            )
+            coordinator.record_mow_command_result(result)
+            if call.data["reset"]:
+                coordinator.start_new_mowing_cycle(
+                    zones, source="navimower.mow_reset"
+                )
         except Exception as err:
-            self.coordinator.record_mow_command_error(err)
-            self.coordinator.clear_pending_activity()
+            coordinator.record_mow_command_error(err)
+            coordinator.clear_pending_activity()
             if requested_ordered:
-                self.coordinator.clear_command_target()
-            raise
+                coordinator.clear_command_target()
+            raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
     async def _set_schedule_queue(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
