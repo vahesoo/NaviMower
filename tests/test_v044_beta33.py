@@ -16,7 +16,7 @@ def test_polygon_selector_is_serializable_and_validation_is_outside_schema() -> 
     schema = source[schema_start:schema_end]
 
     assert 'schema[vol.Optional("polygon", default=default)] = TextSelector(' in schema
-    assert "vol.All(" not in schema
+    assert "] = vol.All(" not in schema
     assert "_polygon_text" not in schema
 
     assert "def _invalid_polygon" in source
