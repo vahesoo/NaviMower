@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +106,8 @@ def test_polygon_options_semantics_are_installed_in_runtime() -> None:
 
 def test_beta32_release_metadata() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta32"
+    match = re.fullmatch(r"0\.4\.4-beta(\d+)", str(manifest["version"]))
+    assert match is not None and int(match.group(1)) >= 32
     notes = ROOT / ".github" / "release-notes" / "0.4.4-beta32.md"
     assert notes.is_file()
     assert notes.read_text(encoding="utf-8").startswith(
