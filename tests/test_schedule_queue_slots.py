@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 QUEUE = COMPONENT / "schedule_queue_semantics.py"
+BOUNDARY = COMPONENT / "schedule_queue_boundary_semantics.py"
 RUNTIME = COMPONENT / "runtime.py"
 
 
@@ -58,6 +59,16 @@ def test_confirmed_scheduler_start_marks_exact_slot_started() -> None:
     assert 'self._runtime["started_queue_slots"] = sorted(started)' in block
 
 
+def test_staged_queue_applies_before_new_window_or_continuous_round_dispatch() -> None:
+    source = BOUNDARY.read_text(encoding="utf-8")
+
+    assert "def _prepare_new_window_snapshot" in source
+    assert 'controller._runtime["round_queue"] = _configured_round_queue(controller)' in source
+    assert "def _prepare_next_continuous_round" in source
+    assert 'controller._runtime["completed_queue_slots"] = []' in source
+    assert 'controller._runtime["round_index"]' in source
+
+
 def test_queue_semantics_install_after_ownership_and_round_semantics() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
 
@@ -65,4 +76,5 @@ def test_queue_semantics_install_after_ownership_and_round_semantics() -> None:
     ownership = source.index("install_schedule_ownership_semantics()")
     round_semantics = source.index("install_schedule_round_semantics()")
     queue = source.index("install_schedule_queue_semantics()")
-    assert pause < ownership < round_semantics < queue
+    boundary = source.index("install_schedule_queue_boundary_semantics()")
+    assert pause < ownership < round_semantics < queue < boundary
