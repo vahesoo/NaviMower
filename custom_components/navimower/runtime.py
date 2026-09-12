@@ -10,6 +10,7 @@ from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
 from .completion_semantics import install_completion_semantics
+from .gate_area_polygon_semantics import install_gate_area_polygon_semantics
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
 from .georeference_diagnostics_frame_semantics import (
     install_georeference_diagnostics_frame_semantics,
@@ -107,5 +108,9 @@ def install_runtime_extensions() -> None:
     # Apply editor changes only at a real round/window boundary, before slot 0 of
     # the new round is allowed to dispatch.
     install_schedule_queue_boundary_semantics()
+    # Extend the existing legacy gate-area form only after all coordinator/runtime
+    # semantics are installed. The patch is UI-only; membership remains owned by
+    # channel.py and fresh MQTT pose safety semantics remain unchanged.
+    install_gate_area_polygon_semantics()
     install_setup_flow_semantics()
     install_zone_entity_cleanup()
