@@ -37,6 +37,7 @@ from .private_cloud_region import install_private_cloud_region
 from .raw_mqtt_semantics import install_raw_mqtt_semantics
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
 from .schedule_pause_semantics import install_schedule_pause_semantics
+from .schedule_queue_semantics import install_schedule_queue_semantics
 from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
@@ -50,54 +51,28 @@ def install_runtime_extensions() -> None:
     install_capability_extensions()
     install_capability_profile()
     install_capability_semantics()
-    # Geodetic metre conversion must be installed before any georeference
-    # fitting/validation layer captures or uses the helpers.
     install_georeference_geodesy_semantics()
     install_georeference_semantics()
     install_georeference_static_anchor_semantics()
     install_georeference_x3_bias_semantics()
-    # Some firmwares zero current local X/Y/heading while docked but retain the
-    # previous GPS point. Reject that inconsistent pair before it can enter
-    # learning or invalidate an explicit vendor map transform.
     install_georeference_pose_semantics()
-    # Static vendor ties keep rotation/local geometry authoritative. A mature,
-    # tightly validated cloud XY/GPS fit may refine translation only. X3 is
-    # already excluded because its RTK-anchor/bias path owns translation.
     install_georeference_translation_refinement_semantics()
-    # Wrap the vendor/local georeference chain so persisted spherical fits are
-    # migrated and every fresh transform records the WGS84 ellipsoid model.
     install_georeference_geodesy_state_semantics()
-    # European static orthophotos use the ETRS89/ETRF cartographic frame. Apply
-    # the small EPSG:8366 translation only after the WGS84 ellipsoid pipeline is
-    # complete. The cartographic layer keeps local X/Y, rotation and scale intact
-    # and explicitly excludes X3's vendor RTK-anchor/bias path.
     install_georeference_cartographic_semantics()
-    # Candidate diagnostics compare raw vendor/cloud GPS with the cartographic
-    # active map, so normalize candidates into the same presentation frame before
-    # reporting residual vectors.
     install_georeference_diagnostics_frame_semantics()
     install_georeference_diagnostics_semantics()
-    # Underlay providers may use a different geographic registration from the
-    # mower's active presentation frame. Export provider-ready frames only after
-    # every georeference layer above has finished composing the active transform.
     install_georeference_frames_semantics()
     install_navigation_fallback()
-    # Navigation intent is the single post-fallback owner of target freshness,
-    # same-zone command arbitration and strict cloud gate confirmations.
     install_navigation_intent()
-    # Point-light history reads and completion semantics are installed before the
-    # phased Map API so all published map/sensor state sees the protected history.
     install_history_performance()
     install_completion_semantics()
     install_map_api_performance()
     install_notification_feed()
-    # Mowing pause classification consumes the notification center's conservative
-    # interruption attribution and the normalized vendor Device feed. Install it
-    # only after the notification transport has wrapped snapshot decoration.
     install_mowing_pause_status()
     install_raw_mqtt_semantics()
     install_schedule_pause_semantics()
     install_schedule_ownership_semantics()
     install_schedule_round_semantics()
+    install_schedule_queue_semantics()
     install_setup_flow_semantics()
     install_zone_entity_cleanup()
