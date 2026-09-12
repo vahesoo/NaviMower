@@ -67,8 +67,6 @@ def _validate_simple_polygon(points: tuple[tuple[float, float], ...]) -> None:
         raise ValueError(f"gate area supports at most {MAX_GATE_AREA_POINTS} points")
     if len(set(points)) != len(points):
         raise ValueError("gate area points must be unique")
-    if abs(_signed_area(points)) < MIN_GATE_AREA_M2:
-        raise ValueError("gate area polygon is too small")
 
     count = len(points)
     for first in range(count):
@@ -84,6 +82,9 @@ def _validate_simple_polygon(points: tuple[tuple[float, float], ...]) -> None:
                 points[second_next],
             ):
                 raise ValueError("gate area polygon must not intersect itself")
+
+    if abs(_signed_area(points)) < MIN_GATE_AREA_M2:
+        raise ValueError("gate area polygon is too small")
 
 
 def build_gate_area(name: Any, polygon: Any) -> NavimowerChannel:
