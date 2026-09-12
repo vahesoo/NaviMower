@@ -94,6 +94,65 @@ resume:
         device:
           integration: navimower
 
+set_gate_area:
+  name: Create or update gate area
+  description: >-
+    Persist one integration-owned gate-area polygon in mower-local X/Y metres.
+    Omit gate_area_id to create a new area. When editing an existing area, pass
+    its current slug from the map payload as gate_area_id. The polygon must have
+    3 to 64 unique points, must not intersect itself, and its compatibility
+    x_min/x_max/y_min/y_max bounds are calculated automatically. The Navimower
+    config entry reloads after a successful save.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    gate_area_id:
+      name: Existing gate area ID
+      description: >-
+        Current gate-area slug when editing. Leave empty when creating a new area.
+      required: false
+      selector:
+        text:
+    name:
+      name: Name
+      description: Display name for the gate area.
+      required: true
+      selector:
+        text:
+    polygon:
+      name: Polygon
+      description: >-
+        Ordered mower-local X/Y points, for example
+        [[-28.48,9.08],[-23.63,6.5],[-20.87,10.5],[-25.7,13.7]].
+      required: true
+      selector:
+        object:
+
+delete_gate_area:
+  name: Delete gate area
+  description: >-
+    Delete one integration-owned gate area by its slug from the map payload. The
+    Navimower config entry reloads after a successful delete.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    gate_area_id:
+      name: Gate area ID
+      description: Current gate-area slug from the map payload.
+      required: true
+      selector:
+        text:
+
 mark_notification_read:
   name: Mark notification as read
   description: >-
