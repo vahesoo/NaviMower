@@ -233,12 +233,19 @@ actions:
             target:
               entity_id: lawn_mower.my_mower
     default:
+      - wait_template: >
+          {{ state_attr('lawn_mower.my_mower', 'state_code') == '0211' }}
+        timeout:
+          seconds: 20
+        continue_on_timeout: false
       - action: lawn_mower.start_mowing
         target:
           entity_id: lawn_mower.my_mower
 
 mode: single
 ```
+
+For the non-returning path, waiting for private state code `0211` preserves the older field-tested guard against racing `start_mowing` ahead of the vendor pause transition.
 
 If this alternative also needs automatic closing, do not add an unrelated exit-only close automation unless you separately track gate ownership. Either keep the open/close lifecycle in one run or use an explicit helper that records that the mower automation actually opened the gate.
 
