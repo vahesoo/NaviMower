@@ -402,7 +402,7 @@ Shared vendor fields are not treated as proof that every family has the same UI 
 
 Depending on capability evidence, controls can include:
 
-- Do not disturb period, sound and lighting;
+- Do not disturb period, sound, **Night light** and supported lighting controls;
 - Child lock and Lift alarm;
 - anti-theft/geo-fence controls;
 - obstacle/animal protection;
