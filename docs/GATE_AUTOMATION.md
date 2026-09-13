@@ -170,7 +170,9 @@ This alternative pattern is intended for tasks where Navimower has **one unambig
 - **Navimower Schedule**, because it intentionally dispatches one zone at a time; or
 - a manually started mowing task containing **one mowing zone**.
 
-Do not treat this as a general target-intent interlock for a multi-zone task started with several zones at once. Keep the Custom Area slightly inside the approach-side mowing zone so arrival can be observed before the mower reaches the physical barrier.
+Place the gate Custom Area so that it extends **slightly into the mowing zone** from which the mower approaches the gate. The mower must enter the area while the single-zone target intent is still known, before it reaches the physical barrier.
+
+Do not treat this as a general target-intent interlock for a multi-zone task started with several zones at once.
 
 Example opening interlock:
 
