@@ -211,6 +211,22 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
+        known_zone_ids = {
+            int(zone["id"])
+            for zone in (coordinator.data or {}).get("zones") or []
+            if zone.get("id") is not None
+        }
+        unknown = [
+            zone_id
+            for zone_id in requested_zones
+            if known_zone_ids and zone_id not in known_zone_ids
+        ]
+        if unknown:
+            raise ServiceValidationError(
+                "Unknown zone id(s): "
+                f"{', '.join(str(value) for value in unknown)}. "
+                "Use the internal zone IDs reported by the Navimower map."
+            )
         zones = list(requested_zones)
         requested_ordered = bool(zones)
         ordered = requested_ordered and supports_ordered_zone_mowing(
