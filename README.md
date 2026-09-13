@@ -93,7 +93,7 @@ When adding Navimower:
 
 The two branches degrade independently. A temporary OAuth/MQTT problem does not necessarily remove cached/private-cloud functionality, while a temporary private-cloud problem does not necessarily remove already-running MQTT live telemetry.
 
-## Configure Navimower after setup
+## Important: Configure Navimower after setup
 
 Many integration-owned features are configured through the **Options Flow**, not from the mower entity itself.
 
@@ -283,7 +283,7 @@ Deleting a Custom Area removes only Navimower's local virtual area; it does not 
 
 ### Across separate mowing zones
 
-The Navimow app normally requires an Off-limit polygon to remain inside an existing mowing zone. If the desired Custom Area must cross separate zones, temporarily merge the required mowing zones, save the merge, start **Add custom area** to capture that merged baseline, create/import the temporary Off-limit polygon, then delete it and restore the original mowing-zone layout.
+The Navimow app normally requires an Off-limit polygon to remain inside an existing mowing zone. If the desired Custom Area must cross separate zones, temporarily **merge** the required mowing zones, save the merge, start **Add custom area** to capture that merged baseline, create/import the temporary Off-limit polygon, then delete it and restore the original mowing-zone layout.
 
 The imported Custom Area is independent from later zone IDs/layout. Restoring/recreating zones does not remove it.
 
@@ -323,7 +323,7 @@ Polygon writes are validated (3–64 unique points, non-self-intersecting, non-z
 
 Fresh MQTT is preferred for occupancy. Sufficiently fresh private-cloud position can provide conservative fallback; clearing a previously active Gate area through cloud-only evidence requires repeated distinct reports.
 
-A complete physical-gate guide, including the helperless **single automation run owns open+close** pattern tested with an optimistic/closed-magnet gate cover, is in [docs/GATE_AUTOMATION.md](docs/GATE_AUTOMATION.md).
+A complete physical-gate guide, including the helperless **single automation run owns open+close** pattern currently being field-tested with an optimistic/closed-magnet gate cover, is in [docs/GATE_AUTOMATION.md](docs/GATE_AUTOMATION.md).
 
 ## State, Problem, Error and mowing pause reason
 
@@ -367,20 +367,61 @@ Actions:
 
 Available controls depend on mower model, firmware and vendor-reported evidence. Navimower prefers hiding a control over guessing an unsupported command.
 
+### Mowing and battery
+
 Depending on family/firmware, controls can include:
 
-- native mowing schedule, mowing cycle and Night mowing;
-- return-to-dock battery level and charging limit;
-- electronic cutting height;
-- rain/frost/snow/storm/high-temperature behavior;
-- Do not disturb period, sound and lighting;
-- child/lift/anti-theft-related controls;
-- obstacle/animal protection;
-- Terrain adapt, Edge sense, TCS/traction and model-specific work/positioning features.
+- native Mowing schedule enabled;
+- Mowing cycle;
+- Night mowing;
+- Return-to-dock battery level;
+- Charging limit;
+- electronic/global cutting height where supported.
 
-Weather terminology follows the feature semantics exposed by the mower. Shared vendor fields are not treated as proof that every family has the same UI controls; for example, i1/i2 LiDAR rain controls are capability-gated rather than created merely because a field exists.
+### Weather-adaptive mowing
+
+Current display terminology follows the vendor feature semantics where the mower family actually supports the control:
+
+- **Rain detection**
+- **Rain sensor**
+- **Rain forecast**
+- **Rain forecast sensitivity**
+- **Rain delay**
+- **Rain delay duration**
+- **Frost detection**
+- **Frost delay**
+- **Snow detection**
+- **Snow delay**
+- **Wind detection**
+- **Max temp detection**
+- **Max temperature**
+
+Shared vendor fields are not treated as proof that every family has the same UI controls. For example, i1/i2 LiDAR rain controls are capability-gated rather than created merely because a dormant field exists.
+
+### General, safety and navigation
+
+Depending on capability evidence, controls can include:
+
+- Do not disturb period, sound and lighting;
+- Child lock and Lift alarm;
+- anti-theft/geo-fence controls;
+- obstacle/animal protection;
+- Terrain adapt;
+- Edge sense;
+- TCS/traction;
+- other model-specific work/positioning controls.
 
 Unknown cutting-height encodings are not converted into invented millimetre values.
+
+## i2 AWD and capability-driven support
+
+i2 AWD and other newer/less-tested mower-family controls are provisioned from positive capability evidence rather than from model-name guesses or dormant shared `set-list` fields.
+
+Depending on model, firmware and proven vendor fields, Navimower may expose controls such as Eco/work mode, Narrow zone adapt, Advanced slope mode, Grass pattern enhancement, Progress retention, Mowing cycle interval, Headlight, Night animal protection, Terrain adapt, Edge sense, TCS/traction, positioning-related controls and electronic cutting height.
+
+Not every reported field is remotely writable and not every related model exposes the same subset. Navimower keeps unverified controls hidden until documentation or controlled field evidence proves the semantics/write path.
+
+The same rule applies outside i2 AWD. For example, i1 can report cutting-height range metadata while the current height field is not treated as proof of the physical manual-knob position, so Navimower does not invent a remote cutting-height writer for that behavior.
 
 ## Navimower Schedule
 
@@ -428,9 +469,9 @@ Both scheduler modes can begin another round after all selected zones/queue slot
 - **Time window** may repeat rounds while the current window remains open; a new round waits for a normal idle start boundary and the configured window end remains the hard outer boundary.
 - **24 hours** has no Navimower daily start/end boundary and can continue rounds subject to mower/vendor charging/weather/night/safety behavior.
 
-### Charging, rain and night interruptions
+### Rain, night and charging interruptions
 
-Navimower does not disable mower-owned safety/weather logic.
+Navimower does not disable mower-owned safety/weather logic. Night mowing, Rain detection, Rain sensor, Rain forecast and Rain delay behavior remain mower/vendor-owned restrictions when supported and enabled.
 
 For a retained low-battery task, Navimower prefers to let the mower resume by itself after charging. If it has not resumed after reaching the configured **Charging limit**, Navimower waits an additional grace period before considering its safe Resume/`reset=false` fallback. The Time window is rechecked immediately before any Navimower Resume/continue command.
 
@@ -529,12 +570,9 @@ entity: lawn_mower.my_mower
 
 ### Version compatibility
 
-The released stable baseline is:
+**Navimower Map Card 0.3.5 requires Navimower integration 0.4.3 or newer.**
 
-- **Navimower 0.4.3**
-- **Navimower Map Card 0.3.5**
-
-The current 0.4.4 development line adds newer backend contracts such as georeferenced multi-mower site metadata/provider frames, phased Map API loading and exact polygon Gate-area write services used by the 0.3.6 Map Card beta line. The exact next stable pairing/release notes will be finalized only after the integration and card are reviewed together.
+That remains the released stable baseline. The current 0.4.4 development line adds newer backend contracts such as georeferenced multi-mower site metadata/provider frames, phased Map API loading and exact polygon Gate-area write services used by the 0.3.6 Map Card beta line. The exact next stable pairing/release notes will be finalized only after the integration and card are reviewed together.
 
 ### Legacy Map Camera
 
