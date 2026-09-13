@@ -31,7 +31,9 @@ The key rule is simple:
 
 This makes the running automation itself the ownership token: **only the run that opened the gate is allowed to close it**.
 
-### Tested Gate Area interlock
+### Current field-test Gate Area interlock
+
+The example below reflects the current working field-test pattern. It has behaved correctly in initial testing, but gate hardware/state reporting is installation-specific and the pattern should still be supervised and validated on each installation before unattended use.
 
 Replace the example entity IDs with your own Gate-area binary sensor, mower and gate cover.
 
