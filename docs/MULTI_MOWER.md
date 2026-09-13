@@ -38,6 +38,37 @@ Each mower entry has its own official mower identity and MQTT bridge. Mowers vis
 
 `MQTT connected` describes the broker connection. A docked mower may stop publishing continuous position packets while state and battery messages continue, so live-position health is exposed separately from broker connectivity.
 
+## Multi-mower site metadata
+
+Navimower's authenticated Site API prepares the backend information needed to render nearby mower maps together without making the browser discover or align devices itself.
+
+For an anchor mower, the integration includes only mower maps that:
+
+- have a validated usable georeference; and
+- are within 500 metres of the anchor mower.
+
+Grouping is anchor-relative rather than transitive. A mower that is close to another member but outside the anchor rule is not pulled into the site indirectly.
+
+For every member the integration can publish:
+
+- mower/device/entity identifiers already resolved server-side;
+- direct Map, Sessions, Session-render and Site API paths;
+- a local-map -> common-site transform and combined site bounds;
+- stable member ordering based on map footprint (west to east), not the mower's changing live position;
+- provider-ready geographic frame metadata so one underlay change moves the whole site consistently.
+
+The site transform affects presentation only. Every mower keeps its own mower-local X/Y geometry, history, Gate areas, Custom Areas and command target.
+
+See [MAP_GEOREFERENCE_AND_UNDERLAYS.md](MAP_GEOREFERENCE_AND_UNDERLAYS.md) for the georeference/provider-frame model.
+
+## Map underlays with several mowers
+
+The optional Google Map Tiles API key is scoped to the private-cloud account. Mower entries that use the same account therefore share one configured key rather than requiring one key per mower.
+
+The API key and Google session token stay on the Home Assistant backend. Multi-mower frontend metadata exposes only provider availability and authenticated proxy/API paths.
+
+Estonia orthophoto/hybrid availability and provider-frame selection are also calculated integration-side so the frontend does not need mower-model-specific alignment rules.
+
 ## Actions with multiple mowers
 
 Entity actions such as Mow, Pause and Dock already target the selected lawn-mower entity.
@@ -54,6 +85,8 @@ data:
   reset: true
 ```
 
+The values in `zones` are **internal vendor map zone IDs**, not the displayed name/number such as "Zone 2". When current map zones are available, Navimower validates explicit IDs before sending a mowing command and rejects unknown IDs. First-generation H-series mowers can still restrict mowing to the selected zones, but the mower chooses their order rather than following a user-defined sequence.
+
 ```yaml
 action: navimower.set_schedule
 data:
@@ -67,7 +100,9 @@ data:
         - 13
 ```
 
-Use Home Assistant's native **Download diagnostics** action on each Navimower config entry when reporting a problem. Navimower no longer exposes the old development `export_diagnostics` service.
+The same `device_id` scoping applies to integration-owned actions such as `navimower.resume`, `navimower.set_schedule_queue`, `navimower.reset_schedule`, `navimower.set_gate_area`, `navimower.delete_gate_area`, `navimower.relearn_georeference` and the notification actions.
+
+Use Home Assistant's native **Download diagnostics** action on each Navimower config entry when reporting a problem. Navimower no longer exposes the old development `export_diagnostics` service. The separate `navimower.export_raw_data` action is an intentionally unredacted development capture and must not be posted publicly.
 
 ## What to verify
 
@@ -77,8 +112,10 @@ For each mower, verify independently that:
 - map geometry, zone names, dock and live position belong to the correct mower;
 - battery, state, progress and session area update only from that mower;
 - Mow, Pause and Dock affect only the selected mower;
-- ordered-zone mowing and schedule writes affect only the selected mower;
-- Navimower Map Card shows the correct map and retained history;
+- Navimower domain actions target the intended `device_id`;
+- ordered-zone behavior follows that mower family's capabilities;
+- schedule writes and Navimower Schedule state remain scoped to the selected mower;
+- map/site geometry and retained history belong to the correct mower;
 - reloading or removing one config entry does not interrupt the other mower;
 - OAuth or private-cloud reauthentication can be completed for one mower without changing another entry.
 
@@ -93,9 +130,10 @@ Open a GitHub issue and include:
 - which mower was expected to react and which mower actually reacted;
 - sanitized native Download diagnostics for every affected mower.
 
-Do not publish credentials, OAuth tokens, email addresses, full serial numbers or unreviewed raw logs.
+Do not publish credentials, OAuth tokens, email addresses, full serial numbers, geographic coordinates from raw captures or unreviewed raw logs.
 
 ## Current limitations
 
 - The integration intentionally exposes one config entry and one MQTT bridge per mower rather than one account-level entry containing several mower devices.
+- A combined site requires usable georeference evidence for each included map; a mower without a validated transform remains independently usable but cannot be safely placed in the common geographic site view.
 - Vendor-side account, sharing or OAuth behavior may differ by region, firmware or mower family.
