@@ -165,12 +165,12 @@ The older pattern combines travel intent and physical arrival:
 
 This can be useful when the gate passage should only react to a known A-to-B/B-to-A mowing transition and the same physical area can be entered for other reasons.
 
-It is best suited to tasks with one unambiguous target zone:
+This alternative pattern is intended for tasks where Navimower has **one unambiguous mowing target zone**:
 
-- Navimower Schedule, which dispatches one zone at a time; or
-- a manually started one-zone mowing task.
+- **Navimower Schedule**, because it intentionally dispatches one zone at a time; or
+- a manually started mowing task containing **one mowing zone**.
 
-Do not assume the same target-intent semantics for an arbitrary multi-zone task. Keep the Custom Area slightly inside the approach-side mowing zone so arrival can be observed before the mower reaches the physical barrier.
+Do not treat this as a general target-intent interlock for a multi-zone task started with several zones at once. Keep the Custom Area slightly inside the approach-side mowing zone so arrival can be observed before the mower reaches the physical barrier.
 
 Example opening interlock:
 
