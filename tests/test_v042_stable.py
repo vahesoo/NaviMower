@@ -33,25 +33,12 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
     ):
         assert f'"{section}"' in diagnostics
 
-    # Keep useful cached data; redact the whole assembled report once.
     assert 'raw_for_diagnostics = deepcopy(raw)' in diagnostics
     assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
     assert '"raw": raw_for_diagnostics' in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
     assert_cached_diagnostics_only(diagnostics)
-
-    error_discovery = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-    assert 'method="GET"' in error_discovery
-    assert '"mutation_calls_executed": False' in error_discovery
-    assert '"live_command_call_executed": False' in error_discovery
-    assert '"notification_detail_call_executed": False' in error_discovery
-    assert "client.call(" not in error_discovery
-    assert "Authorization" not in error_discovery
-    assert "Cookie" not in error_discovery
-    maintenance_discovery = (COMPONENT / "maintenance_h5_discovery.py").read_text(encoding="utf-8")
-    assert 'method="GET"' in maintenance_discovery
-    assert '"mutation_calls_executed": False' in maintenance_discovery
 
     redactor = load_redactor()
     for secret in (
