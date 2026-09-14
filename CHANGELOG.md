@@ -1,661 +1,141 @@
 # Changelog
 
-## 0.4.3-beta25
+This changelog lists stable releases. Detailed prerelease/beta history remains available in GitHub Releases and under `.github/release-notes/`.
 
-Focused active-error diagnostics expansion.
+## 0.4.4 - 2026-09-14
 
-### Diagnostics
+Stable cumulative release from the tested 0.4.4 beta line through `0.4.4-beta39`. There is no intentional runtime behavior change from beta39.
 
-- Keep active-error recovery discovery strictly read-only/public-GET only; no mower mutation or notification-detail calls are executed.
-- Scan wider prefixes of the strongest H5 bundles so lazy error-action imports and labels beyond the first 64 KiB are no longer missed.
-- Capture bounded 12 KiB neighborhoods around `Clear and resume`, `Reboot Mower`, `Got it`, the active error code and active error title.
-- Export nearby string literals, command-like object fields, endpoints, HTTP methods, JavaScript references and broader native-bridge/invoke calls to recover the actual Clear/Resume/Reboot contract.
+### Multi-mower, maps and underlays
 
-### Unchanged
+- Add the integration-owned multi-mower Site API with mower-scoped maps, zones, Schedule/History identity and stable site transforms.
+- Add phased Map API loading for base geometry and current-cycle rendering so the frontend can paint sooner without rebuilding completed mowing swaths in the browser.
+- Add provider-aware georeference metadata and backend support for OpenStreetMap, Estonia Ortofoto/Hübriid and authenticated Google Satellite.
+- Add persistent exact Gate-area polygons plus Home Assistant services used by the Map Card visual Gate editor.
 
-- No Clear/Resume/Reboot Home Assistant action is exposed yet. A command will only be added after the vendor contract is evidenced and separately validated.
+### Mowing history, progress and completion
 
+- Strengthen current-cycle trail/session handling across pause, charging, Home Assistant restart and confirmed reset/new-cycle boundaries.
+- Keep confirmed completed-zone coverage at 100% when a later vendor snapshot regresses without a newer cycle/reset or geometry change.
+- Stabilize coverage, task progress, mowed area and session ownership with freshness-aware source selection.
+- Separate mower physical zone, task target zone, active-zone progress and whole-task progress so transit cannot transfer completion ownership.
 
-## 0.4.3-beta24
+### State and command safety
 
-Release-candidate cleanup for Navimower Schedule, notifications and documentation.
+- Treat paused-returning state `0221` as resumable so Start continues the retained return instead of starting a new reset mowing task.
+- Validate explicit zone IDs only against authoritative decoded map geometry; partial fallback zone lists are not used to reject a real zone.
+- Allow an existing vendor schedule day to be switched off even when its stored periods are stale, overlapping or reference a removed zone.
+- Reject the vendor no-fix GPS pair `0.0, 0.0` and avoid forcing Recorder updates for unchanged coordinates.
+- Add mower pause-reason semantics that distinguish confirmed low-battery, pending low-battery, night, manual dock and unknown states without inventing unsupported causes.
 
-### Changed
+### Diagnostics, privacy and interoperability
 
-- Expose Navimower Schedule switch/time entities only after the user has saved Schedule setup for that mower; remove stale pre-setup registry entities created by earlier betas.
-- Rename un-attributed mowing starts to the neutral `Mowing task started` wording instead of claiming an `External` source when this Home Assistant instance has no fresh local command trace.
-- Use the vendor Device-feed low-battery return as the single visible charging-pause notification while retaining local task context for `Mowing resumed after charging`.
-- Reorder README into installation/setup first and current functionality second; remove embedded beta/upgrade history and keep release history in `CHANGELOG.md`.
+- Keep Home Assistant Download diagnostics cached-only, sanitized and read-only.
+- Retire public research/discovery helpers that are no longer needed for production behavior while retaining functional account/cloud and MQTT support.
+- Preserve dotted firmware/version values in diagnostics when they are explicitly version fields while continuing to redact real network addresses and secrets.
+- Refresh public documentation around Home Assistant behavior, backend/frontend boundaries and interoperability while retaining attribution and existing branding assets.
 
-### Fixed
+### Compatibility
 
-- Stop copying a stale pre-reset zone `cycle_id` into Navimower Schedule runtime. A new dispatch now leaves `active_cycle_id` empty until the newly-created history session for that active zone is observed, then synchronizes the real session ID.
+- Existing config entries, device/entity unique IDs, map/history/session storage, Schedule state and Gate/Custom Area configuration are retained.
+- Upgrading from 0.4.3 or any 0.4.4 beta does not require recreating the integration.
+- No 0.4.4 beta needs to be installed before this stable release.
+- Navimower Map Card `0.3.6` is the matching stable card release.
 
-### Unchanged
+## 0.4.3 - 2026-08-27
 
-- Navimower Schedule completion remains based on fresh `Last completed` advancement and is not changed by the cycle-ID diagnostics fix.
-- Charging/rain/night behavior remains mower-owned in 24-hour mode; charging resume attribution remains available without duplicating the vendor low-battery notification.
+Stable cumulative release from the 0.4.3 beta line.
 
+### Navimower Schedule
 
-## 0.4.3-beta23
+- Add the integration-owned Navimower Schedule for one-zone-at-a-time mowing with Automatic oldest-completed order or a persistent Custom queue.
+- Support Time window and 24-hour modes, retained interruption state and safe charging recovery without converting an unfinished task into `reset=true`.
+- Keep native Navimow Schedule and Navimower Schedule mutually exclusive.
+- Add Reset schedule progress as both a Home Assistant device control and `navimower.reset_schedule` action.
 
-Separate authoritative vendor cycle detection from dense live zone-progress projection and document Navimower Schedule.
+### Map, zones and mowing history
 
-### Fixed
+- Add stable per-zone Coverage, Area, Mowed area, Last mowed and conservative Last completed entities.
+- Add reset-based current-cycle history in which a confirmed new cycle replaces only the affected zone while older sessions remain in retained history.
+- Add backend-prepared current-cycle rendering for the Map Card and map-version invalidation for edited maps.
+- Remove stale zone registry rows only after a freshly decoded, versioned map proves the vendor zone ID no longer exists.
 
-- Use only per-zone vendor coverage `pct/startTime/endTime` for mowing-cycle reset detection; live MQTT work/route progress can no longer create a false cycle boundary during source hand-over.
-- Suppress a large one-sample active-zone regression when fresh vendor coverage still corroborates the previous current-cycle value.
-- Preserve beta21/beta22 completion safety: `Last completed` still requires fresh current-cycle vendor per-zone coverage at 100%.
+### Custom Areas, position and telemetry
 
-### Documentation
+- Add persistent Custom Areas imported from a temporary Navimow Off-limit polygon for virtual presence uses such as gate passages and driveways.
+- Add a native Home Assistant Location `device_tracker` when valid latitude/longitude is available.
+- Separate MQTT connection health from live-position validity and expose position source/age explicitly.
+- Improve state arbitration, problem/error handling, battery/task-progress stabilization and physical Dock representation.
 
-- Add first-time setup and operating documentation for Navimower Schedule, including Time window, 24 hours, Night mowing, rain/weather delay, charging, interrupted-task resume and native-schedule interaction.
+### Setup and model-aware controls
 
+- Support multiple mower config entries sharing one dedicated account identity while retaining separate devices, maps and histories.
+- Improve automatic mower selection and regional account routing across the observed Europe, Asia-Pacific, Americas and mainland China families.
+- Expand capability-driven settings for modern mower families without inventing unsupported controls.
 
+### Notifications and diagnostics
 
-## 0.4.3-beta22
+- Keep a merged Latest notification timeline with vendor and Navimower-local origins and origin-aware read actions.
+- Use neutral wording for observed mowing starts when Home Assistant cannot prove the command source.
+- Keep Home Assistant Download diagnostics sanitized, read-only and suitable for support.
 
-Restore live per-zone progress projection without weakening beta21 completion safety.
+### Compatibility
 
-### Fixed
-
-- Fix active zone Progress being pinned to 0% after a confirmed vendor cycle reset even while MQTT and cloud coverage continue to advance.
-- Let low current-cycle active progress refill a reset-time session cache while retaining the existing stale-high recovery and completed-100 monotonic guards.
-- Refill the per-zone session display cache from fresh vendor coverage, with fresh MQTT work/route progress providing dense active-zone updates between cloud polls.
-- Set the display cache to 100% when the beta21 coverage completion resolver confirms the zone.
-
-### Safety
-
-- `task_zone_progress` is display/session state only and cannot write `Last completed`.
-- Private `mapWorkPosition` is deliberately not persisted into the dense display cache because a fresh HTTP poll can still carry an old semantic value after rain/charging interruptions.
-- `Last completed` remains exclusively owned by fresh current-cycle vendor per-zone coverage reaching 100%.
-
-
-## 0.4.3-beta21
-
-Vendor per-zone coverage becomes the sole authority for `Last completed`.
-
-### Fixed
-
-- Stop allowing MQTT/private `mapWorkPosition`, route progress or whole-task percentage to write `last_completed`; these remain display/progress signals only.
-- Confirm a zone only when fresh private-cloud per-zone coverage for a currently observed target/physical zone reaches 100% in the current work cycle.
-- Keep an incomplete zone armed after the mower changes target, so multi-zone tasks can confirm the previous zone when its vendor coverage settles to 100%.
-- Ignore stale historical 100% rows until the zone has current-cycle evidence; this prevents rain/charging resumes from completing a still-partial zone.
-
-### Safety
-
-- `endTime` is never completion proof by itself. It is used only as the timestamp after coverage has already reached authoritative 100%.
-- A small-zone fallback accepts a directly observed recent 100% vendor cycle only when its start/end timestamps are new relative to the previously persisted completion.
-- Docking still only finalizes route/session history and does not create zone completion.
-
-### Diagnostics
-
-- Expose zones seen as current targets plus retained vendor coverage state in active completion diagnostics.
-
-
-## 0.4.3-beta20
-
-Fresh current-cycle per-zone completion arbitration.
-
-### Fixed
-
-- Advance a zone's `last_completed` when the active zone is actually confirmed complete; docking is no longer the completion trigger.
-- Keep Navimower Schedule one-zone-at-a-time behavior: a confirmed `last_completed` can release the active zone and let the scheduler choose the next eligible zone without a dock round-trip.
-- Reject stale `last_known` progress as completion evidence and require a second fresh sample for uncorroborated single-source completion; current-cycle cloud/task corroboration can confirm immediately.
-
-### Fallbacks
-
-- Prefer fresh active-zone MQTT progress, then fresh private-cloud work progress, with the single-zone task percentage available only when exactly one target zone is active.
-- Accept private-cloud per-zone coverage as a fallback only when its `startTime` belongs to the current cycle; `endTime + >=95%` is useful only with that current-cycle proof.
-- A trusted active-zone 100% counter can finish the zone without waiting for Docked after the repeat/corroboration rule; Returning by itself is never completion evidence.
-
-### Diagnostics
-
-- Persist `last_completed_source`, confirmation reason, progress and cycle ID with each confirmed zone completion.
-- Expose completion candidates/rejections plus active-zone and coverage source ages in diagnostics.
-
-
-## 0.4.3-beta19
-
-Navimower Schedule window/restart hardening.
-
-### Fixed
-
-- Prevent a stale unconfirmed new-zone `mow` command from blocking Navimower Schedule forever after Home Assistant restarts or loses the immediate state transition.
-- After 120 seconds without a confirmed Mowing state, clear the stale pending command and suspend safely instead of automatically repeating a `reset=true` start.
-- Recover automatically if the mower later confirms that same active-zone mowing start.
-
-### Safety
-
-- Keep Time window as the hard outer gate: an observed Mowing/Paused state outside the window is sent Dock/Home while the interrupted zone and progress are retained for resume.
-- Keep 24 hours mode independent from the mower's Night mowing setting; sunset/sunrise pauses remain the mower/user setting's responsibility.
-- A Home Assistant restart during already-confirmed mowing restores scheduler runtime without starting a new mowing cycle.
-
-
-## 0.4.3-beta18
-
-Confirmed per-zone completion tracking.
-
-### Fixed
-
-- Do not advance zone `last_completed` when a task starts with stale high progress and then immediately fails/returns to the dock.
-- Do not stamp `last_completed` at a vendor progress-reset/new-cycle boundary; that timestamp is the next cycle start, not the previous cycle completion.
-- Stop treating private-cloud `end_time + >=95%` as authoritative completion evidence.
-- Repair persisted beta-era completion timestamps that were unverified vendor values or matched a recorded reset boundary.
-
-### Safety
-
-- Completion requires current-cycle evidence: the zone must first be observed below the completion threshold and later at or above the existing 95% threshold.
-- Failed/error returns can close the route session without making an unconfirmed zone eligible for Navimower Schedule.
-
-
-## 0.4.3-beta17
-
-Scheduler options polish and docked physical-area stabilization.
-
-### Fixed
-
-- Show a confirmed docked or charging mower as the virtual `Dock` physical area instead of a stale lawn zone or `Outside mapped zones`.
-- Hide Start/End controls completely in 24-hour Navimower Schedule mode by moving Time window clocks to a dedicated second step.
-- Render the scheduler availability note with real line breaks and omit the `None` placeholder when every mapped zone is already eligible.
-
-### Safety
-
-- The Dock display override is suppressed while a local activity command is pending so a stale docked flag cannot mask a mower that has just been dispatched.
-- Dock remains a virtual physical area only (`zone_id: null`) and never participates in mowing progress or zone completion.
-
-
-## 0.4.3-beta16
-
-Configure the integration-owned scheduler from the Navimower gear/options flow.
-
-### Added
-
-- Add multi-zone Automatic mowing zones selection using stable zone IDs.
-- Show never-completed zones as unavailable until one confirmed manual completion exists.
-- Add Time window and 24 hours modes; continuous mode rolls into a new oldest-zone round after all selected zones finish.
-
-### Safety
-
-- Never schedule a zone without a confirmed successful completion.
-- Never auto-enroll newly created zones.
-- Refuse enabling the managed scheduler when no proven selected zone exists.
-- Migrate already-enabled beta schedulers once to an explicit allowlist of currently proven zones.
-
-
-## 0.4.3-beta15
-
-Schedule-aware night-pause and resume notification attribution.
-
-### Changed
-
-- Distinguish the two gates for native scheduled night resumes: an active schedule window and daylight.
-- Attribute a retained scheduled resume to the schedule window when sunrise was already past, or to sunrise when the schedule window opened before daylight.
-- Keep retained non-scheduled/one-time mowing independent from the native mowing schedule after a night pause.
-- Preserve the resolved resume gate in task diagnostics.
-
-
-## 0.4.3-beta14
-
-Stabilization for task attribution, observed manual mowing state and transient private-cloud failures.
-
-### Changed
-
-- Remove the duplicate local mowing-completed notification and rely on the vendor completion notification.
-- Preserve native schedule attribution for mowing transitions observed inside an active native schedule period instead of labelling them External.
-- Map private state `0212` as Manual mowing and treat it as active work.
-- Warn about private endpoint failures only after repeated consecutive failures while preserving last-good values.
-
-
-## 0.4.3-beta13
-
-Integration-owned one-zone mowing window for field testing.
-
-### Added
-
-- Add a disabled-by-default Navimower schedule switch and configurable local start/end time entities.
-- Select one zone at a time by the oldest confirmed `last_completed_at`, with per-window completion and just-completed race guards.
-- At window close, retain the interrupted zone and send Dock/Home; at the next window try Resume first and `mow(reset=false)` second.
-- Persist scheduler runtime state across Home Assistant restarts and expose it in Download diagnostics.
-
-### Changed
-
-- Make native mower schedule and Navimower schedule mutually exclusive.
-- Remove the command-source caveat from External mowing task started notifications.
-
-### Safety
-
-- Leave low-battery charging to the mower.
-- Never use automatic `reset=true` as an interrupted-task fallback; suspend instead if Resume and continue cannot be confirmed.
-
-## 0.4.3-beta12
-
-Bounded active-error diagnostics and Recorder-safe notification attributes.
-
-### Fixed
-
-- Bound Clear and resume / Reboot Mower public-H5 discovery by wall clock, per-request timeout and smaller request budgets so Download diagnostics returns reliably.
-- Prioritize proven error-command assets before generic lazy chunks and retain partial evidence when the discovery budget expires.
-- Add an outer Home Assistant diagnostics timeout as a final fail-safe.
-- Limit the Latest notification entity's recent attribute to five entries to stay below Recorder's 16 KiB state-attribute limit while retaining full internal/diagnostic history.
-
-### Safety
-
-- Error-action discovery remains public HTTPS GET-only and executes no mower or notification-detail command.
-
-## 0.4.3-beta11
-
-Two-pass active-error command discovery and explicit notification-detail trace retention.
-
-### Changed
-
-- Score bounded public-H5 prefix evidence before spending full-fetch slots so strong Clear and resume / Reboot Mower candidates cannot be starved by earlier generic assets.
-- Reuse the proven handleH5MowerSet wrapper/export/import tracing to capture bounded command-call argument evidence.
-- Preserve the response from an explicit user Mark notification as read action for later diagnostics without making a hidden detail request.
-
-### Safety
-
-- Discovery remained public, unauthenticated and GET-only and did not guess or execute unproven mower commands.
-
-## 0.4.3-beta10
-
-Focused active-error arbitration and command-contract diagnostics.
-
-### Changed
-
-- Keep the Error sensor canonical to private-cloud `index2.error_data`; MQTT named Error is now a transition trigger instead of a temporary display source.
-- Deduplicate repeated identical MQTT Error states so only state edges request an error-driven private refresh.
-- Display `No errors` when no active cloud fault exists.
-- Pause Maintenance/Mowing Reports H5 discovery while this beta concentrates on active error commands.
-
-### Added
-
-- Preserve sanitized raw vendor notification-feed evidence for Download diagnostics.
-- Add a bounded public-H5 probe for `Clear and resume`, `Reboot Mower`, their translation keys, request shapes, endpoints and native bridge contexts.
-- Add focused error-transition, raw `index2.error_data`, raw/normalized notification and command-discovery evidence to diagnostics.
-
-### Safety
-
-- Diagnostics executes no mower mutation and no notification-detail/read action; the H5 probe is public GET-only.
-
-## 0.4.3-beta9
-
-Compact contract recovery for Mowing Reports transport and Parts maintenance call sites.
-
-### Changed
-
-- Reduce broad H5 discovery from 48 to 12 successful assets and targeted discovery from 24 to 16, with a 64-request total ceiling instead of 168.
-- Reduce context/candidate output and replace the full per-asset dump with compact evidence rows containing only contract-relevant fields.
-- Tighten targeted routing so incidental `mowing` context no longer promotes unrelated neighboring route assets by score alone.
-- Keep the already observed Mowing Records chunk fallback and direct request/native dependencies discoverable.
-
-### Added
-
-- Recover dedicated `handleEncipherment` / `handleDecrypt` wrapper definitions as report transport evidence.
-- Trace `handleH5MowerSet` across ES-module export/import aliases so a wrapper exported by app-entry can be followed into lazy-chunk callers.
-- Report compact mower-set export aliases, import aliases and imported call-site contexts in diagnostics.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta8
-
-Targeted candidate routing and precise mower-set wrapper recovery.
-
-### Fixed
-
-- Classify high-value H5 candidates when their import/reference is discovered and reserve them from the broad queue, fixing beta7's zero-sized targeted queue.
-- Treat `report` and `mowing` source-context evidence as targeted signals; generic `repair` alone is no longer enough to dominate discovery.
-- Preserve a bounded source-context preview and explicit targeted reason for each candidate/fetch so route/import decisions are auditable.
-- Add a temporary beta-only fallback for the already observed Mowing Records chunk `index-594ad42d.js`, while keeping semantic source-context routing authoritative.
-- Anchor arrow-wrapper detection directly to `callNative("handleH5MowerSet", ...)`, preventing the preceding `handleDecrypt` wrapper from being misidentified as the mower-set wrapper.
-- Disable public source-map requests after repeated beta6/beta7 404 results.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta7
-
-Independent targeted-request reserve for Parts maintenance and Mowing Reports discovery.
-
-### Fixed
-
-- Fix beta6 crawl-budget starvation: broad crawling can no longer consume the request budget reserved for the targeted phase.
-- Give broad and targeted phases separate bounded request ceilings while retaining an overall request ceiling.
-- Expose broad/targeted/source-map request counts and the targeted queue size in diagnostics so the reserve can be verified directly.
-- Keep the 24-success targeted asset goal and include candidate source/theme evidence in targeted fetch diagnostics.
-- De-prioritize public source-map probing after beta6 showed the sampled `.map` URLs were unavailable; targeted JS contract recovery now runs first.
-- Add maintenance notification/UI evidence such as `Time to clean your mower`, `Maintenance point reached`, `review parts usage`, `start cleaning` and `reset the timer` to the search vocabulary.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No live Mowing Reports request, blade timer reset, Replacement done action, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta6
-
-Parts maintenance UI/source-map recovery and Mowing Reports transport proof.
-
-### Changed
-
-- Broaden Maintenance discovery from guessed endpoint names back to the actual Parts maintenance UI and i18n semantics.
-- Target generic repair-themed lazy chunks and increase the reserved targeted asset budget from 16 to 24.
-- Recover default-argument `handleH5MowerSet` wrappers such as `(e={})=>...` without spanning unrelated functions.
-- Add bounded public source-map discovery for high-value maintenance/report assets.
-- Capture likely Parts maintenance translation keys, UI contexts and original-source contexts.
-- Keep the recovered Mowing Reports business contract while explicitly comparing H5 `body.data`/native encryption evidence with the existing private-cloud p:101 envelope shape.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No report API request, maintenance counter reset, Clean now action, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta5
-
-Targeted Maintenance + Mowing Reports H5 call-site recovery.
-
-### Changed
-
-- Recover minified report wrapper definitions and their call sites for the day/week/month and vehicle-main report endpoints.
-- Capture bounded report wrapper arguments and nearby mowing area/time/count response-field contexts.
-- Recover `handleH5MowerSet` wrapper definitions and bounded maintenance-related call sites.
-- Reserve up to 16 additional successful asset fetches for high-priority chunks discovered after the 48-asset broad crawl.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No report API request, maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta4
-
-Focused Maintenance + Mowing Reports public-H5 contract recovery.
-
-### Changed
-
-- Fix lazy-chunk URL canonicalization so duplicate `static/js/static/js` and `assets/assets` paths do not waste the crawl budget.
-- Count only successful JavaScript fetches toward the 48-asset limit while keeping a separate bounded request limit.
-- Prioritize semantic hash-agnostic `native-*`, `request-*`, `service-*`, report, maintenance, blade and knife chunks.
-- Capture dedicated contexts for the day/week/month report and vehicle main report endpoints, plus request/encryption/native-bridge call sites.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta3
-
-Broader read-only Maintenance & Tools discovery based on the first successful beta2 diagnostics sample.
-
-### Changed
-
-- Crawl a bounded set of public lazy JavaScript chunks instead of discarding chunks whose import reference has no nearby maintenance keyword.
-- Collect endpoint paths and native bridge calls globally from each fetched asset, with maintenance-related chunks prioritized within the fixed request budget.
-- Add observed maintenance setting names such as `knifeDurationSet`, `chassisDurationSet`, `usedTime` and `setTime` to the discovery vocabulary.
-- Preserve sanitized previews of small public JSON route responses, including the `/vehicle/maintenance/` route seen in beta2 diagnostics.
-
-### Safety
-
-- Discovery remains Download-diagnostics-only, public, unauthenticated and GET-only.
-- No maintenance counter reset, maintenance mode, cutting-height mutation or mower command is executed.
-
-## 0.4.3-beta2
-
-Focused hotfix for beta1 Maintenance & Tools H5 discovery.
-
-### Fixed
-
-- Fixed the malformed import-time `BRIDGE_RE` expression that prevented Home Assistant from loading Navimower diagnostics and hid Download diagnostics.
-- Removed beta1's extra escaping layer from all Maintenance H5 regular expressions and JavaScript whitespace normalization.
-
-### Validation
-
-- Added regression coverage that compiles every discovery `re.compile(...)` expression and verifies intended JavaScript regex syntax.
-- Maintenance discovery remains read-only and Download-diagnostics-only; no maintenance mutation is added in beta2.
-
-## 0.4.3-beta1
-
-First beta in the cumulative 0.4.3 line, based directly on stable 0.4.2.
-
-### Added
-- Bounded public H5 Maintenance & Tools discovery in Download diagnostics only.
-- Focused parsed/raw maintenance diagnostics for blade/chassis runtime correlation.
-
-### Investigation targets
-- Blade/knife runtime reset after blade replacement.
-- Mower maintenance mode and the service flow that lowers the cutting deck.
-- Nearby maintenance endpoints, HTTP/encryption metadata, payload keys and native bridge methods.
-
-### Safety and architecture
-- No maintenance mutation or mower/account identity is sent by beta1 discovery.
-- No user-facing maintenance controls are added until contracts are proven.
-- Temporary discovery is removed once useful contracts are recovered; later betas stay cumulative.
+- Existing config entries, entity/device unique IDs, map/history/session storage and notification storage are retained.
+- No 0.4.3 beta needs to be installed before this stable release.
 
 ## 0.4.2
-
-Stable cumulative release from the 0.4.2 beta line. No beta release needs to be installed first.
 
 ### Added
 
 - Added persistent Navimower-local mower activity notifications and merged them with the vendor Device notification feed.
 - Added `navimower.mark_notification_read`, `navimower.mark_all_notifications_read` and the dedicated retained-task `navimower.resume` action.
-- Added private-cloud account region discovery/host persistence across the observed Europe, Asia-Pacific, Americas and mainland China routes while keeping official Smart Home OAuth/MQTT routing independent.
-- Added an evidence-first capability profile to parsed mower snapshots and Home Assistant Download diagnostics for future model-aware entity provisioning.
+- Added account-region discovery/host persistence across observed Europe, Asia-Pacific, Americas and mainland China routes while keeping official Smart Home OAuth/MQTT routing independent.
+- Added an evidence-first capability profile to parsed mower snapshots and Home Assistant Download diagnostics for model-aware provisioning.
 
 ### Fixed
 
-- Fixed zone-restricted schedule `partitionPlan` writes to encode selected zone ids as little-endian uint16, preventing shifted payloads and phantom `00:15-00:15` periods.
+- Fixed zone-restricted schedule `partitionPlan` writes to encode selected zone IDs as little-endian uint16, preventing shifted payloads and phantom `00:15-00:15` periods.
 - Preserved already-working schedule master On/Off behavior while correcting only the selected-zone wire format.
 
 ### Changed
 
 - Removed Legacy Map Camera; Navimower Map Card is the supported map UI.
 - Replaced accumulated beta-numbered runtime layers with responsibility-based semantic modules and one explicit runtime composition point.
-- Download diagnostics remains sanitized/read-only but intentionally information-rich: config/model state, connectivity, regional routing, capability evidence, settings, telemetry, positioning, map/history/problem context, notifications, polling/MQTT health and the sanitized raw private-cloud snapshot are retained for support.
-
-### Validation and compatibility
-
-- The 0.4.2 beta line was exercised on H2- and X3-series mowers for the functionality available on those test devices, including local notifications and local Mark as read.
-- Non-European regional routing follows upstream field evidence but was not locally hardware-tested before stable; future diagnostics can refine routing or capability mapping when real users report differences.
-- Existing config entries, entities, histories and notification storage are retained.
-
-## 0.4.2-beta7
-
-Seventh beta in the cumulative 0.4.2 development line.
-
-### Added
-
-- Added regional private-cloud account discovery across Europe (`fra`/`eu`), Asia-Pacific (`sg`/`sea`), Americas (`us`/`ore`) and mainland China (`bj`) using the signed passport `/v3/region` lookup before password login.
-- Added per-client mower-cloud host probing and persistence so the private mobile-app cloud is no longer hardwired to FRA at runtime.
-- Added an evidence-first capability profile to mower snapshots and Download diagnostics, including endpoint presence, reported setting key paths, positive capability evidence and narrow proven model constraints.
-
-### Changed
-
-- Kept official Smart Home OAuth/MQTT routing independent from the private-cloud region; MQTT continues to use the `mqttHost` / `mqttUrl` returned by the official API.
-- Updated the semantic runtime architecture and permanent architecture guard for responsibility-based private-region and capability-profile modules.
-
-### Safeguards
-
-- Region discovery fails closed when a regional directory cannot be checked instead of sending the account password to a guessed server.
-- One empty or missing endpoint response is not treated as proof that a mower lacks a capability; positive observations remain sticky for the loaded coordinator.
-- General sensors are not pruned in beta7. Existing field-driven switch/number/select provisioning remains unchanged while the capability profile gathers safer cross-model evidence.
-
-## 0.4.2-beta6
-
-Sixth beta in the cumulative 0.4.2 development line.
-
-### Changed
-
-- Replaced production `beta16_runtime.py`, `beta17_runtime.py`, `beta18_runtime.py` and `beta26_runtime.py` layers with responsibility-based semantic modules.
-- Added one explicit `runtime.py` composition point while preserving the historically proven install order and runtime behavior.
-- Renamed version-stamped internal notification/navigation/history runtime state to responsibility-based names.
-
-### Guardrails
-
-- Added a permanent architecture test that rejects beta/version-numbered production runtime files and beta-numbered runtime installer/state symbols.
-- Added `docs/ARCHITECTURE.md` documenting the cumulative-beta rule and the explicit exception process for genuinely isolated experiments.
-
-## 0.4.2-beta5
-
-Fifth beta in the cumulative 0.4.2 development line.
-
-### Fixed
-
-- Fixed zone-restricted schedule writes to encode every selected zone id as little-endian uint16 instead of one byte in the robot `partitionPlan` payload.
-- Prevented selected zones from shifting later schedule bytes, which could make the mower drop zones, misread later periods or create a phantom `00:15-00:15` period that synchronized back to the Navimow app.
-- Kept multi-period framing unchanged; app captures confirmed that multi-period all-zones schedules were already encoded correctly.
-
-### Validation
-
-- Added byte-level regression tests for disabled days, one/multiple all-zones periods, one/multiple selected zones and multiple zone-restricted periods.
-- Schedule encoding now reuses the same `encode_partition_ids()` little-endian uint16 helper as immediate zone mowing.
-
-### Upstream confirmation
-
-- Synced the schedule zone-id wire format with the official-app-captured fix published by `ilguala/navimow_pro` v0.2.9 for issue #5. The separate schedule-master-switch state report remains outside this fix.
-
-## 0.4.2-beta4
-
-Fourth beta in the cumulative 0.4.2 development line.
-
-### Added
-
-- Added a persistent Navimower notification center that retains up to 20 locally generated mower-activity notifications per config entry and merges them with the newest 10 vendor Device notifications.
-- Added mowing timeline attribution for confirmed Home Assistant Mow/Resume/Dock commands, conservative schedule starts/ends, external starts, night/sunrise interruption and continuation, charge interruption/continuation, and unambiguous 100% completion.
-- Added local notification `origin`, `kind` and `confidence` metadata plus separate combined/vendor/local counts on Latest notification.
-- Added notification-center diagnostics including the retained task context, interruption reason, last mowing progress/battery and observed MQTT `mowStartType` / `taskDelay` values without guessing those numeric semantics.
-
-### Changed
-
-- Latest notification now keeps two independent budgets: up to 10 vendor rows plus up to 20 Navimower-local rows, merged newest-first into a maximum 30-row `recent` list.
-- `navimower.mark_notification_read` dispatches `navimower:` IDs to persistent local read state while vendor IDs keep the encrypted Navimow detail-open flow.
-- `navimower.mark_all_notifications_read` now marks both retained local rows and the vendor Device feed read.
-- Local start/stop notifications wait for a confirmed private-cloud or official-MQTT mower state and are not emitted from Home Assistant's short optimistic command activity.
-- Scheduled mowing notifications include the configured window end and, when Night mowing is off, can include Home Assistant location-based sunset context without claiming sunset control is performed by the integration.
-- External mowing starts use observed target zones where available but are deliberately not labelled as mobile-app starts unless a future protocol signal proves the source.
-
-### Attribution safeguards
-
-- Night pause, sunrise resume and charging pause/resume messages are explicitly inference-based and require matching known context instead of treating every dock/return transition as the same reason.
-- Local completion requires 100% task progress in beta4; the historical practical history threshold is not reused to generate a user-facing completion claim.
-- Ordered zone names are shown only for Home Assistant commands whose command trace confirms ordered mowing support; first-generation H-series selected-zone tasks remain mower-ordered.
-
-## 0.4.2-beta3
-
-Third beta in the cumulative 0.4.2 development line.
-
-### Added
-
-- Added `navimower.resume`, a dedicated retained-task Resume action using the private-cloud `c:behavior` type `3` command.
-- Added an in-memory `last_resume_command` diagnostics trace with the pre-command mower/task context, request acceptance and vendor command number when available.
-
-### Changed
-
-- The existing paused `lawn_mower.start_mowing` path now uses the same Resume helper as `navimower.resume`, keeping one implementation and one diagnostics format.
-- Resume remains separate from `navimower.mow(reset: false)`: Resume sends no zones and does not create a new Navimower mowing cycle, while `mow(reset: false)` still sends a selected-zone `s:mower` command in continue mode.
-
-### Field validation
-
-- Beta3 intentionally allows the explicit Resume action to be called while the mower is docked/charging so real mowers can confirm whether a manually interrupted vendor task is retained after Dock.
-- Standard Home Assistant Start behavior from docked/charging remains unchanged for now. It will not be auto-routed to Resume until field testing confirms the model/firmware behavior.
-- Download diagnostics remains snapshot-only and never sends Resume while collecting the cached trace.
-
-## 0.4.2-beta2
-
-Second beta in the cumulative 0.4.2 development line.
-
-### Added
-
-- Added `navimower.mark_notification_read` for one Device notification. It uses the official app's encrypted message-detail request and then refreshes the Device feed; Home Assistant does not optimistically rewrite the cached `read` flag.
-- Added `navimower.mark_all_notifications_read` using the recovered `clearBatchMessageRead` request with `searchMessageStatus: false` for the selected mower/account.
-- Both notification actions force the next Device-feed poll immediately after a successful vendor call instead of waiting for the normal 60-second notification TTL.
-
-### Changed
-
-- Notification read state remains account-specific. The actions operate in the private-cloud Navimow account context used by the selected config entry.
-- Service registration now checks each Navimower service independently, so newly added actions can be registered by an upgraded integration without relying on the older `mow` service as the only registration sentinel.
-
-### Removed
-
-- Removed the beta1 `notification_read_h5_discovery` source scanner and its Download-diagnostics H5 network requests after recovering the notification read request contracts.
-- Download diagnostics is snapshot-only again and never marks notifications read.
-
-### Field validation
-
-- **Mark all as read** follows a directly recovered official-app mutation contract.
-- Single-message **Mark as read** follows the official flow where Message Center marks the selected row locally and then opens `/mowerbot/user/message/getmessageDetailResp` with Device type `2`. Beta2 intentionally waits for the refreshed `vehicleMessageListField` response to prove the server-side `read: true` effect on a real unread message.
-
-## 0.4.2-beta1
-
-First beta in the cumulative 0.4.2 development line, built directly on stable 0.4.1.
-
-### Added
-
-- Added a targeted **Download diagnostics** H5 inspection for notification read-state reverse engineering. It searches public unauthenticated Navimow H5 JavaScript for `clearBatchMessageRead`, unread-count routes and surrounding request/payload structure.
-- Diagnostics records bounded sanitized source context to help determine whether the official app supports both per-message **Mark as read** and **Mark all as read** behavior.
-- Documented field confirmation that notification `read` state is scoped to the Navimow account used by the integration: messages become `read: true` after they are read in the app under that same account and the feed refreshes.
-
-### Changed
-
-- Navimower Map Card is now the only supported Navimower map UI. Existing authenticated map/history/session APIs remain unchanged.
-- The normal Latest notification Device feed remains read-only in beta1. The new H5 diagnostics probe does not alter notification state and does not change normal notification polling.
-
-### Removed
-
-- Removed the deprecated **Legacy Map Camera** introduced by the old Home Assistant `camera` platform, including its SVG renderer, platform registration and camera entity translation.
-- Removal affects only the legacy SVG map-camera entity; mower camera/VisionFence settings such as Camera positioning (EFLS) remain available where supported.
-
-### Diagnostics safety
-
-- H5 discovery runs only when Home Assistant **Download diagnostics** is requested.
-- It performs bounded public GET requests only and sends no Navimow token, cookie, UID, device ID, mower serial or encrypted p:101 business payload.
-- `clearBatchMessageRead` and all other notification mutation endpoints are **not called** in beta1.
-
-## 0.4.1
-
-Changes below describe the stable upgrade from **0.4.0 to 0.4.1**. The 0.4.1 beta release notes remain in `.github/release-notes/` as development history; they do not need to be installed individually.
-
-### Added
-
-- Added **Latest notification**, backed by the Navimow app's read-only Notification -> Device feed. The sensor keeps the newest title as state and exposes bounded message details plus up to five recent notifications.
-- Preserved vendor notification codes as strings, including alphanumeric codes such as `150A`, and preserved the vendor read flag as a boolean. Native app jump URLs are not retained or exposed.
-- Added production handling for the observed **Idle** (`0103`), **Lifted** (`0302`) and active numeric-fault (`0301`) states.
-- Added detailed numeric fault reporting from live `index2.error_data`. When the mower supplies a fault object, the Error sensor exposes the vendor code, title and content; field captures include `6108` (Mower got stuck) and `6106` (Motion planning error).
-- Added freshness-aware private-cloud position fallback for Current physical zone and Current channel when the official MQTT pose stream is temporarily unavailable.
-- Added guarded private-cloud fallback for Gate and Gate-area presence. A cloud-based close/clear or OFF transition requires two distinct fresh vendor position reports.
-- Added initial **i2 AWD** capability support, including the observed i208 AWD settings and global cutting-height capability. This support is **experimental and not yet field-tested on a live i2 AWD mower through Navimower**.
-
-### Changed
-
-- Private-cloud polling can no longer be starved by dense MQTT position pushes. A guarded poll task keeps normal cloud state, settings, schedule and coverage refreshes running during active mowing.
-- MQTT pose degradation no longer forces a complete MQTT client rebuild while other useful MQTT traffic is healthy. Position recovery is handled independently and re-subscribe attempts are rate-limited.
-- Task progress and Task mowed area now publish the selected fresh vendor task values directly instead of being rewritten by retained monotonic history.
-- Map coverage and Map mowed area now come from the current vendor per-zone coverage snapshot. Physical mower position is kept separate from the work-target/progress-owner zone.
-- Multi-zone mowing remains one logical history session across normal zone transitions. A confirmed per-zone cycle reset affects only that zone's daily trail and does not clear unrelated completed zones.
-- Repeated deliveries of one vendor pose are deduplicated from route history, and persisted duplicate samples from the beta investigation are compacted on load where safe.
-- Completed-session SVG footprints use the mower's reported `mowingPathWidth` when available instead of assuming a universal 0.25 m swath.
-- Cutting-height compatibility is more defensive: unknown encoded values are not converted into invented millimetre values and no longer disable otherwise valid mower-level height support.
-- **Night mowing**, **Rain** and **Rain sensor** now use a robot-first plus legacy-cloud-persist write path. All three were field-tested bidirectionally on H215 and remain persistent after the write.
-- Multiple mower entries may share one dedicated private-cloud account while retaining separate devices, maps and histories.
-- The built-in SVG camera is now named **Legacy Map Camera**. It remains available in 0.4.1 for compatibility, but Navimower Map Card is the supported map UI. Legacy Map Camera is scheduled for removal in **0.4.2**, beginning with the 0.4.2-beta1 development line.
-- Home Assistant **Download diagnostics** is the supported diagnostics interface and remains sanitized/read-only. It keeps general mower, connectivity, positioning, telemetry, map/history, Problem/Error and latest-notification context.
-
-### Removed
-
-- Removed the 0.4.1 beta-only **Passive protocol discovery** and **Diagnostics detail** options from the production options flow. Existing beta option values are discarded when stable 0.4.1 starts or options are saved.
-- Removed the development-only `navimower.export_diagnostics` and `navimower.mark_discovery_event` actions from the production service interface.
-- Removed state-transition capture, passive MQTT discovery inventories, private request-schema inventories and beta probe output from Home Assistant Download diagnostics.
-- Removed the notification native-app `url` field from retained notification data and Home Assistant attributes.
+- Kept Download diagnostics sanitized/read-only while retaining useful support context for connectivity, routing, capabilities, settings, telemetry, positioning, maps/history, problems, notifications and MQTT health.
 
 ### Compatibility
 
-- No 0.4.1 beta needs to be installed before the stable release; 0.4.1 is cumulative from 0.4.0.
+- Existing config entries, entities, histories and notification storage are retained.
+- No 0.4.2 beta needs to be installed before this stable release.
+
+## 0.4.1
+
+### Added
+
+- Added Latest notification backed by the Navimow Device feed, including bounded recent message details and vendor read state.
+- Added production handling for observed Idle (`0103`), Lifted (`0302`) and active numeric-fault (`0301`) states.
+- Added detailed numeric fault reporting from live `index2.error_data`.
+- Added freshness-aware cloud position fallback for Current physical zone/channel and guarded Gate/Gate-area presence.
+- Added initial i2 AWD capability support.
+
+### Changed
+
+- Prevented dense MQTT pose traffic from starving normal cloud polling.
+- Kept MQTT pose degradation separate from broader MQTT connection health.
+- Stabilized task progress, task mowed area, per-zone coverage and route/history handling.
+- Improved cutting-height compatibility and weather-adaptive setting writes.
+- Allowed multiple mower entries to share one dedicated account while retaining separate devices, maps and histories.
+
+### Removed
+
+- Removed beta-only protocol-discovery controls and development-only diagnostics actions from the production interface.
+- Removed native-app jump URLs and development probe output from retained diagnostics/notification data.
+
+### Compatibility
+
 - Existing mower config entries, map/session storage and entity unique IDs are retained.
-- `Latest notification` keeps the existing internal `notification` key/unique ID used by the beta sensor.
-- Legacy Map Camera remains present for the whole 0.4.1 stable line; migrate dashboards to Navimower Map Card before 0.4.2.
+- Legacy Map Camera remained present for the 0.4.1 stable line and was removed in 0.4.2.
 
 ## 0.4.0
 
@@ -666,4 +146,4 @@ Changes below describe the stable upgrade from **0.4.0 to 0.4.1**. The 0.4.1 bet
 
 ## Earlier releases
 
-Detailed historical changes remain available in the repository's GitHub releases and the versioned files under `.github/release-notes/` as development history.
+Detailed historical changes remain available in the repository's GitHub Releases and the versioned files under `.github/release-notes/`.
