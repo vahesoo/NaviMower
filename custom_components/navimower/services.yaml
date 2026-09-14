@@ -262,10 +262,12 @@ probe_private_api:
   name: Probe private API (development)
   description: >-
     Run an explicit read-only private-cloud field probe for selected endpoint
-    families and write the raw result under /config/navimower_diagnostics/probes/.
-    This beta development action never accepts an arbitrary endpoint or payload;
-    it is limited to the built-in trail, reports, terrain, weather and RTK reads.
-    RTK account/password values are redacted before the probe file is written.
+    families and write the result under /config/navimower_diagnostics/probes/.
+    The terrain_deep option additionally inspects H2-style dynamic-map data,
+    downloads the vendor type-2 artifact when a signed URL is returned, and
+    creates a ZIP bundle containing the JSON plus downloaded binary file. The
+    action never accepts an arbitrary endpoint or payload. RTK account/password
+    values and signed artifact URLs are redacted from the JSON output.
   fields:
     device_id:
       name: Mower
@@ -276,7 +278,7 @@ probe_private_api:
           integration: navimower
     probe:
       name: Probe
-      description: Endpoint family to test. All runs every built-in read-only probe.
+      description: Endpoint family to test. All runs the normal read-only probes; terrain_deep is explicit because it downloads an artifact.
       required: false
       default: all
       selector:
@@ -286,5 +288,6 @@ probe_private_api:
             - trail
             - reports
             - terrain
+            - terrain_deep
             - weather
             - rtk
