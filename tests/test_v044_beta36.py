@@ -1,4 +1,4 @@
-"""Release-candidate documentation regressions for Navimower 0.4.4-beta36."""
+"""Release-candidate documentation regressions for Navimower 0.4.4-beta37."""
 from __future__ import annotations
 
 import json
@@ -8,16 +8,16 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta36_release_metadata() -> None:
+def test_beta37_release_metadata() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta36"
+    assert manifest["version"] == "0.4.4-beta37"
 
-    notes = ROOT / ".github" / "release-notes" / "0.4.4-beta36.md"
+    notes = ROOT / ".github" / "release-notes" / "0.4.4-beta37.md"
     text = notes.read_text(encoding="utf-8")
-    assert text.startswith("title: Navimower 0.4.4-beta36\n")
-    assert "Runtime mower behavior is unchanged from beta35" in text
-    assert "Gate areas and physical-gate example" in text
-    assert "Map Card stable pairing remains intentionally undecided" in text
+    assert text.startswith("title: Navimower 0.4.4-beta37\n")
+    assert "Completed-zone coverage regression protection" in text
+    assert "100 -> 89" in text
+    assert "Mowing pause reason" in text
 
 
 def test_readme_covers_current_044_contracts() -> None:
