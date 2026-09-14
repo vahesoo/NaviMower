@@ -14,7 +14,8 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/vahesoo/NaviMower/issues",
   "requirements": [
-    "navimow-sdk>=0.1.2"
+    "navimow-sdk>=0.1.2",
+    "zstandard>=0.23.0"
   ],
-  "version": "0.4.5-beta4"
+  "version": "0.4.5-beta5"
 }
