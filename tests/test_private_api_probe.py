@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
-from custom_components.navimower.private_api_probe import (
-    PROBE_CHOICES,
-    _build_probe_document,
-    _probe_trail,
-    _sanitize_probe_value,
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "custom_components"
+    / "navimower"
+    / "private_api_probe.py"
 )
+SPEC = importlib.util.spec_from_file_location("navimower_private_api_probe_test", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+probe_module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(probe_module)
+
+PROBE_CHOICES = probe_module.PROBE_CHOICES
+_build_probe_document = probe_module._build_probe_document
+_probe_trail = probe_module._probe_trail
+_sanitize_probe_value = probe_module._sanitize_probe_value
 
 
 class DummyClient:
