@@ -39,6 +39,7 @@ from .mqtt import NavimowerMqttBridge
 from .notification_center import NavimowerNotificationCenter
 from .navimower_schedule import NavimowerScheduleController
 from .oauth import async_register_oauth_implementation
+from .private_api_probe import async_setup_private_api_probe
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
 
@@ -132,6 +133,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_register_oauth_implementation(hass)
     async_register_map_api(hass)
     async_setup_services(hass)
+    async_setup_private_api_probe(hass)
     return True
 
 

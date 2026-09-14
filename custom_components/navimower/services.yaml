@@ -257,3 +257,34 @@ export_raw_data:
       selector:
         device:
           integration: navimower
+
+probe_private_api:
+  name: Probe private API (development)
+  description: >-
+    Run an explicit read-only private-cloud field probe for selected endpoint
+    families and write the raw result under /config/navimower_diagnostics/probes/.
+    This beta development action never accepts an arbitrary endpoint or payload;
+    it is limited to the built-in trail, reports, terrain, weather and RTK reads.
+    RTK account/password values are redacted before the probe file is written.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    probe:
+      name: Probe
+      description: Endpoint family to test. All runs every built-in read-only probe.
+      required: false
+      default: all
+      selector:
+        select:
+          options:
+            - all
+            - trail
+            - reports
+            - terrain
+            - weather
+            - rtk
