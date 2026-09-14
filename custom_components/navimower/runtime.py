@@ -47,7 +47,7 @@ from .zone_entity_cleanup import install_zone_entity_cleanup
 
 
 def install_runtime_extensions() -> None:
-    """Install semantic extensions in the historically proven order."""
+    """Install semantic extensions in their stable dependency order."""
     install_state_semantics()
     install_private_cloud_region()
     install_capability_extensions()
