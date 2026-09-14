@@ -42,6 +42,7 @@ from .oauth import async_register_oauth_implementation
 from .private_api_probe import async_setup_private_api_probe
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
+from .terrain_overlay import TerrainOverlayManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -234,6 +235,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = NavimowCoordinator(hass, entry)
     await coordinator.async_load_persistent_state()
 
+    terrain_overlay = TerrainOverlayManager(coordinator)
+    coordinator.terrain_overlay = terrain_overlay
+    await terrain_overlay.async_load()
+
     notification_center = NavimowerNotificationCenter(
         hass,
         entry.entry_id,
@@ -305,6 +310,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinator.data:
         coordinator.async_set_updated_data(coordinator.bootstrap_snapshot())
 
+    terrain_overlay.start()
+
     navimower_schedule = NavimowerScheduleController(hass, entry, coordinator)
     coordinator.navimower_schedule = navimower_schedule
     await navimower_schedule.async_start()
@@ -329,6 +336,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     session_archive = (
         getattr(coordinator, "session_archive", None) if coordinator else None
+    )
+    terrain_overlay = (
+        getattr(coordinator, "terrain_overlay", None) if coordinator else None
     )
     navimower_schedule = (
         getattr(coordinator, "navimower_schedule", None) if coordinator else None
@@ -368,6 +378,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await notification_center.async_stop()
     if session_archive is not None:
         await session_archive.async_stop()
+    if terrain_overlay is not None:
+        await terrain_overlay.async_stop()
     if coordinator is not None:
         if bridge is not None:
             await bridge.async_stop()
@@ -378,11 +390,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Remove cached map data, local notifications and retained mowing sessions."""
+    """Remove cached map, terrain, notifications and retained mowing sessions."""
     await NavimowerNotificationCenter.async_remove_all(hass, entry.entry_id)
     await NavimowerScheduleController.async_remove_all(hass, entry.entry_id)
     await SessionArchiveManager.async_remove_all(hass, entry.entry_id)
     await NavimowerHistory.async_remove_all(hass, entry.entry_id)
+    await TerrainOverlayManager.async_remove_all(hass, entry.entry_id)
     try:
         await state_store(hass, entry.entry_id).async_remove()
     except Exception:  # noqa: BLE001
