@@ -121,6 +121,37 @@ def _hhmm_to_min(value: str) -> int:
     return h * 60 + m
 
 
+def _decoded_map_zone_ids(coordinator) -> set[int]:
+    """Return zone IDs only when they come from a successfully decoded map.
+
+    ``coordinator.data['zones']`` can fall back to a user Options list or the
+    currently selected partitions. Those sources are intentionally partial, so
+    they must never be used to reject an otherwise valid mower command.
+    """
+    map_data = (coordinator.data or {}).get("map")
+    if not isinstance(map_data, dict):
+        return set()
+    return {
+        int(zone["id"])
+        for zone in map_data.get("zones") or []
+        if isinstance(zone, dict) and zone.get("id") is not None
+    }
+
+
+def _validate_zone_ids(coordinator, zone_ids: list[int]) -> None:
+    """Reject unknown explicit zone IDs only when the decoded map proves them wrong."""
+    known_zone_ids = _decoded_map_zone_ids(coordinator)
+    if not known_zone_ids:
+        return
+    unknown = sorted({int(zone_id) for zone_id in zone_ids} - known_zone_ids)
+    if unknown:
+        raise ServiceValidationError(
+            "Unknown zone id(s): "
+            f"{', '.join(str(value) for value in unknown)}. "
+            "Use the internal zone IDs reported by the decoded Navimower map."
+        )
+
+
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register integration services once, including services added by upgrades."""
 
@@ -152,11 +183,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         day_num = _WEEKDAY_TO_NUM[call.data["day"]]
         enabled = call.data["enabled"]
         periods = []
-        known_zone_ids = {
-            int(zone["id"])
-            for zone in (coordinator.data or {}).get("zones") or []
-            if zone.get("id") is not None
-        }
         for p in call.data.get("periods", []):
             try:
                 start_min = _hhmm_to_min(p["start"])
@@ -171,20 +197,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 raise ServiceValidationError(
                     "Schedule times must use 15-minute increments"
                 )
-            if end_min <= start_min:
-                raise ServiceValidationError(
-                    f"Schedule end must be after start ({p['start']}–{p['end']})"
-                )
             zone_ids = list(p.get("zones") or [])
-            unknown = [
-                zone_id
-                for zone_id in zone_ids
-                if known_zone_ids and zone_id not in known_zone_ids
-            ]
-            if unknown:
-                raise ServiceValidationError(
-                    f"Unknown zone id(s): {', '.join(str(value) for value in unknown)}"
-                )
+            if enabled:
+                if end_min <= start_min:
+                    raise ServiceValidationError(
+                        f"Schedule end must be after start ({p['start']}–{p['end']})"
+                    )
+                _validate_zone_ids(coordinator, zone_ids)
             periods.append(
                 {
                     "start_min": start_min,
@@ -192,10 +211,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
                     "zone_ids": zone_ids,
                 }
             )
-        periods.sort(key=lambda item: item["start_min"])
-        for previous, current in zip(periods, periods[1:]):
-            if current["start_min"] < previous["end_min"]:
-                raise ServiceValidationError("Schedule periods may not overlap")
+        # Semantic validation is only for a schedule being enabled. A day that
+        # already contains a stale/overlapping vendor-app plan must still be
+        # possible to switch off instead of being trapped behind our validator.
+        if enabled:
+            periods.sort(key=lambda item: item["start_min"])
+            for previous, current in zip(periods, periods[1:]):
+                if current["start_min"] < previous["end_min"]:
+                    raise ServiceValidationError("Schedule periods may not overlap")
         try:
             await coordinator.async_send(
                 coordinator.client.set_day_schedule,
@@ -211,22 +234,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _mow(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         requested_zones = [int(z) for z in call.data.get("zones") or []]
-        known_zone_ids = {
-            int(zone["id"])
-            for zone in (coordinator.data or {}).get("zones") or []
-            if zone.get("id") is not None
-        }
-        unknown = [
-            zone_id
-            for zone_id in requested_zones
-            if known_zone_ids and zone_id not in known_zone_ids
-        ]
-        if unknown:
-            raise ServiceValidationError(
-                "Unknown zone id(s): "
-                f"{', '.join(str(value) for value in unknown)}. "
-                "Use the internal zone IDs reported by the Navimower map."
-            )
+        _validate_zone_ids(coordinator, requested_zones)
         zones = list(requested_zones)
         requested_ordered = bool(zones)
         ordered = requested_ordered and supports_ordered_zone_mowing(
