@@ -41,7 +41,6 @@ def test_beta58_stale_zone_cleanup_requires_authoritative_map() -> None:
     assert 'registry_entry.domain != "sensor"' in source
     assert "zone_id in current_zone_ids" in source
     assert "install_zone_entity_cleanup" in _source("runtime.py")
-    # Cleanup is registry-only; retained history/session storage must stay intact.
     assert "NavimowerHistory" not in source
     assert "SessionArchive" not in source
 
@@ -49,7 +48,7 @@ def test_beta58_stale_zone_cleanup_requires_authoritative_map() -> None:
 def test_beta58_readme_covers_options_custom_area_and_card_compatibility() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "Settings -> Devices & services -> Navimower -> Configure" in readme
-    assert "temporarily **merge" in readme.lower() or "temporarily merge" in readme.lower()
+    assert "temporary Off-limit" in readme
     assert "Off-limit" in readme
     assert "Navimower Map Card 0.3.5 requires Navimower integration 0.4.3 or newer" in readme
     assert "Reset schedule progress" in readme

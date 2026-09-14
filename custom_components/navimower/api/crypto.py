@@ -1,22 +1,11 @@
-"""p:101 envelope crypto for the Segway Navimow private cloud.
+"""Request/response envelope crypto used by the Navimow account connection.
 
-This is a FAITHFUL port of the proven working reference implementation
-(scratchpad/p101_client.py). The constants below are app-wide values shared by
-every user of the official app -- they are NOT user secrets. Do not "improve"
-the crypto: it matches the server byte-for-byte and is proven live.
+The constants below are service-wide values used by this transport and are not
+user credentials. The implementation must remain byte-compatible with the
+remote service.
 
-Recipe (proven):
-    reqKey = 16 random ASCII-uppercase bytes (per request)
-    k      = base64(RSA-1024 PKCS#1 v1.5 type-2 wrap of reqKey, WRAP_PUB_PEM)
-    PT     = {"data": base64(business_json), keyDataOne..Four, platform:2, timeStamp}
-    d      = base64(AES-128-CBC(reqKey, IV=0, PKCS7(PT)))
-    h      = MD5(PT) hex lowercase
-    envelope = {"d","h","k","p":"101","t":"0"}   (Content-Type: text/html, ninebot-version: 1)
-    response {"r","s","v"}:  r = AES-128-CBC(SESSION_KEY, IV=0) -> {"data": base64(biz)}
-
-Uses the `cryptography` library, which Home Assistant bundles (no pycryptodome).
-The functions here are synchronous and CPU-bound; callers must run them off the
-event loop (Home Assistant does this via hass.async_add_executor_job).
+Uses the `cryptography` library, which Home Assistant bundles. The functions
+here are synchronous and CPU-bound; callers run them off the event loop.
 """
 from __future__ import annotations
 
@@ -29,7 +18,6 @@ import time
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
-# App-wide (NOT user secrets) -- copied verbatim from the proven client.
 SESSION_KEY = bytes.fromhex("d0db95e2b4b2eeb99af3cfb638386209")
 
 WRAP_PUB_PEM = b"""-----BEGIN PUBLIC KEY-----
@@ -43,7 +31,6 @@ _pub = load_pem_public_key(WRAP_PUB_PEM).public_numbers()
 PUB_N: int = _pub.n
 PUB_E: int = _pub.e
 
-# Fixed "keyData" fields carried in the plaintext envelope (app-wide constants).
 KD = {
     "keyDataOne": "4c9239e5377",
     "keyDataTwo": "c416f9ed",
@@ -96,7 +83,7 @@ def _build_pt(business: dict) -> bytes:
 
 
 def pack(business: dict) -> dict:
-    """Build the request envelope {d,h,k,p,t} for a business payload."""
+    """Build one encrypted request envelope for a business payload."""
     pt = _build_pt(business)
     req_key = bytes(0x41 + (b % 26) for b in os.urandom(16))
     return {
@@ -109,12 +96,8 @@ def pack(business: dict) -> dict:
 
 
 def decode_response(j: dict) -> dict:
-    """Decode a {r,s,v} response envelope back to the business JSON dict.
-
-    If the payload is not an {r,...} envelope (e.g. a plain error), returns it
-    unchanged so the caller can inspect any error fields.
-    """
+    """Decode an encrypted response envelope back to the business JSON dict."""
     if not isinstance(j, dict) or "r" not in j:
         return j
-    pt = _aes_cbc_dec(SESSION_KEY, base64.b64decode(j["r"]))  # already unpadded
+    pt = _aes_cbc_dec(SESSION_KEY, base64.b64decode(j["r"]))
     return json.loads(base64.b64decode(json.loads(pt)["data"]))

@@ -31,7 +31,7 @@ from .setting_write import async_write_settings
 
 @dataclass(frozen=True, kw_only=True)
 class NavimowNumberDescription(NumberEntityDescription):
-    """A numeric MowerSettingBean value."""
+    """A numeric mower setting value."""
 
     value_fn: Callable[[dict], int | None]
     write_key: str
@@ -46,7 +46,6 @@ class NavimowNumberDescription(NumberEntityDescription):
 
 
 NUMBERS: tuple[NavimowNumberDescription, ...] = (
-    # Battery settings
     NavimowNumberDescription(
         key="return_battery_level",
         translation_key="return_battery_level",
@@ -73,7 +72,6 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         value_fn=lambda s: s.get("charging_limit"),
         write_key="chargingLimit",
     ),
-    # Weather-adaptive settings with regular app ranges.
     NavimowNumberDescription(
         key="snow_delay_time",
         name="Snow delay duration",
@@ -88,8 +86,6 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         raw_read_key="snowDelayTime",
         write_key="snowDelayTime",
         scale=24,
-        # Home Assistant shows whole days. The mower command still expects the
-        # underlying hour count as hexadecimal; cloud set-list stores hours.
         robot_hex=True,
     ),
     NavimowNumberDescription(
@@ -106,10 +102,8 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         value_fn=lambda s: None,
         raw_read_key="allowMaxTemp",
         write_key="allowMaxTemp",
-        # Verified live: decimal text "31" is read by the mower as 0x31 (=49).
         robot_hex=True,
     ),
-    # Safety settings
     NavimowNumberDescription(
         key="geo_fence_radius",
         translation_key="geo_fence_radius",
@@ -123,8 +117,6 @@ NUMBERS: tuple[NavimowNumberDescription, ...] = (
         value_fn=lambda s: None,
         raw_read_key="antiTheftRadius",
         write_key="antiTheftRadius",
-        # The robot expects hex (20 m -> "14"), while cloud set-list stores the
-        # human decimal value as a string (20 m -> "20").
         robot_hex=True,
         cloud_string=True,
     ),
@@ -161,7 +153,7 @@ def _remove_unsupported_registry_entities(
     coordinator: NavimowCoordinator,
     supported: set[str],
 ) -> None:
-    """Remove stale number settings after a confirmed set_list read."""
+    """Remove stale number settings after a confirmed settings read."""
     registry = er.async_get(hass)
     for desc in NUMBERS:
         if desc.key in supported:
@@ -182,7 +174,6 @@ async def async_setup_entry(
         desc for desc in NUMBERS if _wire_value(desc, data) is not None
     ]
 
-    # Cleanup is safe only after the private cloud supplied a real set_list.
     if _set_list(data) is not None:
         _remove_unsupported_registry_entities(
             hass, coordinator, {desc.key for desc in supported_descriptions}

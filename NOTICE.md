@@ -1,25 +1,18 @@
-# Attribution and project origins
+# Attribution
 
-Navimower is an independent interoperability project.
+Navimower is an independent community interoperability project for Home Assistant.
 
-The private-cloud authentication, encrypted request protocol, map decoding,
-settings, scheduler, entity model and SVG camera implementation are derived
-from and adapted from:
+It includes and adapts MIT-licensed work from:
 
 - **navimow_pro** by Roberto Gualandris: https://github.com/ilguala/navimow_pro
+- **NavimowHA**: https://github.com/vahesoo/NavimowHA
 
-That project is licensed under the MIT License. Its original copyright and
-license notice are preserved in this repository's `LICENSE` file.
-
-The official Smart Home OAuth/MQTT bridge, local channel/gate concept, live
-position parsing and persistent route-history work are adapted from and
-continued from:
-
-- https://github.com/vahesoo/NavimowHA
-
-The interactive dashboard map is maintained separately at:
+The standalone dashboard map is maintained separately at:
 
 - https://github.com/vahesoo/navimower-map-card
 
-Navimower is not affiliated with, endorsed by, or supported by Segway,
-Ninebot, Navimow or Willand.
+Original copyright and license notices are preserved in this repository's
+`LICENSE` file.
+
+Navimower is not affiliated with, endorsed by, or supported by Segway, Ninebot,
+Navimow or Willand.

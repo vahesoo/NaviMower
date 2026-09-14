@@ -79,7 +79,7 @@ def test_readme_is_current_state_documentation_with_setup_and_options_prominent(
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "## Installation" in readme
     assert "## Initial setup flow" in readme
-    assert "## Important: Configure Navimower after setup" in readme
+    assert "## Configure Navimower after setup" in readme
     assert "Settings -> Devices & services -> Navimower -> Configure" in readme
     assert "## Navimower Schedule" in readme
     assert "Reset schedule progress" in readme
@@ -87,5 +87,5 @@ def test_readme_is_current_state_documentation_with_setup_and_options_prominent(
     assert "## Upgrade from 0.4.0 to 0.4.1" not in readme
     assert "### v0.3.4" not in readme
     assert "External mowing task started" not in readme
-    assert "vendor Device notification" in readme
+    assert "Navimow Device" in readme
     assert "[CHANGELOG.md](CHANGELOG.md)" in readme

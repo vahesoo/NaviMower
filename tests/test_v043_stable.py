@@ -40,7 +40,7 @@ def test_stable_release_publisher_supports_stable_and_prerelease() -> None:
 def test_stable_docs_cover_current_setup_and_gate_example() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "Settings -> Devices & services -> Navimower -> Configure" in readme
-    assert "temporarily **merge" in readme.lower() or "temporarily merge" in readme.lower()
+    assert "temporary Off-limit" in readme
     assert "Navimower Map Card 0.3.5 requires Navimower integration 0.4.3 or newer" in readme
 
     gate = (ROOT / "docs" / "GATE_AUTOMATION.md").read_text(encoding="utf-8")
