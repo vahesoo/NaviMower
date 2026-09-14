@@ -56,6 +56,19 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)
     underlay = map_underlay_metadata(coordinator)
+    terrain_manager = getattr(coordinator, "terrain_overlay", None)
+    terrain_overlay = (
+        terrain_manager.frontend_metadata()
+        if terrain_manager is not None
+        and hasattr(terrain_manager, "frontend_metadata")
+        else {
+            "available": False,
+            "reference_frame": "mower_local_xy",
+            "version": None,
+            "terrain": {"available": False},
+            "elevation": {"available": False},
+        }
+    )
 
     def entity_id(domain: str, key: str) -> str | None:
         return entity_registry.async_get_entity_id(domain, DOMAIN, f"{sn}_{key}")
@@ -72,6 +85,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
         "site_api_path": f"/api/navimower/site/{entry_id}",
         "location": underlay["location"],
         "map_underlays": underlay["map_underlays"],
+        "terrain_overlay": terrain_overlay,
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
             "map_data": entity_id("sensor", "map_data"),
@@ -346,6 +360,40 @@ class NavimowerSessionRenderView(HomeAssistantView):
         )
 
 
+class NavimowerTerrainImageView(HomeAssistantView):
+    """Serve one integration-cached vendor terrain WebP to an authenticated card."""
+
+    url = "/api/navimower/terrain/{entry_id}/{kind}"
+    name = "api:navimower:terrain:image"
+    requires_auth = True
+
+    async def get(
+        self,
+        request: web.Request,
+        entry_id: str,
+        kind: str,
+    ) -> web.StreamResponse:
+        if kind not in {"terrain", "elevation"}:
+            raise web.HTTPNotFound(text="Unknown terrain resource")
+        coordinator = _coordinator(request, entry_id)
+        manager = getattr(coordinator, "terrain_overlay", None)
+        resource = (
+            manager.image_resource(kind)
+            if manager is not None and hasattr(manager, "image_resource")
+            else None
+        )
+        if resource is None:
+            raise web.HTTPNotFound(text="Terrain resource is not available")
+        path, _version = resource
+        return web.FileResponse(
+            path,
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+
 class NavimowerGoogleTileView(HomeAssistantView):
     """Proxy one Google Satellite tile without exposing the user's API key."""
 
@@ -458,6 +506,7 @@ def async_register_map_api(hass: HomeAssistant) -> None:
     hass.http.register_view(NavimowerSessionsView())
     hass.http.register_view(NavimowerSessionView())
     hass.http.register_view(NavimowerSessionRenderView())
+    hass.http.register_view(NavimowerTerrainImageView())
     hass.http.register_view(NavimowerGoogleTileView())
     hass.http.register_view(NavimowerGoogleViewportView())
     hass.data[_REGISTERED_KEY] = True
