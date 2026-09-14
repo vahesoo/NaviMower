@@ -209,13 +209,35 @@ def active_vendor_row(
     snapshot: dict[str, Any],
     cache: dict[int, dict[str, Any]],
 ) -> dict[str, Any] | None:
+    """Return the retained row for the currently active physical/work zone.
+
+    Full coordinator snapshots expose explicit active-zone IDs. The smaller Map
+    API payload intentionally omits those private runtime aliases, but its public
+    ``zone_states`` model retains the same resolved active flag. Supporting both
+    shapes keeps multi-zone MQTT-tail trimming deterministic without adding a new
+    frontend-only identity field.
+    """
+    candidate_ids: list[int] = []
     for key in ("active_zone_progress_zone_id", "current_physical_zone_id"):
         zone_id = _as_int(snapshot.get(key))
-        if zone_id is not None and zone_id in cache:
-            for row in current_vendor_rows(snapshot, cache):
-                if _as_int(row.get("zone_id")) == zone_id:
-                    return row
+        if zone_id is not None and zone_id > 0 and zone_id not in candidate_ids:
+            candidate_ids.append(zone_id)
+    for state in snapshot.get("zone_states") or []:
+        if not isinstance(state, dict) or state.get("active") is not True:
+            continue
+        zone_id = _as_int(state.get("id"))
+        if zone_id is not None and zone_id > 0 and zone_id not in candidate_ids:
+            candidate_ids.append(zone_id)
+
     rows = current_vendor_rows(snapshot, cache)
+    by_id = {
+        zone_id: row
+        for row in rows
+        if (zone_id := _as_int(row.get("zone_id"))) is not None
+    }
+    for zone_id in candidate_ids:
+        if zone_id in by_id:
+            return by_id[zone_id]
     return rows[0] if len(rows) == 1 else None
 
 
