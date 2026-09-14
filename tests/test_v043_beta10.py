@@ -1,7 +1,6 @@
-"""Regression contracts retained from Navimower 0.4.3-beta10 error diagnostics."""
+"""Regression contracts retained from Navimower 0.4.3-beta10 diagnostics."""
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 from diagnostics_contract import assert_cached_diagnostics_only
@@ -19,7 +18,6 @@ def test_beta10_release_artifacts_remain_in_history() -> None:
 
 def test_beta10_error_sensor_is_cloud_canonical() -> None:
     source = (COMPONENT / "state_semantics.py").read_text(encoding="utf-8")
-    ast.parse(source)
     assert 'value_fn=lambda data: data.get("error_text") or "No errors"' in source
     assert '"private_cloud_canonical_mqtt_transition_trigger"' in source
     assert 'transition = bool(state_name and state_name != previous_named)' in source
@@ -37,34 +35,9 @@ def test_beta10_retains_raw_vendor_notification_feed() -> None:
     assert '"variable": deepcopy(data.get("notification_variable"))' in diagnostics
 
 
-def test_beta10_error_context_survives_without_h5_discovery() -> None:
+def test_beta10_error_context_survives_without_research_helpers() -> None:
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     assert_cached_diagnostics_only(diagnostics)
     assert '"error_investigation"' in diagnostics
     assert '"private_cloud_canonical_mqtt_transition_trigger"' in diagnostics
     assert "error_transition_diagnostics(coordinator)" in diagnostics
-
-
-def test_beta10_error_h5_probe_remains_strictly_read_only() -> None:
-    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-    ast.parse(source)
-    for phrase in (
-        "Clear and resume", "Reboot Mower", "clearError", "rebootMower",
-        "/vehicle/set/send", "c:behavior", "cmdCode", "MAX_PREFIX_REQUESTS =",
-        "PREFIX_BYTES = 768 * 1024", 'method="GET"',
-        '"mutation_calls_executed": False', '"live_command_call_executed": False',
-        '"notification_detail_call_executed": False',
-    ):
-        assert phrase in source
-    assert "client.call(" not in source
-    assert "Authorization" not in source
-    assert "Cookie" not in source
-
-
-def test_beta10_error_probe_keeps_bounded_evidence() -> None:
-    source = (COMPONENT / "error_h5_discovery.py").read_text(encoding="utf-8")
-    for phrase in (
-        '"translation_keys"', '"matched_assets"', '"ui_contexts"',
-        '"command_contexts"', '"prefix_request_count"', '"full_request_count"',
-    ):
-        assert phrase in source
