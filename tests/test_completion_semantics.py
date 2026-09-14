@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import datetime, UTC
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,13 @@ RUNTIME = COMPONENT / "runtime.py"
 def _as_int(value: Any) -> int | None:
     try:
         return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -34,6 +42,7 @@ def _iso_ms(value: Any) -> int | None:
 
 class _HistoryStub:
     _as_int = staticmethod(_as_int)
+    _as_float = staticmethod(_as_float)
     _iso_ms = staticmethod(_iso_ms)
 
 
@@ -51,6 +60,11 @@ def _load_helpers() -> dict[str, Any]:
             "_preserve_newest_completion",
             "_near_reset_boundary",
             "_should_repair_legacy_completion",
+            "_canonical_polygon",
+            "_zone_geometry_signature",
+            "_map_zones_by_id",
+            "_reset_after_completion",
+            "_apply_completed_coverage_hold",
         }
     ]
     module = ast.Module(body=selected, type_ignores=[])
@@ -58,6 +72,7 @@ def _load_helpers() -> dict[str, Any]:
     namespace: dict[str, Any] = {
         "Any": Any,
         "deepcopy": deepcopy,
+        "hashlib": hashlib,
         "_history": _HistoryStub,
         "_COMPLETION_FIELDS": (
             "last_completed_at",
@@ -65,6 +80,8 @@ def _load_helpers() -> dict[str, Any]:
             "last_completed_source",
             "last_completed_confirmation",
             "last_completed_cycle_id",
+            "last_completed_area_m2",
+            "last_completed_geometry_signature",
         ),
         "_VERIFIED_COMPLETION_SOURCE": "private_zone_coverage",
         "_VERIFIED_CONFIRMATION_PREFIX": "coverage_100_",
@@ -82,6 +99,15 @@ def _record(stamp: str, *, cycle: str = "cycle-new") -> dict[str, Any]:
         "last_completed_source": "private_zone_coverage",
         "last_completed_confirmation": "coverage_100_after_incomplete",
         "last_completed_cycle_id": cycle,
+    }
+
+
+def _zone() -> dict[str, Any]:
+    return {
+        "id": 36,
+        "name": "Yard2",
+        "area": 65.1,
+        "polygon": [[0.0, 0.0], [10.0, 0.0], [10.0, 6.51], [0.0, 6.51]],
     }
 
 
@@ -176,6 +202,130 @@ def test_legacy_unverified_completion_is_still_repaired() -> None:
     )
 
 
+def test_completed_zone_holds_100_for_same_geometry_without_new_cycle() -> None:
+    helpers = _load_helpers()
+    signature = helpers["_zone_geometry_signature"](_zone())
+    apply_hold = helpers["_apply_completed_coverage_hold"]
+    assert signature
+
+    history = _record("2026-09-13T07:44:55+00:00", cycle="cycle-old")
+    history["last_completed_area_m2"] = 65.1
+    history["last_completed_geometry_signature"] = signature
+    rows = [
+        {
+            "id": 36,
+            "name": "Yard2",
+            "area_m2": 65.1,
+            "coverage_pct": 89.0,
+            "vendor_coverage_pct": 89.0,
+            "mowed_area_m2": 57.94,
+            "progress_source": "coverage",
+        }
+    ]
+    totals = {
+        "map_area_m2": 65.1,
+        "map_mowed_area_m2": 57.94,
+        "map_coverage_pct": 89.0,
+        "completed_zone_count": 0,
+    }
+
+    held_rows, held_totals = apply_hold(
+        rows,
+        totals,
+        map_zones=[_zone()],
+        zone_history={"36": history},
+        active_session=None,
+    )
+    row = held_rows[0]
+    assert row["coverage_pct"] == 100.0
+    assert row["vendor_coverage_pct"] == 89.0
+    assert row["mowed_area_m2"] == 65.1
+    assert row["progress_source"] == "verified_completion_hold"
+    assert row["completion_hold"] is True
+    assert row["completion_hold_vendor_pct"] == 89.0
+    assert held_totals["map_coverage_pct"] == 100.0
+    assert held_totals["completed_zone_count"] == 1
+
+
+def test_completed_zone_does_not_hold_after_geometry_change() -> None:
+    helpers = _load_helpers()
+    signature = helpers["_zone_geometry_signature"](_zone())
+    apply_hold = helpers["_apply_completed_coverage_hold"]
+    assert signature
+
+    history = _record("2026-09-13T07:44:55+00:00", cycle="cycle-old")
+    history["last_completed_geometry_signature"] = signature
+    changed_zone = deepcopy(_zone())
+    changed_zone["area"] = 64.0
+    changed_zone["polygon"] = [[0.0, 0.0], [10.0, 0.0], [10.0, 6.4], [0.0, 6.4]]
+    rows = [
+        {
+            "id": 36,
+            "area_m2": 64.0,
+            "coverage_pct": 89.0,
+            "vendor_coverage_pct": 89.0,
+            "mowed_area_m2": 56.96,
+        }
+    ]
+    totals = {"map_area_m2": 64.0, "map_mowed_area_m2": 56.96, "map_coverage_pct": 89.0, "completed_zone_count": 0}
+
+    result, _ = apply_hold(
+        rows,
+        totals,
+        map_zones=[changed_zone],
+        zone_history={"36": history},
+        active_session=None,
+    )
+    assert result[0]["coverage_pct"] == 89.0
+    assert result[0].get("completion_hold") is None
+
+
+def test_completed_zone_does_not_hold_after_new_cycle_enters_zone() -> None:
+    helpers = _load_helpers()
+    signature = helpers["_zone_geometry_signature"](_zone())
+    apply_hold = helpers["_apply_completed_coverage_hold"]
+    assert signature
+
+    history = _record("2026-09-13T07:44:55+00:00", cycle="cycle-old")
+    history["last_completed_geometry_signature"] = signature
+    rows = [
+        {
+            "id": 36,
+            "area_m2": 65.1,
+            "coverage_pct": 12.0,
+            "vendor_coverage_pct": 12.0,
+            "mowed_area_m2": 7.81,
+        }
+    ]
+    totals = {"map_area_m2": 65.1, "map_mowed_area_m2": 7.81, "map_coverage_pct": 12.0, "completed_zone_count": 0}
+    session = {
+        "id": "cycle-new",
+        "started_at_ms": 1789360000000,
+        "visited_zone_ids": [36],
+    }
+
+    result, _ = apply_hold(
+        rows,
+        totals,
+        map_zones=[_zone()],
+        zone_history={"36": history},
+        active_session=session,
+    )
+    assert result[0]["coverage_pct"] == 12.0
+    assert result[0].get("completion_hold") is None
+
+
+def test_polygon_signature_ignores_start_vertex_and_direction() -> None:
+    helpers = _load_helpers()
+    signature = helpers["_zone_geometry_signature"]
+    original = _zone()
+    rotated = deepcopy(original)
+    rotated["polygon"] = [[10.0, 6.51], [0.0, 6.51], [0.0, 0.0], [10.0, 0.0]]
+    reversed_zone = deepcopy(original)
+    reversed_zone["polygon"] = list(reversed(original["polygon"]))
+    assert signature(original) == signature(rotated) == signature(reversed_zone)
+
+
 def test_runtime_installs_completion_semantics_after_history_layer() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     assert "from .completion_semantics import install_completion_semantics" in runtime
@@ -189,3 +339,5 @@ def test_runtime_installs_completion_semantics_after_history_layer() -> None:
     assert "legacy_unverified_completion" in semantics
     assert "private_zone_coverage" in semantics
     assert "coverage_100_" in semantics
+    assert "verified_completion_hold" in semantics
+    assert "last_completed_geometry_signature" in semantics
