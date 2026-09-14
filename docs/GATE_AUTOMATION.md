@@ -1,49 +1,203 @@
-# Gate automation example
+# Physical gate automation
 
-A reliable physical-gate interlock can combine two Navimower signals:
+Navimower exposes two different gate-related signals:
 
-- **Gate required** — Navimower has determined that the mower needs to cross the configured zone-pair Gate.
-- **Custom Area** — a Navimower Custom Area placed around the physical gate reports that the mower has actually reached the gate passage.
+- **Gate required** — travel intent between a configured pair of mowing zones;
+- **Gate area** — mower presence inside a Navimower-owned local X/Y gate polygon.
 
-Using both signals avoids acting too early: `Gate required` provides the travel intent, while the Custom Area confirms physical arrival at the gate. The automation below starts only when **both** signals are On.
+They solve different problems. A physical gate automation can use one or both depending on how the mower reaches the gate and how much target-zone intent the automation can safely assume.
 
-The example is based on a real Home Assistant automation used with Navimower. Replace the example entity IDs with your own mower, Gate required, Custom Area and gate-cover entities.
+> [!WARNING]
+> A robotic mower and a moving physical gate can both cause injury or damage. Test the complete automation while supervised. Use the gate controller's real safety inputs and obstacle protection; Navimower does not replace physical gate safety.
 
-## Where this pattern is suitable
+## Gate areas
 
-This tested pattern is intended for tasks where Navimower has **one unambiguous mowing target zone**:
+Current Navimower Gate areas support exact mower-local polygons. Legacy rectangular `x_min/x_max/y_min/y_max` areas remain compatible, but the polygon is authoritative when present.
+
+Gate areas may be created/edited visually by a compatible Navimower Map Card. The integration also keeps the Home Assistant Options Flow as a manual/fallback editor and exposes `navimower.set_gate_area` / `navimower.delete_gate_area` for frontend or advanced automation use.
+
+Fresh official MQTT X/Y is preferred for Gate-area presence. A sufficiently fresh private-cloud X/Y may be used conservatively when MQTT pose is unavailable. A previously active Gate area is not cleared from one cloud-only outside sample; Navimower requires distinct fresh vendor reports before the risky OFF transition is accepted.
+
+## Recommended pattern: one automation run owns the gate cycle
+
+This pattern is useful when the **physical Gate area itself** is enough to decide when to stop/open the gate. It does not require a helper and it avoids a common ownership bug: an independently triggered exit automation must not close a gate that was already open before the mower arrived.
+
+The key rule is simple:
+
+1. trigger only when the mower enters the Gate area;
+2. continue only if the physical gate is exactly `closed`;
+3. the same automation run pauses the mower, opens the gate, resumes the mower, waits for the mower to leave the Gate area, and closes the gate;
+4. if the gate was already open/opening/not-closed at entry, the run ends immediately and can never close that gate later.
+
+This makes the running automation itself the ownership token: **only the run that opened the gate is allowed to close it**.
+
+### Current field-test Gate Area interlock
+
+The example below reflects the current working field-test pattern. It has behaved correctly in initial testing, but gate hardware/state reporting is installation-specific and the pattern should still be supervised and validated on each installation before unattended use.
+
+Replace the example entity IDs with your own Gate-area binary sensor, mower and gate cover.
+
+```yaml
+alias: Navimow - Gate Area interlock
+description: Control the physical gate only when this run opened it
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.my_mower_gate_area
+    from: "off"
+    to: "on"
+    for:
+      seconds: 1
+
+conditions: []
+
+actions:
+  # If the gate was already open/opening/unknown, stop here. This run then owns
+  # nothing and cannot close somebody else's gate later.
+  - condition: state
+    entity_id: cover.my_gate
+    state: "closed"
+
+  - variables:
+      mower_state_before_pause: "{{ states('lawn_mower.my_mower') }}"
+      mower_was_returning: >
+        {{ mower_state_before_pause in ['returning', 'docking', 'docked'] }}
+      mower_was_mowing: >
+        {{ mower_state_before_pause == 'mowing' }}
+
+  - action: lawn_mower.pause
+    target:
+      entity_id: lawn_mower.my_mower
+
+  - action: cover.open_cover
+    target:
+      entity_id: cover.my_gate
+
+  # Optional compatibility wait for a pulse/optimistic cover whose state can
+  # briefly report open and then closed while it is still on the closed magnet.
+  - wait_template: >
+      {{ is_state('cover.my_gate', 'closed') }}
+    timeout:
+      seconds: 5
+    continue_on_timeout: true
+
+  # Treat the gate as physically clear only after open is stable.
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: cover.my_gate
+        to: "open"
+        for:
+          seconds: 2
+    timeout:
+      seconds: 30
+    continue_on_timeout: false
+
+  # Installation-specific clearance time after the real open indication.
+  - delay:
+      seconds: 20
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ mower_was_returning
+                 and states('lawn_mower.my_mower') in ['paused', 'returning'] }}
+        sequence:
+          - action: lawn_mower.dock
+            target:
+              entity_id: lawn_mower.my_mower
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ mower_was_mowing
+                 and states('lawn_mower.my_mower') in ['paused', 'mowing'] }}
+        sequence:
+          - action: lawn_mower.start_mowing
+            target:
+              entity_id: lawn_mower.my_mower
+
+  # The same run that opened the gate waits until the mower has really left the
+  # Gate area. Requiring Off for a while also filters short position flicker.
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: binary_sensor.my_mower_gate_area
+        from: "on"
+        to: "off"
+        for:
+          seconds: 10
+
+  - condition: template
+    value_template: >
+      {{ not is_state('cover.my_gate', 'closed') }}
+
+  - action: cover.close_cover
+    target:
+      entity_id: cover.my_gate
+
+mode: parallel
+max: 4
+```
+
+### Why `mode: parallel` is intentional here
+
+The long-running owner copy may still be waiting for the mower to leave the Gate area. If position briefly produces a new `off -> on` entry while the physical gate is already open, a new parallel run is allowed to start, immediately fails the `cover == closed` condition and ends. It does not disturb the original owner run.
+
+Using a separate `on -> off` close trigger is weaker because that new run no longer knows who opened the physical gate. It can accidentally close a gate that a person, another automation or the gate controller itself had already opened before the mower arrived.
+
+### Cover-state caveat
+
+The intermediate five-second `closed` wait exists for a specific type of gate controller that behaves like this after `open_cover`:
+
+1. reports an optimistic `open` immediately;
+2. reports `closed` again while the gate is still physically on the closed-position magnet;
+3. reports the real `open` only after the gate has moved away from that magnet.
+
+If your `cover` has a proper independent fully-open contact and never has that optimistic transition, the intermediate `closed` wait may be unnecessary. Keep the important part: require a trustworthy fully-open indication to remain stable before resuming the mower.
+
+If stable `open` is never confirmed, `continue_on_timeout: false` aborts the run and leaves the mower paused. That is intentionally fail-safe. Do not replace this with a blind resume timer.
+
+## Alternative pattern: Gate required + Custom Area
+
+The older pattern combines travel intent and physical arrival:
+
+- **Gate required** says the mower intends to cross the configured zone pair;
+- a **Custom Area** around the gate says the mower has physically reached the passage.
+
+This can be useful when the gate passage should only react to a known A-to-B/B-to-A mowing transition and the same physical area can be entered for other reasons.
+
+This alternative pattern is intended for tasks where Navimower has **one unambiguous mowing target zone**:
 
 - **Navimower Schedule**, because it intentionally dispatches one zone at a time; or
 - a manually started mowing task containing **one mowing zone**.
 
-Do not treat this example as a general interlock for a multi-zone task started with several zones at once. In that situation the target-zone intent can be ambiguous during parts of the task, so the same `Gate required` assumption is not guaranteed.
+Place the gate Custom Area so that it extends **slightly into the mowing zone** from which the mower approaches the gate. The mower must enter the area while the single-zone target intent is still known, before it reaches the physical barrier.
 
-Place the gate Custom Area so that it extends **slightly into the mowing zone** from which the mower approaches the gate. The mower must enter the Custom Area while it is still carrying the known single-zone travel intent; this lets `Gate required` and the Custom Area become On together before the mower reaches the physical gate.
+Do not treat this as a general target-intent interlock for a multi-zone task started with several zones at once.
 
-This overlap is also why a Custom Area can be more useful than a very narrow line exactly at the gate. If the required shape must cross otherwise separate mowing zones, see the README section **Custom Areas across separate mowing zones** for the temporary merge/import/restore workflow.
-
-## Tested interlock pattern
+Example opening interlock:
 
 ```yaml
-alias: Navimow - gate interlock
-description: Pause mower at sliding gate until gate is fully open
+alias: Navimow - Gate required + arrival area
+description: Pause mower at the gate until the physical gate is open
 triggers:
   - trigger: state
     entity_id:
       - binary_sensor.my_mower_gate_required
-      - binary_sensor.my_mower_sliding_gate_area
+      - binary_sensor.my_mower_gate_arrival
     to: "on"
+
 conditions:
   - condition: state
     entity_id: binary_sensor.my_mower_gate_required
     state: "on"
   - condition: state
-    entity_id: binary_sensor.my_mower_sliding_gate_area
+    entity_id: binary_sensor.my_mower_gate_arrival
     state: "on"
+
 actions:
   - variables:
       mower_state_before_pause: "{{ states('lawn_mower.my_mower') }}"
-      mower_was_returning: |
+      mower_was_returning: >
         {{ mower_state_before_pause in ['returning', 'docking', 'docked'] }}
 
   - action: lawn_mower.pause
@@ -52,21 +206,23 @@ actions:
 
   - choose:
       - conditions:
-          - condition: template
-            value_template: |
-              {{ states('cover.my_gate') not in ['open', 'opening'] }}
+          - condition: state
+            entity_id: cover.my_gate
+            state: "closed"
         sequence:
           - action: cover.open_cover
             target:
               entity_id: cover.my_gate
 
-  - wait_template: |
-      {{ is_state('cover.my_gate', 'open') }}
-    timeout: "00:00:20"
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: cover.my_gate
+        to: "open"
+        for:
+          seconds: 2
+    timeout:
+      seconds: 30
     continue_on_timeout: false
-
-  - delay:
-      seconds: 2
 
   - choose:
       - conditions:
@@ -77,74 +233,40 @@ actions:
             target:
               entity_id: lawn_mower.my_mower
     default:
-      - wait_template: |
+      - wait_template: >
           {{ state_attr('lawn_mower.my_mower', 'state_code') == '0211' }}
-        timeout: "00:00:20"
+        timeout:
+          seconds: 20
         continue_on_timeout: false
       - action: lawn_mower.start_mowing
         target:
           entity_id: lawn_mower.my_mower
 
-  - wait_template: |
-      {{ is_state('binary_sensor.my_mower_sliding_gate_area', 'off') }}
-    timeout: "00:01:00"
-    continue_on_timeout: true
-
-  - delay:
-      seconds: 3
-
 mode: single
 ```
 
-`binary_sensor.my_mower_sliding_gate_area` in this example is the binary sensor created by the **Custom Area** around the gate. Give your Custom Area a clear name so its generated Home Assistant entity is easy to identify.
+For the non-returning path, waiting for private state code `0211` preserves the older field-tested guard against racing `start_mowing` ahead of the vendor pause transition.
 
-## Why the automation is structured this way
+If this alternative also needs automatic closing, do not add an unrelated exit-only close automation unless you separately track gate ownership. Either keep the open/close lifecycle in one run or use an explicit helper that records that the mower automation actually opened the gate.
 
-Both binary sensors are triggers because their order can vary slightly. The two state conditions then make the actual entry condition deterministic: the mower must both **require the Gate** and be **inside the gate Custom Area**.
+## Gate required safety semantics
 
-The mower is paused before opening the physical gate. This prevents the mower from reaching a still-moving gate while the gate controller is opening it. The automation then waits for the `cover` entity to report fully `open` and adds a short two-second settling delay.
+Gate intent is MQTT-first and target freshness is tracked separately from pose freshness. A fresh mower position does not make an old cached work target fresh.
 
-The mower state is captured before the pause:
+Navimower also protects against a stale cross-zone latch when a fresh one-zone Home Assistant/Navimower Schedule command targets the mower's current physical zone. Unknown/stale position, an active mapped-channel crossing and unconfirmed cloud-only arrival remain fail-safe instead of being guessed as a completed hand-over.
 
-- if it was returning/docking, the automation sends `lawn_mower.dock` after the gate is open;
-- otherwise it waits until Navimow confirms the paused private state code `0211`, then sends `lawn_mower.start_mowing`.
+Private-cloud-only gate clear/arrival confirmation requires strictly newer vendor pose reports; duplicate, out-of-order, non-finite or implausibly future timestamps are not allowed to advance the safety transition.
 
-Waiting for `0211` avoids racing a resume command against the vendor pause transition.
-
-Finally the automation waits for the Custom Area to turn Off, meaning the mower has left the configured physical passage, and keeps a short additional safety delay. `mode: single` prevents repeated On transitions from starting overlapping copies of the interlock.
-
-## Closing the physical gate
-
-The tested example above intentionally does **not** issue `cover.close_cover`; the gate controller used with it handles closing separately.
-
-If your gate does not have its own safe auto-close logic, do not close it immediately after the mower resumes. Add closing only after the gate Custom Area is Off **and** `Gate required` has cleared. For example, after the final delay:
-
-```yaml
-  - wait_template: |
-      {{ is_state('binary_sensor.my_mower_sliding_gate_area', 'off')
-         and is_state('binary_sensor.my_mower_gate_required', 'off') }}
-    timeout: "00:01:30"
-    continue_on_timeout: false
-
-  - delay:
-      seconds: 3
-
-  - action: cover.close_cover
-    target:
-      entity_id: cover.my_gate
-```
-
-Use a real `cover` state or dedicated gate-open/closed sensor whenever possible. A fixed delay alone is a weaker safety signal because gate travel time can vary.
-
-## Before using the example
+## Before using either pattern
 
 Confirm that:
 
-1. the Navimower **Gate** connects the correct two mowing zones and its direction matches the intended travel;
-2. the gate **Custom Area** covers the physical passage and extends far enough into the mowing zone to detect the mower before it reaches the gate;
-3. the task uses Navimower Schedule or manual single-zone mowing so the target-zone intent is unambiguous;
-4. the gate `cover` reports `open` only when the passage is genuinely clear;
-5. Pause, Start mowing and Dock work correctly for your mower before adding physical gate movement;
-6. the automation is tested while supervised before relying on unattended operation.
+1. the Gate area/arrival area covers the real physical passage and becomes active before the mower reaches the moving barrier;
+2. any configured zone-pair Gate connects the correct zones and direction;
+3. the physical `cover` state means what the automation assumes — preferably with real open/closed contacts;
+4. Pause, Start mowing and Dock work correctly for the mower before adding physical gate movement;
+5. a gate that was already open is not accidentally closed by the mower automation;
+6. sensor loss/timeouts leave the system in the safer state rather than blindly resuming/closing;
+7. the complete sequence is tested repeatedly while supervised.
 
-Gate timing and physical safety remain installation-specific. Navimower provides mower intent and position context; the Home Assistant automation is responsible for the actual gate controller and its safety inputs.
+Gate timing, manual overrides, vehicle/people detection, photocells and physical obstruction safety remain installation-specific. Navimower supplies mower position/intent context; Home Assistant and the gate controller remain responsible for the physical automation.

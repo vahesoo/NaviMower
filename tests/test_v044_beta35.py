@@ -1,7 +1,6 @@
 """Dependency-free regressions for Navimower 0.4.4-beta35."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,10 +31,8 @@ def test_mow_validation_preserves_h1_order_fallback() -> None:
     assert "mow_setup(reset=call.data[\"reset\"], ordered=ordered)" in source
 
 
-def test_beta35_release_metadata() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text())
-    assert manifest["version"] == "0.4.4-beta35"
-
+def test_beta35_release_metadata_is_retained() -> None:
+    """Historical beta notes remain testable after the manifest advances."""
     notes = ROOT / ".github" / "release-notes" / "0.4.4-beta35.md"
     assert notes.is_file()
     text = notes.read_text()
