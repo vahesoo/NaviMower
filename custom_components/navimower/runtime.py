@@ -34,6 +34,7 @@ from .mowing_pause_status import install_mowing_pause_status
 from .navigation_fallback import install_navigation_fallback
 from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
+from .osm_underlay_semantics import install_osm_underlay_semantics
 from .private_cloud_region import install_private_cloud_region
 from .raw_mqtt_semantics import install_raw_mqtt_semantics
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
@@ -44,6 +45,7 @@ from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
 from .vendor_progress_semantics import install_vendor_progress_semantics
+from .vendor_trail_render_semantics import install_vendor_trail_render_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
 
 
@@ -97,7 +99,14 @@ def install_runtime_extensions() -> None:
     # installed after completion semantics so historical completion protection
     # cannot overwrite the current vendor-first numeric state.
     install_vendor_progress_semantics()
+    # Retained vendor geometry owns only the zones for which a fresh vendor row
+    # exists; MQTT/session geometry remains a fallback for the other zones. This
+    # prevents two slightly different sources from rasterizing the same swath.
+    install_vendor_trail_render_semantics()
     install_map_api_performance()
+    # OSM binary mode wraps the final phased map-view handler, so install it only
+    # after the Map API performance layer has replaced NavimowerMapView.get.
+    install_osm_underlay_semantics()
     install_notification_feed()
     # Mowing pause classification consumes the notification center's conservative
     # interruption attribution and the normalized vendor Device feed. Install it
