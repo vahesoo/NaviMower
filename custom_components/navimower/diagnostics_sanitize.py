@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 REDACTED = "<redacted>"
-REDACTION_VERSION = 3
+REDACTION_VERSION = 4
 _MAX_DEPTH = 32
 _MAX_STRING = 16_384
 
@@ -40,6 +40,9 @@ _SENSITIVE_WORDS = frozenset({
     "pwd", "pin", "pincode", "secret", "theft", "authorization", "cookie",
     "ssid", "bssid", "mac", "ip", "phone",
 })
+_VERSION_WORDS = frozenset({
+    "version", "ver", "firmware", "fw", "build", "sw", "hw", "revision",
+})
 _ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
 _CAMEL_BOUNDARY = re.compile(r"([a-z0-9])([A-Z])")
 _WORD_BOUNDARY = re.compile(r"[^A-Za-z0-9]+")
@@ -52,6 +55,9 @@ _BEARER = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*")
 _UUID = re.compile(r"(?i)\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b")
 _MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
 _IPV4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])")
+_DOTTED_VERSION = re.compile(
+    r"(?i)^\s*\d+(?:\.\d+){2,4}(?:[-+_][A-Za-z0-9._-]+)?\s*$"
+)
 _JWT = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])")
 _OPAQUE = re.compile(r"[A-Za-z0-9_+/=-]{256,}\Z")
 _LITERAL_SKIP = frozenset({REDACTED, "**REDACTED**", "<redacted-url>", "unknown", "unavailable", "Bearer", "bearer", "private_cloud"})
@@ -79,6 +85,13 @@ def _is_sensitive_key(key: str) -> bool:
     if "key" in word_set and word_set.intersection({"api", "session", "client", "private", "encryption", "signing"}):
         return True
     return bool("id" in word_set and word_set.intersection({"device", "user", "client", "account", "vehicle", "mower"}))
+
+
+def _is_version_key(key: str | None) -> bool:
+    """Return whether a field is explicitly describing software/hardware versioning."""
+    if key is None:
+        return False
+    return bool(_VERSION_WORDS.intersection(_key_words(key)))
 
 
 def _safe_url(value: str) -> str:
@@ -142,7 +155,12 @@ def _sensitive_literals(value: Any, *, depth: int = 0, sensitive: bool = False) 
     return out
 
 
-def _safe_text(value: str, literals: tuple[str, ...]) -> str:
+def _safe_text(
+    value: str,
+    literals: tuple[str, ...],
+    *,
+    field: str | None = None,
+) -> str:
     text = _URL.sub(lambda match: _safe_url(match.group()), value)
     text = _BEARER.sub(lambda match: f"{match.group(1)} {REDACTED}", text)
     text = _JWT.sub(REDACTED, text)
@@ -157,7 +175,11 @@ def _safe_text(value: str, literals: tuple[str, ...]) -> str:
             return match.group()
         return REDACTED
 
-    text = _IPV4.sub(address, text)
+    # A plain firmware value such as 1.12.3.40 is syntactically a valid IPv4
+    # address. Preserve it only when the field itself is version-like and the
+    # whole value is version-like; embedded/network addresses remain redacted.
+    if not (_is_version_key(field) and _DOTTED_VERSION.fullmatch(text)):
+        text = _IPV4.sub(address, text)
     text = _ASSIGNMENT.sub(
         lambda match: match.group("prefix") + REDACTED
         if _is_sensitive_key(match.group("key")) else match.group(),
@@ -221,7 +243,7 @@ def sanitize(
                 return walk(decoded, depth=depth + 1)
             if _OPAQUE.fullmatch(current.strip()):
                 return {**_large_value_summary(current), "_omitted": "opaque_string"}
-            return _safe_text(current, literals)
+            return _safe_text(current, literals, field=field)
         if isinstance(current, float) and not math.isfinite(current):
             return None
         if current is None or isinstance(current, (bool, int, float)):

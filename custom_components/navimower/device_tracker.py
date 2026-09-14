@@ -32,6 +32,17 @@ def _longitude(data: dict[str, Any]) -> float | None:
     return _coordinate(data.get("longitude"), minimum=-180.0, maximum=180.0)
 
 
+def _coordinates(data: dict[str, Any]) -> tuple[float, float] | None:
+    """Return a usable geographic fix, rejecting the vendor's no-fix 0/0 pair."""
+    latitude = _latitude(data)
+    longitude = _longitude(data)
+    if latitude is None or longitude is None:
+        return None
+    if latitude == 0.0 and longitude == 0.0:
+        return None
+    return latitude, longitude
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -46,13 +57,13 @@ class NavimowerDeviceTracker(NavimowEntity, TrackerEntity):
     """Expose the mower's vendor-reported geographic position to Home Assistant."""
 
     # This is the mower's primary map marker, so use the device name directly
-    # (for example "Tont") instead of displaying "Tont Location" on HA Map.
+    # instead of displaying a separate "Location" suffix on the HA Map.
     _attr_name = None
     _attr_icon = "mdi:robot-mower"
     _attr_source_type = SourceType.GPS
     # A position tracker is a user-facing entity, not a diagnostic-only entity.
     _attr_entity_category = None
-    # The private-cloud location response does not expose a trustworthy accuracy
+    # The account location response does not expose a trustworthy accuracy
     # radius, so do not invent one.
     _attr_location_accuracy = 0
 
@@ -61,14 +72,21 @@ class NavimowerDeviceTracker(NavimowEntity, TrackerEntity):
         NavimowEntity.__init__(self, coordinator, "location")
 
     @property
+    def force_update(self) -> bool:
+        """Do not create recorder rows when a polled coordinate did not change."""
+        return False
+
+    @property
     def latitude(self) -> float | None:
-        """Return the private-cloud geographic latitude."""
-        return _latitude(self.data)
+        """Return the geographic latitude when a usable fix exists."""
+        coordinates = _coordinates(self.data)
+        return coordinates[0] if coordinates else None
 
     @property
     def longitude(self) -> float | None:
-        """Return the private-cloud geographic longitude."""
-        return _longitude(self.data)
+        """Return the geographic longitude when a usable fix exists."""
+        coordinates = _coordinates(self.data)
+        return coordinates[1] if coordinates else None
 
     @property
     def available(self) -> bool:
