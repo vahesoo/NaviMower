@@ -1,6 +1,8 @@
 """Narrow semantic corrections layered on the main Navimower coordinator."""
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from .api import NavimowAuthError, NavimowError
@@ -17,6 +19,20 @@ from .georeference import (
     update_georeference,
 )
 from .map_identifiers import resolve_map_identifiers
+from .vendor_trail import (
+    VENDOR_TRAIL_ACTIVE_TTL_SECONDS,
+    VendorTrailCurrentCycleRenderManager,
+    active_vendor_row,
+    coverage_by_zone,
+    current_vendor_rows,
+    decode_vendor_trail_response,
+    normalize_vendor_trail_row,
+    task_zone_ids,
+    trim_mqtt_tail_segments,
+    utc_now_iso,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _valid_map_version(value: Any) -> bool:
@@ -26,6 +42,20 @@ def _valid_map_version(value: Any) -> bool:
 
 class NavimowCoordinator(_BaseNavimowCoordinator):
     """Coordinator with strict mowing timestamps and revision-aware map refresh."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # 0.4.5-beta3 field-test state. This is deliberately separate from the
+        # persistent MQTT/session history so vendor geometry can be compared and
+        # discarded without changing the history storage contract.
+        self._vendor_trail_cache: dict[int, dict[str, Any]] = {}
+        self._vendor_trail_revision = 0
+        self._vendor_trail_last_attempt_mono: float | None = None
+        self._vendor_trail_last_success_mono: float | None = None
+        self._vendor_trail_last_fetch_utc: str | None = None
+        self._vendor_trail_last_error: str | None = None
+        self._vendor_trail_last_zone_ids: tuple[int, ...] = ()
+        self.current_cycle_render_manager = VendorTrailCurrentCycleRenderManager(self)
 
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
@@ -103,6 +133,81 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                 if isinstance(status, dict):
                     status["last_attempt_mono"] = None
         return success
+
+    def _refresh_vendor_trail_debug(self, snapshot: dict[str, Any]) -> None:
+        """Poll retained vendor geometry at a bounded active-mowing cadence."""
+        if not self._private_poll_active():
+            return
+        zone_ids = task_zone_ids(snapshot)
+        if not zone_ids:
+            return
+        zone_key = tuple(zone_ids)
+        now = time.monotonic()
+        due = (
+            self._vendor_trail_last_attempt_mono is None
+            or zone_key != self._vendor_trail_last_zone_ids
+            or now - self._vendor_trail_last_attempt_mono
+            >= VENDOR_TRAIL_ACTIVE_TTL_SECONDS
+        )
+        if not due:
+            return
+
+        self._vendor_trail_last_attempt_mono = now
+        self._vendor_trail_last_zone_ids = zone_key
+        try:
+            payload = self.client.call(
+                "/vehicle/trail/get-path-info-data-compress",
+                {"vehicle_sn": self.sn, "partitionList": list(zone_ids)},
+            )
+            decoded = decode_vendor_trail_response(payload)
+            fresh_coverage = coverage_by_zone(snapshot)
+            decoded_by_id: dict[int, dict[str, Any]] = {}
+            for row in decoded:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    zone_id = int(float(row.get("partitionId")))
+                except (TypeError, ValueError):
+                    continue
+                if zone_id > 0:
+                    decoded_by_id[zone_id] = row
+            changed = False
+            for zone_id in zone_ids:
+                raw_row = decoded_by_id.get(zone_id)
+                if raw_row is None:
+                    continue
+                normalized = normalize_vendor_trail_row(
+                    raw_row,
+                    coverage=fresh_coverage.get(zone_id),
+                )
+                if normalized is None:
+                    continue
+                previous = self._vendor_trail_cache.get(zone_id)
+                if (
+                    previous is None
+                    or previous.get("signature") != normalized.get("signature")
+                ):
+                    changed = True
+                self._vendor_trail_cache[zone_id] = normalized
+            if changed:
+                self._vendor_trail_revision += 1
+            self._vendor_trail_last_success_mono = now
+            self._vendor_trail_last_fetch_utc = utc_now_iso()
+            self._vendor_trail_last_error = None
+        except NavimowAuthError:
+            raise
+        except Exception as err:  # noqa: BLE001 - beta telemetry must not break state.
+            self._vendor_trail_last_error = str(err)
+            _LOGGER.debug(
+                "Vendor trail debug refresh failed; retaining previous geometry: %s",
+                err,
+            )
+
+    def _fetch_blocking(self) -> dict[str, Any]:
+        """Run the normal private poll, then the bounded retained-trail probe."""
+        snapshot = super()._fetch_blocking()
+        self._refresh_vendor_trail_debug(snapshot)
+        return snapshot
 
     def _maybe_fetch_map(self, raw: dict[str, Any]) -> None:
         """Decode local geometry and any optional vendor WGS84 hint in one fetch."""
@@ -217,18 +322,91 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             snapshot["map"] = map_data
         return snapshot
 
+    def _vendor_trail_debug_payload(
+        self,
+        snapshot: dict[str, Any],
+        tail_metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = time.monotonic()
+        active_row = active_vendor_row(snapshot, self._vendor_trail_cache)
+        current_rows = current_vendor_rows(snapshot, self._vendor_trail_cache)
+        last_success_age = (
+            round(max(0.0, now - self._vendor_trail_last_success_mono), 1)
+            if self._vendor_trail_last_success_mono is not None
+            else None
+        )
+        return {
+            "enabled": True,
+            "mode": "vendor_backbone_mqtt_tail",
+            "poll_interval_s": VENDOR_TRAIL_ACTIVE_TTL_SECONDS,
+            "revision": self._vendor_trail_revision,
+            "last_fetch_utc": self._vendor_trail_last_fetch_utc,
+            "last_success_age_s": last_success_age,
+            "last_error": self._vendor_trail_last_error,
+            "requested_zone_ids": list(self._vendor_trail_last_zone_ids),
+            "current_zone_ids": [row.get("zone_id") for row in current_rows],
+            "current_vendor_point_count": sum(
+                int(row.get("point_count") or 0) for row in current_rows
+            ),
+            "active_zone_id": (active_row or {}).get("zone_id"),
+            "active_vendor_point_count": int(
+                (active_row or {}).get("point_count") or 0
+            ),
+            "active_vendor_progress": (active_row or {}).get("progress"),
+            "backend_tail_authoritative": bool((active_row or {}).get("points")),
+            **tail_metrics,
+        }
+
     def _map_payload_with_sessions(
         self,
         sessions: list[dict[str, Any]],
         daily_trails: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Expose georeference both with the map and as small top-level metadata."""
+        """Expose georeference and source-separated vendor/MQTT trail debug data."""
         payload = super()._map_payload_with_sessions(sessions, daily_trails)
         map_data = payload.get("map") or {}
         payload["georeference"] = (
             map_data.get("georeference") if isinstance(map_data, dict) else None
         )
+
+        active_row = active_vendor_row(payload, self._vendor_trail_cache)
+        vendor_points = list((active_row or {}).get("points") or [])
+        backend_segments = payload.get("trail_segments") or []
+        tail_segments, tail_metrics = trim_mqtt_tail_segments(
+            backend_segments,
+            vendor_points,
+        )
+        if vendor_points:
+            # Preserve one matched anchor when caught up; the beta card uses it
+            # to append only newer browser-side MQTT points after this API sample.
+            payload["trail_segments"] = tail_segments
+            payload["trail"] = [
+                point for segment in tail_segments for point in segment
+            ]
+        payload["vendor_trail_debug"] = self._vendor_trail_debug_payload(
+            payload,
+            tail_metrics,
+        )
         return payload
+
+    def polling_diagnostics(self) -> dict[str, Any]:
+        diagnostics = super().polling_diagnostics()
+        snapshot = self.data or {}
+        active_row = active_vendor_row(snapshot, self._vendor_trail_cache)
+        diagnostics["vendor_trail_debug"] = self._vendor_trail_debug_payload(
+            snapshot,
+            {
+                "matched": None,
+                "match_distance_m": None,
+                "mqtt_tail_point_count": None,
+                "mqtt_tail_distance_m": None,
+                "anchor_xy": None,
+            },
+        )
+        diagnostics["vendor_trail_debug"]["active_vendor_signature"] = (
+            (active_row or {}).get("signature")
+        )
+        return diagnostics
 
 
 __all__ = ["NavimowCoordinator", "state_store"]
