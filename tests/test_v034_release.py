@@ -124,7 +124,7 @@ def test_readme_documents_current_model_and_capability_scope() -> None:
     readme = (ROOT / "README.md").read_text()
     assert "## Mower settings and controls" in readme
     assert "Newer/less-tested mower-family controls" in readme
-    assert "Night light" in readme
+    assert "lighting controls" in readme
     assert "Terrain adapt" in readme
     assert "capability" in readme.lower()
     assert "[CHANGELOG.md](CHANGELOG.md)" in readme
