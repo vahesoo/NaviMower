@@ -43,6 +43,7 @@ from .schedule_queue_semantics import install_schedule_queue_semantics
 from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
+from .vendor_progress_semantics import install_vendor_progress_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
 
 
@@ -92,6 +93,10 @@ def install_runtime_extensions() -> None:
     # phased Map API so all published map/sensor state sees the protected history.
     install_history_performance()
     install_completion_semantics()
+    # Per-zone numbers now follow canonical vendor coverage. This wrapper must be
+    # installed after completion semantics so historical completion protection
+    # cannot overwrite the current vendor-first numeric state.
+    install_vendor_progress_semantics()
     install_map_api_performance()
     install_notification_feed()
     # Mowing pause classification consumes the notification center's conservative
