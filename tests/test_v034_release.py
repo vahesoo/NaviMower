@@ -123,12 +123,10 @@ def test_release_workflow_is_version_agnostic_prerelease_publisher() -> None:
 def test_readme_documents_current_model_and_capability_scope() -> None:
     readme = (ROOT / "README.md").read_text()
     assert "## Mower settings and controls" in readme
-    assert "## i2 AWD and capability-driven support" in readme
+    assert "Newer/less-tested mower-family controls" in readme
     assert "Night light" in readme
     assert "Terrain adapt" in readme
     assert "capability" in readme.lower()
-    # README documents current behavior. Release-by-release history belongs in
-    # CHANGELOG.md instead of being duplicated in embedded version sections.
     assert "[CHANGELOG.md](CHANGELOG.md)" in readme
     assert "### v0.3.4" not in readme
 
