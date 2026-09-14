@@ -77,6 +77,25 @@ def test_vendor_trail_debug_helpers() -> None:
         }
         assert target.current_vendor_rows(snapshot, cache) == []
 
+        public_payload = {
+            "active_session": {"zone_ids": [91, 92]},
+            "coverage": {
+                "zones": [
+                    {"id": 91, "pct": 100, "start_time": 100},
+                    {"id": 92, "pct": 76, "start_time": 100},
+                ]
+            },
+            "zone_states": [
+                {"id": 91, "active": False},
+                {"id": 92, "active": True},
+            ],
+        }
+        public_cache = {
+            91: {"zone_id": 91, "start_time": 100, "progress": 100, "points": [[1.0, 1.0, "01", "04"]]},
+            92: {"zone_id": 92, "start_time": 100, "progress": 76, "points": [[2.0, 2.0, "01", "04"]]},
+        }
+        assert target.active_vendor_row(public_payload, public_cache)["zone_id"] == 92
+
         mqtt = [[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]]]
         tail, metrics = target.trim_mqtt_tail_segments(
             mqtt,
