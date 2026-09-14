@@ -32,6 +32,11 @@ from .resume import async_resume_task
 
 _LOGGER = logging.getLogger(__name__)
 
+# 0211 is paused while mowing; 0221 is paused while returning to the dock.
+# Both retain the mower's existing task and must Resume rather than send a new
+# reset=True mowing command.
+_RESUMABLE_PAUSED_STATES = {STATE_PAUSED, "0221"}
+
 _ACTIVITY_MAP = {
     ACTIVITY_DOCKED: LawnMowerActivity.DOCKED,
     ACTIVITY_MOWING: LawnMowerActivity.MOWING,
@@ -68,7 +73,8 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
 
     @property
     def activity(self) -> LawnMowerActivity:
-        if str(self.data.get("state_code") or "") in MAP_EDIT_STATES:
+        state_code = str(self.data.get("state_code") or "")
+        if state_code in MAP_EDIT_STATES or state_code in _RESUMABLE_PAUSED_STATES:
             self._last_valid_activity = LawnMowerActivity.PAUSED
             return LawnMowerActivity.PAUSED
         mapped = _ACTIVITY_MAP.get(self.data.get("activity"))
@@ -83,7 +89,8 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
     async def async_start_mowing(self) -> None:
         client = self.coordinator.client
         sn = self._sn
-        if self.data.get("state_code") == STATE_PAUSED:
+        state_code = str(self.data.get("state_code") or "")
+        if state_code in _RESUMABLE_PAUSED_STATES:
             await async_resume_task(
                 self.coordinator,
                 source="lawn_mower.start_mowing_paused",
