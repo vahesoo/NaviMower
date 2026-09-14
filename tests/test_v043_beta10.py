@@ -13,7 +13,8 @@ def test_beta10_release_artifacts_remain_in_history() -> None:
     notes = (ROOT / ".github" / "release-notes" / "0.4.3-beta10.md").read_text(encoding="utf-8")
     assert notes.startswith("title: Navimower 0.4.3-beta10")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "## 0.4.3-beta10" in changelog
+    assert "## 0.4.3 -" in changelog
+    assert "## 0.4.3-beta10" not in changelog
 
 
 def test_beta10_error_sensor_is_cloud_canonical() -> None:
