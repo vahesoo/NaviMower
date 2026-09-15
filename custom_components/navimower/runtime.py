@@ -47,6 +47,7 @@ from .state_semantics import install_state_semantics
 from .vendor_progress_semantics import install_vendor_progress_semantics
 from .vendor_trail_render_semantics import install_vendor_trail_render_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
+from .zone_ledger_semantics import install_zone_ledger_shadow_semantics
 
 
 def install_runtime_extensions() -> None:
@@ -99,6 +100,10 @@ def install_runtime_extensions() -> None:
     # installed after completion semantics so historical completion protection
     # cannot overwrite the current vendor-first numeric state.
     install_vendor_progress_semantics()
+    # The new ZoneLedger initially runs strictly in shadow mode. Install it after
+    # the last legacy numeric owner so comparisons see the exact public values,
+    # while legacy state remains authoritative for sensors and Map API output.
+    install_zone_ledger_shadow_semantics()
     # Retained vendor geometry owns only the zones for which a fresh vendor row
     # exists; MQTT/session geometry remains a fallback for the other zones. This
     # prevents two slightly different sources from rasterizing the same swath.
