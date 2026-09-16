@@ -45,6 +45,7 @@ from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
 from .vendor_progress_semantics import install_vendor_progress_semantics
+from .vendor_tail_semantics import install_vendor_tail_semantics
 from .vendor_trail_render_semantics import install_vendor_trail_render_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
 from .zone_ledger_semantics import install_zone_ledger_shadow_semantics
@@ -108,6 +109,10 @@ def install_runtime_extensions() -> None:
     # exists; MQTT/session geometry remains a fallback for the other zones. This
     # prevents two slightly different sources from rasterizing the same swath.
     install_vendor_trail_render_semantics()
+    # Once a vendor backbone exists, MQTT is strictly a short live tail. If the
+    # vendor endpoint cannot be anchored to MQTT history, fail closed instead of
+    # exposing the whole HA-built session trail over the vendor geometry.
+    install_vendor_tail_semantics()
     install_map_api_performance()
     # OSM binary mode wraps the final phased map-view handler, so install it only
     # after the Map API performance layer has replaced NavimowerMapView.get.
