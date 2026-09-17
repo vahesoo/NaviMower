@@ -37,6 +37,7 @@ from .notification_feed import install_notification_feed
 from .osm_underlay_semantics import install_osm_underlay_semantics
 from .private_cloud_region import install_private_cloud_region
 from .raw_mqtt_semantics import install_raw_mqtt_semantics
+from .schedule_dispatch_weather_semantics import install_schedule_dispatch_weather_semantics
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
 from .schedule_pause_semantics import install_schedule_pause_semantics
 from .schedule_queue_boundary_semantics import install_schedule_queue_boundary_semantics
@@ -126,6 +127,10 @@ def install_runtime_extensions() -> None:
     # Apply editor changes only at a real round/window boundary, before slot 0 of
     # the new round is allowed to dispatch.
     install_schedule_queue_boundary_semantics()
+    # Final scheduler layer distinguishes managed acknowledgements from later
+    # manual mow commands, retries an unaccepted start, and parks accepted tasks
+    # through vendor weather delays without resetting the cycle.
+    install_schedule_dispatch_weather_semantics()
     # Extend the existing legacy gate-area form only after all coordinator/runtime
     # semantics are installed. The patch is UI-only; membership remains owned by
     # channel.py and fresh MQTT pose safety semantics remain unchanged.
