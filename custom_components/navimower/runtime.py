@@ -31,6 +31,7 @@ from .georeference_x3_bias_semantics import install_georeference_x3_bias_semanti
 from .history_performance import install_history_performance
 from .map_api_performance import install_map_api_performance
 from .mowing_pause_status import install_mowing_pause_status
+from .mowing_report_semantics import install_mowing_report_semantics
 from .navigation_fallback import install_navigation_fallback
 from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
@@ -57,6 +58,10 @@ def install_runtime_extensions() -> None:
     """Install semantic extensions in their stable dependency order."""
     install_state_semantics()
     install_private_cloud_region()
+    # Mowing reports are slow-changing private-cloud statistics. Install their
+    # bounded poll/sensor layer before later capability and UI semantics wrap
+    # coordinator refreshes or the sensor platform setup.
+    install_mowing_report_semantics()
     install_capability_extensions()
     install_capability_profile()
     install_capability_semantics()
