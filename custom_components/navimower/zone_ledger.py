@@ -237,6 +237,7 @@ def mark_explicit_reset(
                 "completed_current_cycle": False,
                 "pending_vendor_cycle": True,
                 "pending_reset_at_ms": observed_at_ms,
+                "cycle_started_at_ms": observed_at_ms,
                 "pending_reset_reason": str(reason),
                 "previous_vendor_start_time": previous_start,
                 "progress_source": "explicit_reset_pending_vendor",
@@ -446,6 +447,9 @@ def reduce_zone_ledger(
         reset_reason: str | None = None
 
         if row_fresh and raw_pct is not None:
+            if vendor_start and previous_start and vendor_start < previous_start:
+                resolved_zones[key] = previous
+                continue
             if pending_vendor_cycle:
                 prior_vendor_start = as_int(previous.get("previous_vendor_start_time"))
                 if prior_vendor_start is None:
@@ -495,7 +499,7 @@ def reduce_zone_ledger(
                 and previous_geometry is not None
                 and geometry_signature != previous_geometry
                 and previous_progress is not None
-                and raw_pct < previous_progress
+                and raw_pct == 0
             ):
                 confirmed_reset = True
                 reset_reason = "zone_geometry_changed"
@@ -516,11 +520,14 @@ def reduce_zone_ledger(
                 if live_contradicts:
                     count = 0
                 elif recent and same_start:
-                    count += 1
+                    observation = snapshot.get("coverage_observation_id")
+                    if observation is None or observation != candidate.get("observation_id"):
+                        count += 1
                 else:
                     count = 1
                     first_ms = observed_at_ms
                 candidates[key] = {
+                    "observation_id": snapshot.get("coverage_observation_id"),
                     "first_ms": first_ms,
                     "last_ms": observed_at_ms,
                     "count": count,
@@ -540,6 +547,9 @@ def reduce_zone_ledger(
             if confirmed_reset:
                 sequence += 1
                 cycle_key = _vendor_cycle_key(zone_id, vendor_start, sequence)
+                if vendor_start == previous_start or cycle_key == previous.get("cycle_key"):
+                    cycle_key = f"{cycle_key}:reset:{sequence}"
+                record["cycle_started_at_ms"] = observed_at_ms
                 accepted = raw_pct
                 peak = raw_pct
                 event = {

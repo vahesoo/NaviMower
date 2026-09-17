@@ -1,9 +1,8 @@
 """Run the canonical ZoneLedger beside the legacy zone model without publishing it.
 
-This is deliberately a shadow-only migration layer. The existing coordinator,
-completion and vendor-progress semantics remain the public authority. ZoneLedger
-receives the same normalized snapshot after those layers have finished and its
-result is retained in-memory only for comparison diagnostics.
+ZoneLedger is authoritative for retained trail cycle/reset identity. Numeric
+sensor migration remains a shadow comparison against the existing public model.
+The ledger and VendorTrailStore are persisted together before restart recovery.
 """
 from __future__ import annotations
 
@@ -199,6 +198,7 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         active_session = None
 
     previous_state = getattr(owner, "_zone_ledger_shadow_state", None)
+    snapshot["coverage_observation_id"] = (getattr(owner, "_endpoint_status", {}).get("path_info_time") or {}).get("last_success_mono")
     state, rows, totals, task, events = reduce_zone_ledger(
         previous_state,
         snapshot=snapshot,
@@ -211,6 +211,9 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         observed_at_ms=int(time.time() * 1000),
     )
     owner._zone_ledger_shadow_state = state  # noqa: SLF001
+    accept = getattr(owner, "_accept_vendor_observations", None)
+    if accept is not None:
+        accept(snapshot)
     diagnostics = build_shadow_diagnostics(
         legacy_rows=legacy_rows,
         legacy_totals=legacy_totals,
@@ -221,6 +224,8 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         events=events,
     )
     owner._zone_ledger_shadow_diagnostics = diagnostics  # noqa: SLF001
+    diagnostics["cycle_owner"] = "ZoneLedger"
+    diagnostics["trail_owner"] = "VendorTrailStore"
     snapshot["zone_ledger_shadow"] = diagnostics
     # Download diagnostics already includes ``totals``. Keeping the comparison
     # beneath a clearly private key makes the first shadow beta observable

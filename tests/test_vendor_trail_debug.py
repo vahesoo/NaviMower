@@ -91,8 +91,8 @@ def test_vendor_trail_debug_helpers() -> None:
             ],
         }
         public_cache = {
-            91: {"zone_id": 91, "start_time": 100, "progress": 100, "points": [[1.0, 1.0, "01", "04"]]},
-            92: {"zone_id": 92, "start_time": 100, "progress": 76, "points": [[2.0, 2.0, "01", "04"]]},
+            91: {"vendor_owned": True, "zone_id": 91, "start_time": 100, "progress": 100, "points": [[1.0, 1.0, "01", "04"]]},
+            92: {"vendor_owned": True, "zone_id": 92, "start_time": 100, "progress": 76, "points": [[2.0, 2.0, "01", "04"]]},
         }
         assert target.active_vendor_row(public_payload, public_cache)["zone_id"] == 92
 

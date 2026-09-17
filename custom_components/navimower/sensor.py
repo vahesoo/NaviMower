@@ -676,6 +676,7 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "zone_detail_count": len(self.data.get("zone_details") or []),
             "zone_state_count": len(self.data.get("zone_states") or []),
             "zone_states_revision": self.data.get("zone_states_revision"),
+            "vendor_trail_revision": self.data.get("vendor_trail_revision"),
             "daily_trails_revision": self.coordinator.history.trail_revision,
             "map_area_m2": (self.data.get("totals") or {}).get("map_area_m2"),
             "map_coverage_pct": (self.data.get("totals") or {}).get("map_coverage_pct"),

@@ -19,6 +19,8 @@ from .georeference import (
     update_georeference,
 )
 from .map_identifiers import resolve_map_identifiers
+from .vendor_trail_store import VendorTrailStore
+from .zone_ledger import mark_explicit_reset
 from .vendor_trail import (
     VENDOR_TRAIL_ACTIVE_TTL_SECONDS,
     VendorTrailCurrentCycleRenderManager,
@@ -27,7 +29,6 @@ from .vendor_trail import (
     current_vendor_rows,
     decode_vendor_trail_response,
     normalize_vendor_trail_row,
-    task_zone_ids,
     trim_mqtt_tail_segments,
     utc_now_iso,
 )
@@ -45,9 +46,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        # 0.4.5-beta3 field-test state. This is deliberately separate from the
-        # persistent MQTT/session history so vendor geometry can be compared and
-        # discarded without changing the history storage contract.
+        self.vendor_trail_store = VendorTrailStore(self.hass, self.entry.entry_id)
+        # Poll diagnostics are ephemeral; retained geometry belongs to the store.
         self._vendor_trail_cache: dict[int, dict[str, Any]] = {}
         self._vendor_trail_revision = 0
         self._vendor_trail_last_attempt_mono: float | None = None
@@ -59,6 +59,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
 
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
+        await self.vendor_trail_store.async_load()
+        self._zone_ledger_shadow_state = self.vendor_trail_store.ledger
+        self._vendor_trail_cache = self.vendor_trail_store.records
         await super().async_load_persistent_state()
         if (
             self._map_geometry is not None
@@ -69,6 +72,34 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             # WGS84 tie point/calibration state needed by multi-mower/site views.
             # Keep displaying the cached map immediately, then re-decode it once.
             self._map_cache_key = None
+
+    async def async_shutdown(self) -> None:
+        await super().async_shutdown()
+        await self.vendor_trail_store.async_flush()
+
+    def start_new_mowing_cycle(self, zone_ids=None, *, source: str) -> bool:
+        # Called only after the existing successful command path. The ledger
+        # resets precisely the explicitly selected zones, never task membership.
+        selected = zone_ids or [row.get("id") for row in (self.data or {}).get("map", {}).get("zones", [])]
+        state, _events = mark_explicit_reset(
+            self.vendor_trail_store.ledger, selected,
+            observed_at_ms=int(time.time() * 1000), reason=source,
+        )
+        self._zone_ledger_shadow_state = state
+        self.vendor_trail_store.reconcile(state)
+        self.vendor_trail_store.schedule_save()
+        return super().start_new_mowing_cycle(zone_ids, source=source)
+
+    def _accept_vendor_observations(self, snapshot: dict[str, Any]) -> None:
+        store = self.vendor_trail_store
+        store.reconcile(self._zone_ledger_shadow_state)
+        for row in snapshot.pop("_vendor_trail_observations", []):
+            store.accept(row)
+        store.update_live_tail(snapshot, self.history.active_session)
+        self._vendor_trail_cache = store.records
+        self._vendor_trail_revision = store.revision
+        snapshot["vendor_trail_revision"] = f"{store.revision}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
+        store.schedule_save()
 
     def _build_zone_details(
         self,
@@ -136,9 +167,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
 
     def _refresh_vendor_trail_debug(self, snapshot: dict[str, Any]) -> None:
         """Poll retained vendor geometry at a bounded active-mowing cadence."""
-        if not self._private_poll_active():
-            return
-        zone_ids = task_zone_ids(snapshot)
+        active = self._private_poll_active()
+        zone_ids = sorted({int(row["id"]) for row in (snapshot.get("map") or {}).get("zones", []) if row.get("id")} | set(coverage_by_zone(snapshot)))
         if not zone_ids:
             return
         zone_key = tuple(zone_ids)
@@ -147,7 +177,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             self._vendor_trail_last_attempt_mono is None
             or zone_key != self._vendor_trail_last_zone_ids
             or now - self._vendor_trail_last_attempt_mono
-            >= VENDOR_TRAIL_ACTIVE_TTL_SECONDS
+            >= (VENDOR_TRAIL_ACTIVE_TTL_SECONDS if active else 300)
         )
         if not due:
             return
@@ -171,7 +201,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                     continue
                 if zone_id > 0:
                     decoded_by_id[zone_id] = row
-            changed = False
+            observations = []
             for zone_id in zone_ids:
                 raw_row = decoded_by_id.get(zone_id)
                 if raw_row is None:
@@ -182,15 +212,10 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                 )
                 if normalized is None:
                     continue
-                previous = self._vendor_trail_cache.get(zone_id)
-                if (
-                    previous is None
-                    or previous.get("signature") != normalized.get("signature")
-                ):
-                    changed = True
-                self._vendor_trail_cache[zone_id] = normalized
-            if changed:
-                self._vendor_trail_revision += 1
+                observations.append(normalized)
+            # Consumed on the event loop only after ZoneLedger has reduced this
+            # exact poll's coverage. Never mutate the store in the worker thread.
+            snapshot["_vendor_trail_observations"] = observations
             self._vendor_trail_last_success_mono = now
             self._vendor_trail_last_fetch_utc = utc_now_iso()
             self._vendor_trail_last_error = None
@@ -337,7 +362,13 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         )
         return {
             "enabled": True,
-            "mode": "vendor_backbone_mqtt_tail",
+            "mode": "persistent_vendor_cycle",
+            "store_version": 1,
+            "cycle_owner": "ZoneLedger",
+            "current_cycle_key": snapshot.get("vendor_trail_revision"),
+            "cycle_ids": {key: row.get("cycle_key") for key, row in self.vendor_trail_store.ledger["zones"].items()},
+            "owned_zone_ids": sorted(self.vendor_trail_store.owned_zone_ids()),
+            "active_cycle_id": (active_row or {}).get("cycle_id"),
             "poll_interval_s": VENDOR_TRAIL_ACTIVE_TTL_SECONDS,
             "revision": self._vendor_trail_revision,
             "last_fetch_utc": self._vendor_trail_last_fetch_utc,
@@ -353,7 +384,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                 (active_row or {}).get("point_count") or 0
             ),
             "active_vendor_progress": (active_row or {}).get("progress"),
-            "backend_tail_authoritative": bool((active_row or {}).get("points")),
+            "backend_tail_authoritative": bool(current_rows),
+            "live_tail_allowed": str(snapshot.get("activity") or "").lower() in {"mowing", "paused"},
             **tail_metrics,
         }
 
@@ -369,22 +401,31 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             map_data.get("georeference") if isinstance(map_data, dict) else None
         )
 
-        active_row = active_vendor_row(payload, self._vendor_trail_cache)
-        vendor_points = list((active_row or {}).get("points") or [])
+        active_row = active_vendor_row(self.data or payload, self._vendor_trail_cache)
         backend_segments = payload.get("trail_segments") or []
-        tail_segments, tail_metrics = trim_mqtt_tail_segments(
-            backend_segments,
-            vendor_points,
-        )
-        if vendor_points:
-            # Preserve one matched anchor when caught up; the beta card uses it
-            # to append only newer browser-side MQTT points after this API sample.
-            payload["trail_segments"] = tail_segments
-            payload["trail"] = [
-                point for segment in tail_segments for point in segment
-            ]
+        if active_row:
+            tail_segments = self.vendor_trail_store.live_tail(active_row["zone_id"])
+        elif self._vendor_trail_cache and str((self.data or {}).get("activity") or "").lower() in {"docked", "idle", "charging"}:
+            tail_segments = []
+        elif self._vendor_trail_cache:
+            # During a zone transition the unowned zone may use MQTT, but the
+            # same session's already-owned zone must not leak back into it.
+            from .vendor_trail_render_semantics import filter_current_cycle_source
+            active = self.history.active_session or {}
+            filtered = filter_current_cycle_source(active, self.vendor_trail_store.owned_zone_ids(), (self.data or {}).get("map", {}).get("zones", []))
+            from .history import _card_segments
+            tail_segments = _card_segments(filtered)
+        else:
+            tail_segments = backend_segments
+        tail_metrics = {
+            "tail_limit_m": None,
+            "mqtt_tail_point_count": sum(len(segment) for segment in tail_segments),
+            "anchor_xy": tail_segments[-1][-1] if tail_segments else None,
+        }
+        payload["trail_segments"] = tail_segments
+        payload["trail"] = [point for segment in tail_segments for point in segment]
         payload["vendor_trail_debug"] = self._vendor_trail_debug_payload(
-            payload,
+            self.data or payload,
             tail_metrics,
         )
         return payload

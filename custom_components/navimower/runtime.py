@@ -101,17 +101,11 @@ def install_runtime_extensions() -> None:
     # installed after completion semantics so historical completion protection
     # cannot overwrite the current vendor-first numeric state.
     install_vendor_progress_semantics()
-    # The new ZoneLedger initially runs strictly in shadow mode. Install it after
-    # the last legacy numeric owner so comparisons see the exact public values,
-    # while legacy state remains authoritative for sensors and Map API output.
+    # ZoneLedger owns persistent trail cycle identity; numeric sensors retain
+    # their existing public resolver while its comparison diagnostics run.
     install_zone_ledger_shadow_semantics()
-    # Retained vendor geometry owns only the zones for which a fresh vendor row
-    # exists; MQTT/session geometry remains a fallback for the other zones. This
-    # prevents two slightly different sources from rasterizing the same swath.
+    # VendorTrailStore is sticky per zone/cycle, independently of task state.
     install_vendor_trail_render_semantics()
-    # Once a vendor backbone exists, MQTT is strictly a short live tail. If the
-    # vendor endpoint cannot be anchored to MQTT history, fail closed instead of
-    # exposing the whole HA-built session trail over the vendor geometry.
     install_vendor_tail_semantics()
     install_map_api_performance()
     # OSM binary mode wraps the final phased map-view handler, so install it only
