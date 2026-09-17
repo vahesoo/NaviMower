@@ -29,6 +29,25 @@ def _mowing_width(snapshot: dict[str, Any]) -> float:
     return width
 
 
+def _cycle_identity(store: Any) -> tuple[tuple[str, str], ...]:
+    """Return only the semantic ZoneLedger cycle identity.
+
+    Geometry/store revisions are deliberately excluded. A render built from a
+    slightly older geometry revision is still a valid prefix of the same mowing
+    cycle and must be publishable; only a confirmed cycle/reset invalidates it.
+    """
+    return tuple(
+        sorted(
+            (
+                str(key),
+                str(row.get("cycle_key") or ""),
+            )
+            for key, row in (store.ledger.get("zones") or {}).items()
+            if isinstance(row, dict)
+        )
+    )
+
+
 async def _current_cycle_source(
     manager: VendorTrailCurrentCycleRenderManager,
     map_zones: list[dict[str, Any]],
@@ -67,7 +86,6 @@ async def _current_cycle_source(
         session["points"] = kept
         session["segment_starts_ms"] = sorted(starts)
     return build_current_cycle_render_source(sessions, map_zones)
-
 
 
 def _point_zone_id(point: Any, map_zones: list[dict[str, Any]]) -> int | None:
@@ -168,15 +186,13 @@ def filter_current_cycle_source(
 
 
 async def _authoritative_async_get(self, map_zones):
-    """Do not publish an SVG built across a concurrent cycle reset/poll."""
+    """Publish same-cycle prefixes; retry only across a confirmed cycle reset."""
     store = self.coordinator.vendor_trail_store
-    def identity():
-        return (store.revision, tuple((key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()))
     async with self._lock:
         while True:
-            before = identity()
+            before = _cycle_identity(store)
             result = await _render_current_snapshot(self, map_zones)
-            if identity() == before:
+            if _cycle_identity(store) == before:
                 return result
 
 
@@ -212,6 +228,7 @@ async def _render_current_snapshot(self, map_zones):
     fallback_ids = source.get("zone_ids") or []
     revisions = [(row["zone_id"], row["cycle_id"], row.get("artifact_revision")) for row in rows]
     import hashlib
+
     revision = hashlib.sha256(repr((fallback_key, revisions, path)).encode()).hexdigest()
     return {
         "scope": "current_cycle",
@@ -229,6 +246,7 @@ async def _render_current_snapshot(self, map_zones):
             "mqtt_base_suppressed_for_zone_ids": sorted(owned),
             "mqtt_fallback_zone_ids": fallback_ids,
             "revision": store.revision,
+            "cycle_identity": _cycle_identity(store),
         },
     }
 
