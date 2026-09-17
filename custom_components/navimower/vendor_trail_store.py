@@ -65,9 +65,11 @@ class VendorTrailStore:
         if self._save_pending:
             return
         self._save_pending = True
+
         def snapshot():
             self._save_pending = False
             return self.export()
+
         self.storage.async_delay_save(snapshot, 2)
 
     async def async_flush(self) -> None:
@@ -136,11 +138,30 @@ class VendorTrailStore:
                 except Exception:  # noqa: BLE001
                     _LOGGER.warning("Vendor SVG generation failed for zone %s; keeping last good SVG", zone_id, exc_info=True)
                     continue
-                # A reset or newer poll may arrive while the executor renders.
-                if self.records.get(zone_id) is not row or not isinstance(artifact, dict):
+                if not isinstance(artifact, dict):
                     continue
-                row["artifact"] = artifact
-                row["artifact_revision"] = key
+
+                current = self.records.get(zone_id)
+                if current is row:
+                    target = row
+                elif (
+                    isinstance(current, dict)
+                    and current.get("cycle_id") == row.get("cycle_id")
+                    and current.get("artifact_revision") == row.get("artifact_revision")
+                ):
+                    # Geometry may advance while the executor is building this
+                    # SVG. Within the same ZoneLedger cycle the completed SVG is
+                    # still valid as a last-known-good prefix, so publish it to
+                    # the newest row instead of throwing it away. The next call
+                    # sees the newer geometry_revision and refreshes it again.
+                    target = current
+                else:
+                    # A cycle reset/new cycle (or an independently newer
+                    # artifact) invalidates this in-flight render.
+                    continue
+
+                target["artifact"] = artifact
+                target["artifact_revision"] = key
                 self.schedule_save()
             return [deepcopy(row) for row in self.records.values()]
 
