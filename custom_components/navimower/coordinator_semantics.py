@@ -56,6 +56,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         self._vendor_trail_last_error: str | None = None
         self._vendor_trail_last_zone_ids: tuple[int, ...] = ()
         self.current_cycle_render_manager = VendorTrailCurrentCycleRenderManager(self)
+        from .map_artifacts import MapArtifactManager
+        self.map_artifacts = MapArtifactManager(self)
 
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
@@ -72,8 +74,10 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             # WGS84 tie point/calibration state needed by multi-mower/site views.
             # Keep displaying the cached map immediately, then re-decode it once.
             self._map_cache_key = None
+        self.map_artifacts.request_refresh()
 
     async def async_shutdown(self) -> None:
+        await self.map_artifacts.async_shutdown()
         await super().async_shutdown()
         await self.vendor_trail_store.async_flush()
 
@@ -98,8 +102,14 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         store.update_live_tail(snapshot, self.history.active_session)
         self._vendor_trail_cache = store.records
         self._vendor_trail_revision = store.revision
-        snapshot["vendor_trail_revision"] = f"{store.revision}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
+        artifacts = getattr(self, "map_artifacts", None)
+        publication = artifacts.publication_revision if artifacts else 0
+        # Presentation freshness advances both on new geometry and on a finished
+        # background render. Store revision/cycle identity retain their meanings.
+        snapshot["vendor_trail_revision"] = f"{store.revision + publication}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
         store.schedule_save()
+        if artifacts:
+            artifacts.request_refresh(snapshot)
 
     def _build_zone_details(
         self,
@@ -360,6 +370,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             if self._vendor_trail_last_success_mono is not None
             else None
         )
+        artifacts = getattr(self, "map_artifacts", None)
+        publication = artifacts.publication_revision if artifacts else 0
         return {
             "enabled": True,
             "mode": "persistent_vendor_cycle",
@@ -370,7 +382,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             "owned_zone_ids": sorted(self.vendor_trail_store.owned_zone_ids()),
             "active_cycle_id": (active_row or {}).get("cycle_id"),
             "poll_interval_s": VENDOR_TRAIL_ACTIVE_TTL_SECONDS,
-            "revision": self._vendor_trail_revision,
+            "revision": self._vendor_trail_revision + publication,
+            "geometry_store_revision": self._vendor_trail_revision,
+            "artifact_publication_revision": publication,
             "last_fetch_utc": self._vendor_trail_last_fetch_utc,
             "last_success_age_s": last_success_age,
             "last_error": self._vendor_trail_last_error,
@@ -447,6 +461,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         diagnostics["vendor_trail_debug"]["active_vendor_signature"] = (
             (active_row or {}).get("signature")
         )
+        artifacts = getattr(self, "map_artifacts", None)
+        if artifacts:
+            diagnostics["map_artifacts"] = artifacts.diagnostics()
         return diagnostics
 
 
