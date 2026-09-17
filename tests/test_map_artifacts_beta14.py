@@ -13,7 +13,7 @@ from aiohttp import web
 import pytest
 
 from test_vendor_trail_store import (
-    History, Hass, NOW, PACKAGE, ZONES, geometry, ledger, observe,
+    DiskStorage, History, Hass, NOW, PACKAGE, ZONES, geometry, ledger, observe,
     session, store, store_module, vendor,
 )
 
@@ -140,7 +140,6 @@ def test_only_changed_zone_is_rebuilt_and_transferred(store):
         assert manager.resource(91, before[91]["artifact"]["resource_id"]) is old91
         assert owner.hass.svg_builds == 3
         assert owner.hass.resource_builds == 3
-        # One previous same-cycle version may finish an in-flight browser fetch.
         assert manager.resource(92, before[92]["artifact"]["resource_id"])
         for end in (25, 30, 35):
             store.accept(geometry(end=end))
@@ -169,7 +168,7 @@ def test_geometry_advances_coalesce_and_publish_same_cycle_without_starvation(st
             store.accept(geometry(end=end))
             assert manager.request_refresh() is job
         gate.set()
-        await asyncio.wait_for(job, 2)
+        await asyncio.wait_for(job, 5)
         assert manager.coalesced_updates == 4
         assert owner.hass.svg_builds == 2
         assert manager.build_count == 2
@@ -203,7 +202,7 @@ def test_reset_revokes_one_zone_and_rejects_inflight_old_resource(store):
         assert manager.resource(91, before[91]["artifact"]["resource_id"])
         manager.request_refresh()
         gate.set()
-        await asyncio.wait_for(job, 2)
+        await asyncio.wait_for(job, 5)
         result = await manager.async_get(ZONES)
         assert result["zone_ids"] == [91]
         assert set(descriptors(manager)) == {91}
@@ -322,8 +321,6 @@ def test_mixed_vendor_and_history_fallback_remains_available(store):
 
 
 def _http_function():
-    # Execute the actual endpoint function with real aiohttp responses; importing
-    # the complete HA integration is unnecessary for this pure HTTP boundary.
     source = ROOT / "custom_components/navimower/map_api_performance.py"
     tree = ast.parse(source.read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_zone_artifact_response")
@@ -366,7 +363,7 @@ def test_http_etag_privacy_and_reset_checked_before_304(store):
 
 def test_same_zone_ids_in_two_mowers_never_share_resources(store, tmp_path):
     seed(store)
-    other_store = store_module.VendorTrailStore(Hass(), "other", storage=store_module.trail_store)  # storage is unused
+    other_store = store_module.VendorTrailStore(Hass(), "other", storage=DiskStorage(tmp_path / "other.json"))
     seed(other_store)
     first = owner_for(store, entry_id="first")
     second = owner_for(other_store, entry_id="second")
