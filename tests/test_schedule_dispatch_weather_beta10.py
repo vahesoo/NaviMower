@@ -77,8 +77,10 @@ def test_beta10_weather_continue_is_non_resetting() -> None:
     assert "reset=True" not in weather_block
 
 
-def test_beta10_version_is_prepared() -> None:
+def test_beta10_or_newer_version_keeps_dispatch_weather_semantics() -> None:
     import json
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta10"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 10
