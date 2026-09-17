@@ -63,11 +63,11 @@ def test_vendor_tail_semantics() -> None:
             [[0.0, 0.0, "", ""], [20.0, 0.0, "", ""]],
         )
         assert metrics["matched"] is True
-        assert metrics["tail_limit_m"] == 8.0
-        assert metrics["mqtt_tail_distance_m"] == 8.0
+        assert metrics["tail_limit_m"] is None
+        assert metrics["mqtt_tail_distance_m"] == 20.0
         assert len(tail) == 1
         assert tail[0][-1] == [20.0, 0.0]
-        assert abs(tail[0][0][0] - 12.0) < 1e-9
+        assert tail == long_tail
 
         tail, metrics = coordinator.trim_mqtt_tail_segments(
             long_tail,
@@ -87,10 +87,8 @@ def test_vendor_tail_semantics() -> None:
             split,
             [[212.0, 0.0, "", ""]],
         )
-        assert len(tail) == 1
-        assert tail[0][-1] == [212.0, 0.0]
-        assert tail[0][0] == [204.0, 0.0]
-        assert metrics["mqtt_tail_distance_m"] == 8.0
+        assert tail == split
+        assert metrics["mqtt_tail_distance_m"] == 20.0
         '''
     )
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)

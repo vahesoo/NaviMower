@@ -1,10 +1,8 @@
 """Authoritative retained-vendor current-cycle rendering.
 
-The retained Navimow path is preferred only for zones where a fresh vendor row
-exists. MQTT/session history remains the fallback for other current-cycle zones.
-This prevents the same zone from being rasterized twice from two slightly
-different geometry sources while preserving zones that the vendor endpoint no
-longer returns.
+VendorTrailStore retains the current-cycle SVG independently of polls and task
+membership. Once owned, a zone cannot return to the History fallback until its
+ZoneLedger cycle changes. History archives are never modified by this renderer.
 """
 from __future__ import annotations
 
@@ -13,15 +11,11 @@ from typing import Any
 
 from .const import SWATH_WIDTH_M
 from .current_cycle_render import (
-    CurrentCycleRenderManager,
     build_current_cycle_render_source,
 )
 from .session_svg import SESSION_SVG_ARCHIVE_VERSION, build_session_svg_archive
 from .vendor_trail import (
     VendorTrailCurrentCycleRenderManager,
-    build_vendor_render_source,
-    current_vendor_rows,
-    vendor_rows_revision,
 )
 from .zone_state import as_float, as_int, zone_id_for_point
 
@@ -48,7 +42,32 @@ async def _current_cycle_source(
         payload = await manager.history.async_session_payload(str(session_id))
         if isinstance(payload, dict):
             sessions.append(payload)
+    ledger = manager.coordinator.vendor_trail_store.ledger
+    # History session completion/selection is not a cycle boundary. Aggregate
+    # completed fragments using only the ledger's confirmed per-zone cutoff.
+    for session in sessions:
+        session["completed"] = False
+        session["completion_reason"] = ""
+        session["cycle_reset_zone_ids"] = []
+        session["zone_cycle_boundaries"] = []
+        kept = []
+        starts = set(session.get("segment_starts_ms") or [])
+        gap = True
+        for point in session.get("points") or []:
+            zone_id = _point_zone_id(point, map_zones)
+            row = ledger["zones"].get(str(zone_id)) or {}
+            cutoff = as_int(row.get("cycle_started_at_ms")) or 0
+            if (as_int(point[0]) or 0) < cutoff:
+                gap = True
+                continue
+            if gap:
+                starts.add(point[0])
+            kept.append(point)
+            gap = False
+        session["points"] = kept
+        session["segment_starts_ms"] = sorted(starts)
     return build_current_cycle_render_source(sessions, map_zones)
+
 
 
 def _point_zone_id(point: Any, map_zones: list[dict[str, Any]]) -> int | None:
@@ -148,116 +167,70 @@ def filter_current_cycle_source(
     return result
 
 
-async def _authoritative_async_get(
-    self: VendorTrailCurrentCycleRenderManager,
-    map_zones: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Render each current-cycle zone from exactly one geometry source."""
-    base = await CurrentCycleRenderManager.async_get(self, map_zones)
-    snapshot = self.coordinator.data or {}
-    cache = getattr(self.coordinator, "_vendor_trail_cache", {})
-    rows = current_vendor_rows(snapshot, cache)
-    vendor_revision = vendor_rows_revision(rows)
-    if not vendor_revision:
-        return base
+async def _authoritative_async_get(self, map_zones):
+    """Do not publish an SVG built across a concurrent cycle reset/poll."""
+    store = self.coordinator.vendor_trail_store
+    def identity():
+        return (store.revision, tuple((key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()))
+    async with self._lock:
+        while True:
+            before = identity()
+            result = await _render_current_snapshot(self, map_zones)
+            if identity() == before:
+                return result
 
-    width = _mowing_width(snapshot)
-    if vendor_revision != self._vendor_revision:
-        vendor_source = build_vendor_render_source(
-            rows,
-            mowing_path_width_m=width,
-        )
-        vendor_artifact = None
-        if len(vendor_source.get("points") or []) >= 2:
-            vendor_artifact = await self.coordinator.hass.async_add_executor_job(
-                build_session_svg_archive,
-                vendor_source,
-            )
-        self._vendor_revision = vendor_revision
-        self._vendor_artifact = vendor_artifact
 
-    vendor_artifact = self._vendor_artifact
-    vendor_area = (
-        deepcopy(vendor_artifact.get("mowed_area"))
-        if isinstance(vendor_artifact, dict)
-        and isinstance(vendor_artifact.get("mowed_area"), dict)
-        else None
-    )
-    vendor_path = str((vendor_area or {}).get("path_d") or "")
-    if not vendor_path:
-        return base
-
-    vendor_zone_ids = {
-        zone_id
-        for row in rows
-        if (zone_id := as_int(row.get("zone_id"))) is not None and zone_id > 0
-    }
+async def _render_current_snapshot(self, map_zones):
+    store = self.coordinator.vendor_trail_store
+    width = _mowing_width(self.coordinator.data or {})
+    rows = await store.async_artifacts(width)
+    owned = store.owned_zone_ids()
+    # Reuse completed fallback fragments; vendor revisions never rebuild
+    # unrelated zones or their SVGs.
+    summaries = self.history.session_summaries(include_points=False)
     fallback_key = (
-        str(base.get("revision") or "0"),
-        tuple(sorted(vendor_zone_ids)),
-        round(width, 4),
+        repr([(row.get("id"), row.get("ended_at"), row.get("point_count"), row.get("active")) for row in summaries]),
+        tuple(sorted(owned)),
+        repr([(key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()]),
+        width,
     )
     if getattr(self, "_vendor_fallback_key", None) != fallback_key:
         source = await _current_cycle_source(self, map_zones)
-        source = filter_current_cycle_source(source, vendor_zone_ids, map_zones)
+        source = filter_current_cycle_source(source, owned, map_zones)
         source["mowing_path_width_m"] = width
-        fallback_artifact = None
+        artifact = None
         if len(source.get("points") or []) >= 2:
-            fallback_artifact = await self.coordinator.hass.async_add_executor_job(
-                build_session_svg_archive,
-                source,
-            )
+            artifact = await self.coordinator.hass.async_add_executor_job(build_session_svg_archive, source)
         self._vendor_fallback_key = fallback_key
-        self._vendor_fallback_artifact = fallback_artifact
+        self._vendor_fallback_artifact = artifact
         self._vendor_fallback_source = source
 
-    fallback_artifact = getattr(self, "_vendor_fallback_artifact", None)
-    fallback_source = getattr(self, "_vendor_fallback_source", {}) or {}
-    fallback_area = (
-        deepcopy(fallback_artifact.get("mowed_area"))
-        if isinstance(fallback_artifact, dict)
-        and isinstance(fallback_artifact.get("mowed_area"), dict)
-        else None
-    )
-    fallback_path = str((fallback_area or {}).get("path_d") or "")
-
-    combined_area = deepcopy(fallback_area or vendor_area or {})
-    combined_area["path_d"] = f"{fallback_path}{vendor_path}"
-    combined_area["fill_rule"] = "evenodd"
-    combined_area["swath_width_m"] = width
-
-    vendor_point_count = sum(as_int(row.get("point_count")) or 0 for row in rows)
-    fallback_point_count = len(fallback_source.get("points") or [])
-    fallback_zone_ids = [
-        zone_id
-        for zone_id in (as_int(item) for item in fallback_source.get("zone_ids") or [])
-        if zone_id is not None and zone_id > 0
-    ]
-    combined_zone_ids = list(dict.fromkeys([*fallback_zone_ids, *sorted(vendor_zone_ids)]))
-
-    result = deepcopy(base)
-    result["mowed_area"] = combined_area
-    result["revision"] = (
-        f"{base.get('revision') or '0'}|vendor-authority:{vendor_revision}"
-    )
-    result["render_schema_version"] = (
-        vendor_artifact.get("version")
-        if isinstance(vendor_artifact, dict)
-        else SESSION_SVG_ARCHIVE_VERSION
-    )
-    result["coordinate_space"] = "map_xy_m"
-    result["zone_ids"] = combined_zone_ids
-    result["source_point_count"] = fallback_point_count + vendor_point_count
-    result["source"] = "vendor_retained_per_zone_with_mqtt_fallback"
-    result["vendor_trail_debug"] = {
-        "enabled": True,
-        "authoritative": True,
-        "mqtt_base_suppressed_for_zone_ids": sorted(vendor_zone_ids),
-        "mqtt_fallback_zone_ids": fallback_zone_ids,
-        "vendor_point_count": vendor_point_count,
-        "revision": vendor_revision,
+    source = getattr(self, "_vendor_fallback_source", {}) or {}
+    fallback = getattr(self, "_vendor_fallback_artifact", None) or {}
+    vendor_paths = [str(((row.get("artifact") or {}).get("mowed_area") or {}).get("path_d") or "") for row in rows]
+    path = str((fallback.get("mowed_area") or {}).get("path_d") or "") + "".join(vendor_paths)
+    fallback_ids = source.get("zone_ids") or []
+    revisions = [(row["zone_id"], row["cycle_id"], row.get("artifact_revision")) for row in rows]
+    import hashlib
+    revision = hashlib.sha256(repr((fallback_key, revisions, path)).encode()).hexdigest()
+    return {
+        "scope": "current_cycle",
+        "revision": revision,
+        "render_schema_version": SESSION_SVG_ARCHIVE_VERSION,
+        "coordinate_space": "map_xy_m",
+        "zone_ids": sorted(set(fallback_ids) | owned),
+        "zones": [{"zone_id": row["zone_id"], "cycle_id": row["cycle_id"],
+                   "vendor_owned": True, "revision": row.get("geometry_revision")} for row in rows],
+        "source_point_count": len(source.get("points") or []) + sum(len(row.get("points") or []) for row in rows),
+        "mowed_area": {"path_d": path, "fill_rule": "evenodd", "swath_width_m": width},
+        "source": "persistent_vendor_cycle_with_mqtt_fallback",
+        "vendor_trail_debug": {
+            "enabled": True, "authoritative": True,
+            "mqtt_base_suppressed_for_zone_ids": sorted(owned),
+            "mqtt_fallback_zone_ids": fallback_ids,
+            "revision": store.revision,
+        },
     }
-    return result
 
 
 def install_vendor_trail_render_semantics() -> None:

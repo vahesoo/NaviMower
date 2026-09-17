@@ -8,7 +8,6 @@ of the newest retained vendor point.
 from __future__ import annotations
 
 import base64
-from copy import deepcopy
 from datetime import UTC, datetime
 import io
 import json
@@ -16,9 +15,7 @@ import logging
 import math
 from typing import Any
 
-from .const import SWATH_WIDTH_M
 from .current_cycle_render import CurrentCycleRenderManager
-from .session_svg import SESSION_SVG_ARCHIVE_VERSION, build_session_svg_archive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,7 +104,7 @@ def normalize_vendor_trail_row(
             continue
         x = _as_float(raw.get("x"))
         y = _as_float(raw.get("y"))
-        if x is None or y is None:
+        if x is None or y is None or not math.isfinite(x) or not math.isfinite(y):
             continue
         points.append(
             [
@@ -140,6 +137,7 @@ def normalize_vendor_trail_row(
     return {
         "zone_id": zone_id,
         "start_time": start_time,
+        "geometry_start_time": _as_int(row.get("startTime")),
         "end_time": end_time,
         "progress": progress,
         "points": points,
@@ -183,26 +181,12 @@ def current_vendor_rows(
     snapshot: dict[str, Any],
     cache: dict[int, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return cached rows that still match the fresh task/cycle metadata."""
-    selected = set(task_zone_ids(snapshot))
-    coverage = coverage_by_zone(snapshot)
-    rows: list[dict[str, Any]] = []
-    for zone_id in sorted(selected):
-        cached = cache.get(zone_id)
-        if not isinstance(cached, dict):
-            continue
-        fresh = coverage.get(zone_id) or {}
-        fresh_start = _as_int(fresh.get("start_time"))
-        cached_start = _as_int(cached.get("start_time"))
-        if fresh_start is not None and cached_start is not None and fresh_start != cached_start:
-            continue
-        fresh_pct = _as_int(fresh.get("pct"))
-        # Fresh path-info is the current-cycle authority. A 0% row must not
-        # resurrect retained points whose compressed-row metadata is stale.
-        if fresh_pct == 0:
-            continue
-        rows.append(cached)
-    return rows
+    """Return retained current-cycle records independent of task/poll metadata.
+
+    VendorTrailStore has already reconciled these rows with ZoneLedger.
+    The renderer must never reinterpret coverage or task membership here.
+    """
+    return [cache[key] for key in sorted(cache) if cache[key].get("vendor_owned")]
 
 
 def active_vendor_row(
@@ -217,6 +201,8 @@ def active_vendor_row(
     shapes keeps multi-zone MQTT-tail trimming deterministic without adding a new
     frontend-only identity field.
     """
+    if str(snapshot.get("activity") or "").lower() in {"idle", "docked", "charging"}:
+        return None
     candidate_ids: list[int] = []
     for key in ("active_zone_progress_zone_id", "current_physical_zone_id"):
         zone_id = _as_int(snapshot.get(key))
@@ -238,7 +224,7 @@ def active_vendor_row(
     for zone_id in candidate_ids:
         if zone_id in by_id:
             return by_id[zone_id]
-    return rows[0] if len(rows) == 1 else None
+    return None
 
 
 def _distance(a: list[float], b: list[float]) -> float:
@@ -360,7 +346,7 @@ def build_vendor_render_source(
                 continue
             x = _as_float(raw[0])
             y = _as_float(raw[1])
-            if x is None or y is None:
+            if x is None or y is None or not math.isfinite(x) or not math.isfinite(y):
                 continue
             stamp = base_ms + sequence
             sequence += 1
@@ -375,62 +361,11 @@ def build_vendor_render_source(
 
 
 class VendorTrailCurrentCycleRenderManager(CurrentCycleRenderManager):
-    """Overlay vendor-retained trail on the normal current-cycle render."""
-
-    def __init__(self, coordinator: Any) -> None:
-        super().__init__(coordinator)
-        self._vendor_revision: str | None = None
-        self._vendor_artifact: dict[str, Any] | None = None
+    """Render current cycles from the persistent per-zone store."""
 
     async def async_get(self, map_zones: list[dict[str, Any]]) -> dict[str, Any]:
-        base = await super().async_get(map_zones)
-        snapshot = self.coordinator.data or {}
-        cache = getattr(self.coordinator, "_vendor_trail_cache", {})
-        rows = current_vendor_rows(snapshot, cache)
-        revision = vendor_rows_revision(rows)
-        if not revision:
-            return base
-
-        if revision != self._vendor_revision:
-            width = _as_float(snapshot.get("mowing_path_width_m"))
-            if width is None or not 0.1 <= width <= 2.0:
-                width = SWATH_WIDTH_M
-            source = build_vendor_render_source(rows, mowing_path_width_m=width)
-            artifact = None
-            if len(source.get("points") or []) >= 2:
-                artifact = await self.coordinator.hass.async_add_executor_job(
-                    build_session_svg_archive,
-                    source,
-                )
-            self._vendor_revision = revision
-            self._vendor_artifact = artifact
-
-        artifact = self._vendor_artifact
-        vendor_path = (
-            str((artifact.get("mowed_area") or {}).get("path_d") or "")
-            if isinstance(artifact, dict)
-            else ""
-        )
-        if not vendor_path:
-            return base
-
-        result = deepcopy(base)
-        area = dict(result.get("mowed_area") or {})
-        area["path_d"] = f"{area.get('path_d') or ''}{vendor_path}"
-        result["mowed_area"] = area
-        result["revision"] = f"{result.get('revision') or '0'}|vendor:{revision}"
-        result["render_schema_version"] = (
-            artifact.get("version")
-            if isinstance(artifact, dict)
-            else SESSION_SVG_ARCHIVE_VERSION
-        )
-        result["vendor_trail_debug"] = {
-            "enabled": True,
-            "zone_ids": [_as_int(row.get("zone_id")) for row in rows],
-            "point_count": sum(_as_int(row.get("point_count")) or 0 for row in rows),
-            "revision": revision,
-        }
-        return result
+        from .vendor_trail_render_semantics import _authoritative_async_get
+        return await _authoritative_async_get(self, map_zones)
 
 
 def utc_now_iso() -> str:

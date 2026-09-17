@@ -396,6 +396,8 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await SessionArchiveManager.async_remove_all(hass, entry.entry_id)
     await NavimowerHistory.async_remove_all(hass, entry.entry_id)
     await TerrainOverlayManager.async_remove_all(hass, entry.entry_id)
+    from .vendor_trail_store import trail_store
+    await trail_store(hass, entry.entry_id).async_remove()
     try:
         await state_store(hass, entry.entry_id).async_remove()
     except Exception:  # noqa: BLE001
