@@ -201,18 +201,24 @@ async def _render_current_snapshot(self, map_zones):
     width = _mowing_width(self.coordinator.data or {})
     rows = await store.async_artifacts(width)
     owned = store.owned_zone_ids()
-    # Reuse completed fallback fragments; vendor revisions never rebuild
-    # unrelated zones or their SVGs.
-    summaries = self.history.session_summaries(include_points=False)
+    # Loading every historical point only to discard it is unnecessary once all
+    # mapped zones have a vendor owner. History selection remains independent.
+    map_ids = {zone_id for row in map_zones if (zone_id := as_int(row.get("id"))) is not None}
+    all_vendor = bool(map_ids) and map_ids <= owned
+    summaries = [] if all_vendor else self.history.session_summaries(include_points=False)
     fallback_key = (
         repr([(row.get("id"), row.get("ended_at"), row.get("point_count"), row.get("active")) for row in summaries]),
         tuple(sorted(owned)),
         repr([(key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()]),
         width,
+        all_vendor,
     )
     if getattr(self, "_vendor_fallback_key", None) != fallback_key:
-        source = await _current_cycle_source(self, map_zones)
-        source = filter_current_cycle_source(source, owned, map_zones)
+        if all_vendor:
+            source = {"points": [], "segment_starts_ms": [], "zone_ids": [], "current_cycle_zones": []}
+        else:
+            source = await _current_cycle_source(self, map_zones)
+            source = filter_current_cycle_source(source, owned, map_zones)
         source["mowing_path_width_m"] = width
         artifact = None
         if len(source.get("points") or []) >= 2:
