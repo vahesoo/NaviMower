@@ -41,6 +41,7 @@ from .schedule_dispatch_weather_semantics import install_schedule_dispatch_weath
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
 from .schedule_pause_semantics import install_schedule_pause_semantics
 from .schedule_queue_boundary_semantics import install_schedule_queue_boundary_semantics
+from .schedule_queue_recovery_semantics import install_schedule_queue_recovery_semantics
 from .schedule_queue_semantics import install_schedule_queue_semantics
 from .schedule_round_semantics import install_schedule_round_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
@@ -131,6 +132,10 @@ def install_runtime_extensions() -> None:
     # manual mow commands, retries an unaccepted start, and parks accepted tasks
     # through vendor weather delays without resetting the cycle.
     install_schedule_dispatch_weather_semantics()
+    # Recover only a proven same-zone vendor auto-resume/completion after the
+    # queue's fail-closed ownership guard. This runs last in the scheduler chain
+    # and never issues a reset itself.
+    install_schedule_queue_recovery_semantics()
     # Extend the existing legacy gate-area form only after all coordinator/runtime
     # semantics are installed. The patch is UI-only; membership remains owned by
     # channel.py and fresh MQTT pose safety semantics remain unchanged.
