@@ -322,6 +322,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Map-artifact prewarming may traverse a large retained current-cycle history.
+    # Start it only after every awaited config-entry setup step has completed so
+    # it can never keep Home Assistant in "Starting Navimower".
+    coordinator.start_map_artifact_prewarm()
     return True
 
 

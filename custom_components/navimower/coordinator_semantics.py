@@ -58,6 +58,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         self.current_cycle_render_manager = VendorTrailCurrentCycleRenderManager(self)
         from .map_artifacts import MapArtifactManager
         self.map_artifacts = MapArtifactManager(self)
+        self._map_artifact_prewarm_enabled = False
 
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
@@ -74,7 +75,16 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             # WGS84 tie point/calibration state needed by multi-mower/site views.
             # Keep displaying the cached map immediately, then re-decode it once.
             self._map_cache_key = None
-        self.map_artifacts.request_refresh()
+
+    def start_map_artifact_prewarm(self) -> None:
+        """Enable map-artifact work only after config-entry setup has finished."""
+        if self._map_artifact_prewarm_enabled:
+            return
+        self._map_artifact_prewarm_enabled = True
+        # call_soon guarantees the potentially expensive request snapshot/deepcopy
+        # cannot run inside async_setup_entry itself. The worker is independently
+        # backgrounded by MapArtifactManager with eager_start=False.
+        self.hass.loop.call_soon(self.map_artifacts.request_refresh)
 
     async def async_shutdown(self) -> None:
         await self.map_artifacts.async_shutdown()
@@ -108,7 +118,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         # background render. Store revision/cycle identity retain their meanings.
         snapshot["vendor_trail_revision"] = f"{store.revision + publication}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
         store.schedule_save()
-        if artifacts:
+        if artifacts and self._map_artifact_prewarm_enabled:
             artifacts.request_refresh(snapshot)
 
     def _build_zone_details(
