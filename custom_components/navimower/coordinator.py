@@ -282,23 +282,6 @@ def _command_target_is_fresh(
     return set_at is not None and 0 <= now - set_at <= ttl
 
 
-def _navigation_docked_state(
-    resolved_docked: bool,
-    pending_activity: str | None,
-) -> bool:
-    """Use the already-arbitrated dock state without revalidating live pose.
-
-    Some docked mowers periodically emit a fresh XY heartbeat while private
-    state remains correctly docked and retained target fields still reference
-    the last mowing zone. Pose freshness must not resurrect that stale target.
-    """
-    return bool(
-        resolved_docked
-        and pending_activity
-        not in {ACTIVITY_MOWING, ACTIVITY_PAUSED, ACTIVITY_RETURNING}
-    )
-
-
 def _resolve_navigation_target_ids(
     *,
     is_docked: bool,
@@ -3362,16 +3345,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         state_code = str(snapshot.get("state_code") or "")
         mqtt_state = self._fresh_mqtt_vehicle_state()
         pending_activity = self._pending_activity_value()
-        resolved_docked = bool(snapshot.get("docked"))
-        raw_returning = self._is_returning_state(state_code, mqtt_state)
         # snapshot["docked"] has already been arbitrated by
-        # _resolved_docked_state() against fresh MQTT activity and pending HA
-        # commands. Do not revalidate it with pose freshness: some docked
-        # mowers emit periodic XY heartbeats while retaining the last task zone.
-        docked_confirmed = _navigation_docked_state(
-            resolved_docked,
-            pending_activity,
-        )
+        # _resolved_docked_state() against pending HA activity and fresh MQTT
+        # motion. Navigation must consume that canonical result directly:
+        # re-arbitrating it here can let a dock XY heartbeat revive retained
+        # target fields from the previous mowing task.
+        docked_confirmed = bool(snapshot.get("docked"))
+        raw_returning = self._is_returning_state(state_code, mqtt_state)
         is_returning = raw_returning or pending_activity == ACTIVITY_RETURNING
 
         mqtt_work_target = _as_int(
