@@ -102,6 +102,7 @@ def test_docked_target_is_stable_across_pose_heartbeats() -> None:
     namespace = load_functions(
         COORDINATOR,
         {
+            "_as_int",
             "_dedupe_zone_ids",
             "_navigation_docked_state",
             "_resolve_navigation_target_ids",
