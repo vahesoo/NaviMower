@@ -98,6 +98,62 @@ def test_navigation_target_precedence_contract() -> None:
     assert result == ([13], "ha_command_confirmed", True)
 
 
+def test_docked_target_is_stable_across_pose_heartbeats() -> None:
+    namespace = load_functions(
+        COORDINATOR,
+        {
+            "_dedupe_zone_ids",
+            "_navigation_docked_state",
+            "_resolve_navigation_target_ids",
+        },
+        {
+            "ACTIVITY_MOWING": "mowing",
+            "ACTIVITY_PAUSED": "paused",
+            "ACTIVITY_RETURNING": "returning",
+        },
+    )
+    navigation_docked = namespace["_navigation_docked_state"]
+    resolve = namespace["_resolve_navigation_target_ids"]
+
+    retained = dict(
+        is_returning=False,
+        dock_zone_id=None,
+        physical_zone_id=None,
+        command_target_ids=[],
+        command_target_fresh=False,
+        mqtt_work_target=None,
+        cloud_work_target=37,
+        mqtt_partition_ids=[],
+        cloud_zone_ids=[37],
+        last_target_ids=[37],
+    )
+
+    # A confirmed dock is authoritative regardless of whether the periodic
+    # dock XY heartbeat is currently fresh or has already aged out. Pose
+    # freshness is deliberately not an input to navigation_docked().
+    for _pose_valid in (True, False):
+        result = resolve(
+            **{
+                **retained,
+                "is_docked": navigation_docked(True, None),
+            }
+        )
+        assert result == ([], "docked", False)
+
+    # A fresh HA mowing transition still releases the stale private-cloud dock
+    # state immediately and exposes the newly commanded target.
+    assert navigation_docked(True, "mowing") is False
+    commanded = resolve(
+        **{
+            **retained,
+            "is_docked": navigation_docked(True, "mowing"),
+            "command_target_ids": [37],
+            "command_target_fresh": True,
+        }
+    )
+    assert commanded == ([37], "ha_command", False)
+
+
 def test_cloud_timestamp_validation() -> None:
     namespace = load_functions(
         POSITION,
