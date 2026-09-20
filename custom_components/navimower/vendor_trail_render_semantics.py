@@ -48,20 +48,13 @@ def _cycle_identity(store: Any) -> tuple[tuple[str, str], ...]:
     )
 
 
-async def _current_cycle_source(
-    manager: VendorTrailCurrentCycleRenderManager,
+def _build_vendor_fallback_source(
+    sessions: list[dict[str, Any]],
     map_zones: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    excluded_zone_ids: set[int],
 ) -> dict[str, Any]:
-    """Build the normal current-cycle source before source arbitration."""
-    sessions: list[dict[str, Any]] = []
-    for summary in manager.history.session_summaries(include_points=False):
-        session_id = summary.get("id") if isinstance(summary, dict) else None
-        if not session_id:
-            continue
-        payload = await manager.history.async_session_payload(str(session_id))
-        if isinstance(payload, dict):
-            sessions.append(payload)
-    ledger = manager.coordinator.vendor_trail_store.ledger
+    """Run point-heavy History arbitration outside Home Assistant's event loop."""
     # History session completion/selection is not a cycle boundary. Aggregate
     # completed fragments using only the ledger's confirmed per-zone cutoff.
     for session in sessions:
@@ -85,7 +78,32 @@ async def _current_cycle_source(
             gap = False
         session["points"] = kept
         session["segment_starts_ms"] = sorted(starts)
-    return build_current_cycle_render_source(sessions, map_zones)
+    source = build_current_cycle_render_source(sessions, map_zones)
+    return filter_current_cycle_source(source, excluded_zone_ids, map_zones)
+
+
+async def _current_cycle_source(
+    manager: VendorTrailCurrentCycleRenderManager,
+    map_zones: list[dict[str, Any]],
+    excluded_zone_ids: set[int],
+) -> dict[str, Any]:
+    """Load History asynchronously, then arbitrate its points in the executor."""
+    sessions: list[dict[str, Any]] = []
+    for summary in manager.history.session_summaries(include_points=False):
+        session_id = summary.get("id") if isinstance(summary, dict) else None
+        if not session_id:
+            continue
+        payload = await manager.history.async_session_payload(str(session_id))
+        if isinstance(payload, dict):
+            sessions.append(payload)
+    ledger = deepcopy(manager.coordinator.vendor_trail_store.ledger)
+    return await manager.coordinator.hass.async_add_executor_job(
+        _build_vendor_fallback_source,
+        sessions,
+        map_zones,
+        ledger,
+        set(excluded_zone_ids),
+    )
 
 
 def _point_zone_id(point: Any, map_zones: list[dict[str, Any]]) -> int | None:
@@ -217,8 +235,7 @@ async def _render_current_snapshot(self, map_zones):
         if all_vendor:
             source = {"points": [], "segment_starts_ms": [], "zone_ids": [], "current_cycle_zones": []}
         else:
-            source = await _current_cycle_source(self, map_zones)
-            source = filter_current_cycle_source(source, owned, map_zones)
+            source = await _current_cycle_source(self, map_zones, owned)
         source["mowing_path_width_m"] = width
         artifact = None
         if len(source.get("points") or []) >= 2:

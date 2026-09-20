@@ -50,9 +50,12 @@ class DiskStorage:
 class Hass:
     def __init__(self):
         self.builds = []
+        self.executor_calls = []
 
     async def async_add_executor_job(self, func, *args):
-        self.builds.append(deepcopy(args[0]))
+        self.executor_calls.append(func.__name__)
+        if func.__name__ == "build_session_svg_archive":
+            self.builds.append(deepcopy(args[0]))
         return func(*args)
 
 
@@ -189,6 +192,14 @@ def test_vendor_revision_rebuilds_only_changed_zone_including_interior_points(st
     get_render(store)
     assert len(store.hass.builds) == 3
     assert {p[7] for p in store.hass.builds[-1]["points"]} == {92}
+
+
+def test_history_fallback_point_arbitration_runs_in_executor(store):
+    observe(store)
+    sessions = [session("history", zone=91, end=20, active=False)]
+    result = get_render(store, sessions)
+    assert result["source_point_count"] == len(sessions[0]["points"])
+    assert "_build_vendor_fallback_source" in store.hass.executor_calls
 
 
 def test_same_cycle_combines_history_sessions_until_vendor_adoption(store):
