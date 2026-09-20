@@ -104,16 +104,10 @@ def test_docked_target_is_stable_across_pose_heartbeats() -> None:
         {
             "_as_int",
             "_dedupe_zone_ids",
-            "_navigation_docked_state",
             "_resolve_navigation_target_ids",
         },
-        {
-            "ACTIVITY_MOWING": "mowing",
-            "ACTIVITY_PAUSED": "paused",
-            "ACTIVITY_RETURNING": "returning",
-        },
+        {"Any": Any},
     )
-    navigation_docked = namespace["_navigation_docked_state"]
     resolve = namespace["_resolve_navigation_target_ids"]
 
     retained = dict(
@@ -136,18 +130,18 @@ def test_docked_target_is_stable_across_pose_heartbeats() -> None:
         result = resolve(
             **{
                 **retained,
-                "is_docked": navigation_docked(True, None),
+                "is_docked": True,
             }
         )
         assert result == ([], "docked", False)
 
-    # A fresh HA mowing transition still releases the stale private-cloud dock
-    # state immediately and exposes the newly commanded target.
-    assert navigation_docked(True, "mowing") is False
+    # The upstream dock resolver releases a stale private-cloud dock as soon as
+    # a fresh HA mowing transition is pending. The target resolver therefore
+    # receives is_docked=False and exposes the newly commanded target.
     commanded = resolve(
         **{
             **retained,
-            "is_docked": navigation_docked(True, "mowing"),
+            "is_docked": False,
             "command_target_ids": [37],
             "command_target_fresh": True,
         }

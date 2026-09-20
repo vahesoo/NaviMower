@@ -79,6 +79,9 @@ exec(compile(mod, "coordinator.py", "exec"), ns)
 resolve_docked = ns["Mini"]()._resolved_docked_state
 assert resolve_docked("0101", 4, "mowing", None) == (False, "mqtt_active_state")
 assert resolve_docked("0101", None, "mowing", None) == (False, "normalized_activity")
+assert resolve_docked("0101", None, "docked", "mowing") == (False, "pending_activity")
+assert resolve_docked("0101", None, "docked", "paused") == (False, "pending_activity")
+assert resolve_docked("0101", None, "docked", "returning") == (False, "pending_activity")
 assert resolve_docked("", 3, "docked", None) == (True, "mqtt_docked_state")
 assert resolve_docked("0101", None, "docked", None) == (True, "private_docked_state")
 
