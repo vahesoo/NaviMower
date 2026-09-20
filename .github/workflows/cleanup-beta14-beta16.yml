@@ -1,0 +1,31 @@
+name: Cleanup obsolete beta releases
+
+on:
+  push:
+    paths:
+      - ".github/workflows/cleanup-beta14-beta16.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove obsolete prereleases and tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for tag in v0.4.5-beta14 v0.4.5-beta15 v0.4.5-beta16; do
+            if gh release view "${tag}" >/dev/null 2>&1; then
+              gh release delete "${tag}" --cleanup-tag --yes
+            else
+              gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/${tag}" >/dev/null 2>&1 || true
+            fi
+          done
+
+          gh release view v0.4.5-beta17 >/dev/null
+          gh api "repos/${GH_REPO}/git/ref/tags/v0.4.5-beta17" >/dev/null
