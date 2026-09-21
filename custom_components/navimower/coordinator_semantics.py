@@ -57,7 +57,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         self._vendor_trail_last_zone_ids: tuple[int, ...] = ()
         self.current_cycle_render_manager = VendorTrailCurrentCycleRenderManager(self)
         from .map_artifacts import MapArtifactManager
+        from .prepared_render_model import PreparedRenderModelManager
         self.map_artifacts = MapArtifactManager(self)
+        self.prepared_render_model = PreparedRenderModelManager(self)
         self._map_artifact_prewarm_enabled = False
 
     async def async_load_persistent_state(self) -> None:
@@ -85,8 +87,10 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         # cannot run inside async_setup_entry itself. The worker is independently
         # backgrounded by MapArtifactManager with eager_start=False.
         self.hass.loop.call_soon(self.map_artifacts.request_refresh)
+        self.hass.loop.call_soon(self.prepared_render_model.start)
 
     async def async_shutdown(self) -> None:
+        await self.prepared_render_model.async_shutdown()
         await self.map_artifacts.async_shutdown()
         await super().async_shutdown()
         await self.vendor_trail_store.async_flush()
@@ -474,6 +478,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         artifacts = getattr(self, "map_artifacts", None)
         if artifacts:
             diagnostics["map_artifacts"] = artifacts.diagnostics()
+        prepared = getattr(self, "prepared_render_model", None)
+        if prepared:
+            diagnostics["prepared_render_model"] = prepared.diagnostics()
         return diagnostics
 
 
