@@ -48,12 +48,18 @@ def _as_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _single_zone(values: Any) -> int | None:
+def _zone_ids(values: Any) -> list[int]:
+    """Normalize positive zone IDs without inheriting retained target state."""
     parsed: list[int] = []
     for raw in values or []:
         zone_id = _as_int(raw)
         if zone_id is not None and zone_id > 0 and zone_id not in parsed:
             parsed.append(zone_id)
+    return parsed
+
+
+def _single_zone(values: Any) -> int | None:
+    parsed = _zone_ids(values)
     return parsed[0] if len(parsed) == 1 else None
 
 
@@ -234,6 +240,86 @@ def _target_freshness(coordinator: Any, now: float) -> dict[str, Any]:
         "work_target_fresh": _field_is_fresh(work_stamp, now=now),
         "partition_ids_fresh": _field_is_fresh(partition_stamp, now=now),
     }
+
+
+def _task_target_active(snapshot: dict[str, Any]) -> bool:
+    """Return whether vendor state still represents an active mowing task."""
+    if snapshot.get("docked") is True:
+        return False
+    state_code = str(snapshot.get("state_code") or "")
+    if state_code in {"0202", "0258"}:
+        # Map editing is exposed as paused activity but is not a mowing task.
+        return False
+    if state_code in {"0210", "0211", "0212"}:
+        return True
+    activity = str(snapshot.get("activity") or "").strip().lower()
+    if activity in {"mowing", "paused"}:
+        return True
+    return _as_int(snapshot.get("mqtt_vehicle_state")) == 4
+
+
+def _resolve_public_task_target(
+    *,
+    is_docked: bool,
+    is_returning: bool,
+    task_active: bool,
+    command_target_ids: Any,
+    command_target_fresh: bool,
+    mqtt_partition_ids: Any,
+    mqtt_partition_fresh: bool,
+    cloud_zone_ids: Any,
+    mqtt_work_target: Any,
+    mqtt_work_target_fresh: bool,
+    cloud_work_target: Any,
+) -> tuple[list[int], str]:
+    """Resolve only user-facing mowing-task intent, never gate route retention."""
+    if is_docked:
+        return [], "docked"
+    if is_returning:
+        return [], "returning_to_dock"
+
+    command_ids = _zone_ids(command_target_ids)
+    if command_target_fresh and command_ids:
+        return command_ids, "ha_command"
+
+    if not task_active:
+        return [], "none"
+
+    mqtt_ids = _zone_ids(mqtt_partition_ids)
+    if mqtt_partition_fresh:
+        if mqtt_ids:
+            return mqtt_ids, "mqtt_partition_ids"
+        # An explicitly fresh empty partition list is meaningful for Mow All.
+        # Do not revive an older private-cloud selection in that case.
+    else:
+        cloud_ids = _zone_ids(cloud_zone_ids)
+        if cloud_ids:
+            return cloud_ids, "private_current_zones"
+
+    mqtt_work = _as_int(mqtt_work_target)
+    if mqtt_work_target_fresh and mqtt_work is not None and mqtt_work > 0:
+        return [mqtt_work], "mqtt_work_target"
+
+    cloud_work = _as_int(cloud_work_target)
+    if cloud_work is not None and cloud_work > 0:
+        return [cloud_work], "private_work_target"
+    return [], "none"
+
+
+def _target_state(snapshot: dict[str, Any], zone_ids: Any) -> str:
+    """Render public task targets using current map names."""
+    ids = _zone_ids(zone_ids)
+    map_data = snapshot.get("map") or {}
+    zones = map_data.get("zones") or snapshot.get("zones") or []
+    names: dict[int, str] = {}
+    for row in zones:
+        if not isinstance(row, dict):
+            continue
+        zone_id = _as_int(row.get("id"))
+        if zone_id is not None:
+            names[zone_id] = str(row.get("name") or f"Zone {zone_id}")
+    labels = [names.get(zone_id, f"Zone {zone_id}") for zone_id in ids]
+    return ", ".join(labels) if labels else "No active target"
 
 
 def _strict_cloud_gate_transition(
@@ -427,6 +513,9 @@ def install_navigation_intent() -> None:
     ) -> dict[str, Any]:
         now = time.monotonic()
         freshness = _target_freshness(self, now)
+        command_target_ids = _zone_ids(
+            getattr(self, "_command_target_zone_ids", [])
+        )
         original_location = self._mqtt_location  # noqa: SLF001
         sanitized = dict(original_location or {})
         stale_fields: list[str] = []
@@ -456,9 +545,64 @@ def install_navigation_intent() -> None:
         }
         result["mqtt_navigation_target_stale_fields"] = stale_fields
 
+        def _publish_task_target(current: dict[str, Any]) -> dict[str, Any]:
+            # Preserve the gate/navigation owner separately. The public Target
+            # zone below is intentionally task-only and must never feed back into
+            # gate arbitration.
+            navigation_ids = _zone_ids(
+                current.get("navigation_target_zone_ids")
+                if "navigation_target_zone_ids" in current
+                else current.get("target_zone_ids")
+            )
+            navigation_source = str(
+                current.get("navigation_target_zone_source")
+                or current.get("target_zone_source")
+                or "none"
+            )
+            navigation_state = str(
+                current.get("navigation_target_zone")
+                or current.get("target_zone")
+                or "No active target"
+            )
+            if current.get("target_zone_source") == "same_zone_command_guard":
+                navigation_ids = _zone_ids(current.get("target_zone_ids"))
+                navigation_source = "same_zone_command_guard"
+                navigation_state = str(
+                    current.get("target_zone") or _target_state(snapshot, navigation_ids)
+                )
+
+            current["navigation_target_zone"] = navigation_state
+            current["navigation_target_zone_ids"] = navigation_ids
+            current["navigation_target_zone_source"] = navigation_source
+
+            is_docked = bool(snapshot.get("docked")) or navigation_source == "docked"
+            is_returning = (
+                str(snapshot.get("activity") or "").strip().lower() == "returning"
+                or navigation_source == "returning_to_dock"
+            )
+            task_active = _task_target_active(snapshot)
+            public_ids, public_source = _resolve_public_task_target(
+                is_docked=is_docked,
+                is_returning=is_returning,
+                task_active=task_active,
+                command_target_ids=command_target_ids,
+                command_target_fresh=bool(current.get("command_target_active")),
+                mqtt_partition_ids=sanitized.get("partition_ids"),
+                mqtt_partition_fresh=bool(freshness["partition_ids_fresh"]),
+                cloud_zone_ids=snapshot.get("current_zone_ids"),
+                mqtt_work_target=sanitized.get("work_target_zone"),
+                mqtt_work_target_fresh=bool(freshness["work_target_fresh"]),
+                cloud_work_target=snapshot.get("work_target_zone"),
+            )
+            current["target_zone_ids"] = public_ids
+            current["target_zone_source"] = public_source
+            current["target_zone"] = _target_state(snapshot, public_ids)
+            current["target_zone_task_active"] = task_active
+            return current
+
         guard = getattr(self, "_same_zone_command_gate_guard", None)
         if not isinstance(guard, dict):
-            return result
+            return _publish_task_target(result)
 
         zone_id = _as_int(guard.get("zone_id"))
         age = _age_seconds(guard.get("started_at"), now)
@@ -468,21 +612,21 @@ def install_navigation_intent() -> None:
             or age > _SAME_ZONE_COMMAND_GUARD_SECONDS
         ):
             self._same_zone_command_gate_guard = None  # noqa: SLF001
-            return result
+            return _publish_task_target(result)
 
         # Unknown/stale position is never evidence that a transition ended.
         if not _physical_zone_is_fresh(result, zone_id):
             self._same_zone_command_gate_guard = None  # noqa: SLF001
-            return result
+            return _publish_task_target(result)
         if _mapped_channel_active(result):
             self._same_zone_command_gate_guard = None  # noqa: SLF001
-            return result
+            return _publish_task_target(result)
 
         target_ids = _coordinator._dedupe_zone_ids(result.get("target_zone_ids"))  # noqa: SLF001
         target_source = str(result.get("target_zone_source") or "")
         if target_source == "returning_to_dock":
             self._same_zone_command_gate_guard = None  # noqa: SLF001
-            return result
+            return _publish_task_target(result)
 
         # A fresh explicit same-zone command owns the hand-over window. A
         # last-known or vendor target that contradicts it is retained in
@@ -523,7 +667,7 @@ def install_navigation_intent() -> None:
             )
             if _no_gate_required(result):
                 result["zone_transition"] = False
-            return result
+            return _publish_task_target(result)
 
         # Same-zone last-known state is not a vendor acknowledgement. Keep the
         # bounded guard alive, but expose that no suppression was needed.
@@ -535,7 +679,7 @@ def install_navigation_intent() -> None:
                 "command_source": guard.get("source"),
                 "awaiting_fresh_confirmation": True,
             }
-        return result
+        return _publish_task_target(result)
 
     _mqtt.parse_location_payload = parse_location_payload
     _fallback._risky_cloud_gate_transition = _strict_cloud_gate_transition  # noqa: SLF001
