@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import logging
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -59,6 +60,13 @@ class SessionArchiveManager:
         self._stopped = False
         self._last_revision: int | None = None
         self._locks: dict[str, asyncio.Lock] = {}
+        self.cache_hits = 0
+        self.build_count = 0
+        self.failure_count = 0
+        self.scan_failure_count = 0
+        self.last_build_ms: float | None = None
+        self.last_error: str | None = None
+        self.last_session_id: str | None = None
 
     def start(self) -> None:
         """Watch session start/finish revisions and archive the latest completion."""
@@ -116,7 +124,10 @@ class SessionArchiveManager:
                 await self.async_get(str(latest["id"]))
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
+            self.failure_count += 1
+            self.scan_failure_count += 1
+            self.last_error = type(err).__name__
             _LOGGER.warning(
                 "Could not prepare the latest Navimower session render",
                 exc_info=True,
@@ -142,6 +153,9 @@ class SessionArchiveManager:
             except Exception:  # noqa: BLE001
                 cached = None
             if render_matches_session(cached, session):
+                self.cache_hits += 1
+                self.last_session_id = requested
+                self.last_error = None
                 return deepcopy(cached)
 
             render_session = deepcopy(session)
@@ -149,10 +163,16 @@ class SessionArchiveManager:
                 width = (self.coordinator.data or {}).get("mowing_path_width_m")
                 if width is not None:
                     render_session["mowing_path_width_m"] = width
-            artifact = await self.hass.async_add_executor_job(
-                build_session_svg_archive,
-                render_session,
-            )
+            started = time.perf_counter()
+            try:
+                artifact = await self.hass.async_add_executor_job(
+                    build_session_svg_archive,
+                    render_session,
+                )
+            except Exception as err:
+                self.failure_count += 1
+                self.last_error = type(err).__name__
+                raise
             if artifact is None:
                 return None
 
@@ -166,8 +186,38 @@ class SessionArchiveManager:
             ):
                 return None
 
-            await store.async_save(artifact)
+            try:
+                await store.async_save(artifact)
+            except Exception as err:
+                self.failure_count += 1
+                self.last_error = type(err).__name__
+                raise
+            self.build_count += 1
+            self.last_build_ms = round((time.perf_counter() - started) * 1000.0, 2)
+            self.last_session_id = requested
+            self.last_error = None
             return deepcopy(artifact)
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return cached-only archive health without loading any Store."""
+        try:
+            retained = len(self.history.session_summaries(include_points=False))
+        except Exception:
+            retained = None
+        return {
+            "store_version": _ARCHIVE_STORE_VERSION,
+            "started": self._unsub is not None and not self._stopped,
+            "building": bool(self._task is not None and not self._task.done()),
+            "pending": self._pending,
+            "retained_session_count": retained,
+            "cache_hits": self.cache_hits,
+            "build_count": self.build_count,
+            "failure_count": self.failure_count,
+            "scan_failure_count": self.scan_failure_count,
+            "last_build_ms": self.last_build_ms,
+            "last_error": self.last_error,
+            "last_session_id": self.last_session_id,
+        }
 
     @classmethod
     async def async_remove_all(cls, hass: HomeAssistant, entry_id: str) -> None:
