@@ -269,9 +269,12 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "zone_ids": d.get("target_zone_ids"),
             "dock_zone_id": d.get("dock_zone_id"),
             "source": d.get("target_zone_source"),
+            "task_active": d.get("target_zone_task_active"),
             "command_source": d.get("target_zone_command_source"),
             "target_age_seconds": d.get("target_zone_age_seconds"),
             "command_target_active": d.get("command_target_active"),
+            "navigation_zone_ids": d.get("navigation_target_zone_ids"),
+            "navigation_source": d.get("navigation_target_zone_source"),
         },
     ),
     NavimowSensorDescription(
