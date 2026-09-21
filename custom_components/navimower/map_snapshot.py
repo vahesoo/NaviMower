@@ -92,6 +92,12 @@ def _state_signature(data: dict[str, Any]) -> tuple[Any, ...]:
         str(data.get("state_code") or ""),
         str(data.get("error_code") or ""),
         bool(data.get("docked")),
+        str(
+            data.get("current_physical_zone_id")
+            or data.get("active_zone_progress_zone_id")
+            or data.get("current_physical_zone")
+            or ""
+        ),
         str(map_data.get("revision") or "") if isinstance(map_data, dict) else "",
     )
 
