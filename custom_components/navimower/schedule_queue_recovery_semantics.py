@@ -28,7 +28,11 @@ _INSTALLED = False
 _ORIGINAL_EVALUATE_LOCKED: Callable[..., Awaitable[None]] | None = None
 
 _BLOCK_REASON = "queue_slot_ownership_unverified"
-_ACTIVITY_CLOCK_SKEW_SECONDS = 30.0
+# A vendor auto-resume can be visible for several coordinator polls before the
+# fail-closed ownership layer records its block. Field evidence showed a 42 s
+# gap; 90 s keeps that real handoff recoverable without making old task starts
+# eligible.
+_ACTIVITY_CLOCK_SKEW_SECONDS = 90.0
 
 
 def _as_int(value: Any) -> int | None:

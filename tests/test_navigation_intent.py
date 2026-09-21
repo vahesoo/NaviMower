@@ -42,7 +42,12 @@ def load_functions(
 def test_navigation_target_precedence_contract() -> None:
     namespace = load_functions(
         COORDINATOR,
-        {"_as_int", "_dedupe_zone_ids", "_resolve_navigation_target_ids"},
+        {
+            "_as_int",
+            "_dedupe_zone_ids",
+            "_resolve_navigation_target_ids",
+            "_published_navigation_target",
+        },
         {"Any": Any},
     )
     resolve = namespace["_resolve_navigation_target_ids"]
@@ -96,6 +101,55 @@ def test_navigation_target_precedence_contract() -> None:
         }
     )
     assert result == ([13], "ha_command_confirmed", True)
+
+    # A periodically refreshed packed target from a completed older segment
+    # must not outrank a one-zone task that agrees with the live physical zone.
+    result = resolve(
+        **{
+            **common,
+            "dock_zone_id": None,
+            "physical_zone_id": 36,
+            "mqtt_work_target": 37,
+            "mqtt_partition_ids": [36],
+            "cloud_zone_ids": [36],
+        }
+    )
+    assert result[:2] == ([36], "mqtt_partition_ids")
+
+    # Returning navigation keeps the internal route target so gate intent can
+    # still follow the route back through mapped zones.
+    returning = resolve(
+        **{
+            **common,
+            "is_returning": True,
+            "dock_zone_id": None,
+            "physical_zone_id": 36,
+            "mqtt_work_target": 37,
+            "mqtt_partition_ids": [36],
+            "cloud_zone_ids": [36],
+        }
+    )
+    assert returning[:2] == ([37], "mqtt_work_target")
+
+    publish = namespace["_published_navigation_target"]
+    assert publish(
+        target_ids=returning[0],
+        target_source=returning[1],
+        is_returning=True,
+        dock_zone_id=None,
+    ) == ([], "returning_to_dock")
+    assert publish(
+        target_ids=[13],
+        target_source="returning_to_dock",
+        is_returning=True,
+        dock_zone_id=13,
+    ) == ([13], "returning_to_dock")
+    assert publish(
+        target_ids=[36],
+        target_source="mqtt_partition_ids",
+        is_returning=False,
+        dock_zone_id=None,
+    ) == ([36], "mqtt_partition_ids")
 
 
 def test_docked_target_is_stable_across_pose_heartbeats() -> None:
