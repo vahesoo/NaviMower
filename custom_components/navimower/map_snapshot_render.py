@@ -287,10 +287,10 @@ def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> Non
         heading = 0.0
     px, py = project([x, y])
     radius = max(9.0, min(19.0, scale * 0.42))
-    # Navimower heading is degrees clockwise from North. Screen X grows east
-    # and screen Y grows south, so 0° points straight up and 90° points right.
-    heading_rad = math.radians(heading)
-    front = (math.sin(heading_rad), -math.cos(heading_rad))
+    # Coordinator position.heading is the raw vendor postureTheta in radians.
+    # Local map +Y grows upward while image +Y grows downward, hence the sign
+    # flip on the screen-space Y component.
+    front = (math.cos(heading), -math.sin(heading))
     side = (-front[1], front[0])
     points = [
         (
