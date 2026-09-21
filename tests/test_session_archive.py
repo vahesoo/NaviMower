@@ -107,7 +107,16 @@ def test_completed_session_archive_manager() -> None:
             artifact = await manager.async_get("s1")
             assert artifact["mowed_area"]["path_d"] == "M0 0Z"
             assert "navimower_session_render_entry_s1" in Store.values
+            first_diag = manager.diagnostics()
+            assert first_diag["build_count"] == 1
+            assert first_diag["cache_hits"] == 0
+            assert first_diag["failure_count"] == 0
+            assert first_diag["last_build_ms"] is not None
+            assert first_diag["last_session_id"] == "s1"
             assert await manager.async_get("s1") == artifact
+            cached_diag = manager.diagnostics()
+            assert cached_diag["cache_hits"] == 1
+            assert cached_diag["build_count"] == 1
             coordinator.history.session["active"] = True
             assert await manager.async_get("s1") is None
 
