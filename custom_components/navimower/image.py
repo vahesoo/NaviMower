@@ -60,5 +60,25 @@ class NavimowMapSnapshotImage(NavimowEntity, ImageEntity):
         return image or None
 
     @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        rendered = self._manager.last_rendered_at
+        return {
+            "last_rendered_at": rendered.isoformat() if rendered is not None else None,
+            "render_age_seconds": (
+                round(self._manager.render_age_seconds, 1)
+                if self._manager.render_age_seconds is not None
+                else None
+            ),
+            "render_reason": self._manager.render_reason,
+            "render_duration_ms": self._manager.render_duration_ms,
+            "failure_count": self._manager.failure_count,
+            "last_error": self._manager.last_error,
+            "refresh_interval_seconds": 60,
+            "format": "png",
+            "width": 1024,
+            "height": 1024,
+        }
+
+    @property
     def available(self) -> bool:
         return self._manager.image is not None or super().available
