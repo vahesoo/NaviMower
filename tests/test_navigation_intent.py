@@ -152,6 +152,106 @@ def test_navigation_target_precedence_contract() -> None:
     ) == ([36], "mqtt_partition_ids")
 
 
+def test_public_target_is_task_only_and_never_revives_retained_route_intent() -> None:
+    namespace = load_functions(
+        NAVIGATION,
+        {
+            "_as_int",
+            "_zone_ids",
+            "_resolve_public_task_target",
+            "_task_target_active",
+        },
+        {"Any": Any},
+    )
+    resolve = namespace["_resolve_public_task_target"]
+    active = namespace["_task_target_active"]
+
+    assert not active({"activity": "docked", "docked": True, "state_code": "0102"})
+    assert not active({"activity": "returning", "docked": False, "state_code": "0220"})
+    assert not active({"activity": "paused", "docked": False, "state_code": "0202"})
+    assert active({"activity": "mowing", "docked": False, "state_code": "0210"})
+    assert active({"activity": "paused", "docked": False, "state_code": "0211"})
+
+    common = dict(
+        is_docked=False,
+        is_returning=False,
+        task_active=True,
+        command_target_ids=[],
+        command_target_fresh=False,
+        mqtt_partition_ids=[],
+        mqtt_partition_fresh=False,
+        cloud_zone_ids=[],
+        mqtt_work_target=None,
+        mqtt_work_target_fresh=False,
+        cloud_work_target=None,
+    )
+
+    # Idle/no-task state never inherits a retained target from the navigation
+    # resolver. There is intentionally no last_known input in this API.
+    assert resolve(**{**common, "task_active": False, "cloud_work_target": 37}) == (
+        [],
+        "none",
+    )
+
+    # Return routing stays available internally to gate logic but public Target
+    # zone is empty even if a route/work target still exists.
+    assert resolve(
+        **{
+            **common,
+            "is_returning": True,
+            "mqtt_partition_ids": [37],
+            "mqtt_partition_fresh": True,
+            "mqtt_work_target": 37,
+            "mqtt_work_target_fresh": True,
+        }
+    ) == ([], "returning_to_dock")
+
+    # Fresh selected task zones are the strongest vendor-owned public target.
+    assert resolve(
+        **{
+            **common,
+            "mqtt_partition_ids": [92, 91, 5],
+            "mqtt_partition_fresh": True,
+            "cloud_zone_ids": [41],
+            "mqtt_work_target": 5,
+            "mqtt_work_target_fresh": True,
+        }
+    ) == ([92, 91, 5], "mqtt_partition_ids")
+
+    # A fresh empty partition list is the observed Mow All form. It suppresses
+    # stale cloud selection and falls through to the fresh immediate work target.
+    assert resolve(
+        **{
+            **common,
+            "mqtt_partition_ids": [],
+            "mqtt_partition_fresh": True,
+            "cloud_zone_ids": [92, 91, 5],
+            "mqtt_work_target": 5,
+            "mqtt_work_target_fresh": True,
+        }
+    ) == ([5], "mqtt_work_target")
+
+    # When MQTT task selection is stale/unavailable, the private task selection
+    # is the bounded fallback. A local command still wins while fresh.
+    assert resolve(
+        **{
+            **common,
+            "cloud_zone_ids": [91, 5],
+            "mqtt_work_target": 5,
+            "mqtt_work_target_fresh": True,
+        }
+    ) == ([91, 5], "private_current_zones")
+    assert resolve(
+        **{
+            **common,
+            "command_target_ids": [42],
+            "command_target_fresh": True,
+            "mqtt_partition_ids": [92, 91, 5],
+            "mqtt_partition_fresh": True,
+        }
+    ) == ([42], "ha_command")
+
+
 def test_docked_target_is_stable_across_pose_heartbeats() -> None:
     namespace = load_functions(
         COORDINATOR,
@@ -399,6 +499,9 @@ def test_runtime_wiring_and_performance_contracts() -> None:
     assert "mqtt_navigation_target_stale_fields" in navigation
     assert "_navigation_intent_resolving" in navigation
     assert "current_physical_zone_stale" in navigation
+    assert "_resolve_public_task_target" in navigation
+    assert "navigation_target_zone_ids" in navigation
+    assert "target_zone_task_active" in navigation
 
     assert "Do not deepcopy the full session cache" in history
     assert "closed_zone_ids" in history
