@@ -224,7 +224,6 @@ def _json_hash(value: Any) -> str:
 def _encode_resource(
     kind: str,
     payload: dict[str, Any],
-    *,
     entry_id: str,
 ) -> dict[str, Any]:
     body = json.dumps(
@@ -560,7 +559,13 @@ class PreparedRenderModelManager:
                 map_data.get("id"),
                 map_data.get("map_id"),
             ],
-            "map_object": id(map_data),
+            "map_counts": [
+                len(map_data.get("zones") or []),
+                len(map_data.get("off_limit_areas") or []),
+                len(map_data.get("vf_off_areas") or []),
+                len(map_data.get("channels") or []),
+            ],
+            "station": map_data.get("station"),
             "gates": self._gate_areas(),
             "custom": self._custom_areas(),
         }
@@ -671,7 +676,7 @@ class PreparedRenderModelManager:
                 _encode_resource,
                 "static",
                 model,
-                entry_id=self.entry_id,
+                self.entry_id,
             )
             self.static_build_count += 1
             self.last_static_build_ms = round(
@@ -730,7 +735,7 @@ class PreparedRenderModelManager:
                 _encode_resource,
                 "live",
                 model,
-                entry_id=self.entry_id,
+                self.entry_id,
             )
             self.live_build_count += 1
             self._last_live_build_mono = time.monotonic()
