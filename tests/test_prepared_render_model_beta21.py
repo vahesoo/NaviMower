@@ -114,6 +114,8 @@ def test_static_model_prepares_style_independent_geometry_and_card_layout() -> N
     assert model["geometry_summary"]["channels"] == 1
     assert model["geometry_summary"]["gate_areas"] == 2
     assert model["geometry_summary"]["custom_areas"] == 1
+    assert model["geometry_summary"]["count_parity_ok"] is True
+    assert model["geometry_summary"]["point_parity_ok"] is True
 
     yard = model["layers"]["zones"][0]
     assert yard["id"] == 5
@@ -137,6 +139,8 @@ def test_static_model_prepares_style_independent_geometry_and_card_layout() -> N
     assert no_gate["matrix"][0] > 0
     assert no_gate["matrix"][3] < 0
     assert no_gate["matrix"][1:3] == [0.0, 0.0]
+    assert model["map_metadata"]["name"] is None
+    assert model["georeference"] is None
 
 
 def test_prepared_resource_identity_is_content_stable() -> None:
@@ -335,4 +339,5 @@ def test_integration_contract_exposes_resources_and_cached_diagnostics() -> None
     assert 'diagnostics["prepared_render_model"] = prepared.diagnostics()' in coordinator
 
     assert '"prepared_render_model": prepared_render_diagnostics' in diagnostics
+    assert '"session_render_archive": session_archive_diagnostics' in diagnostics
     assert "cached-only counters/summaries" in diagnostics
