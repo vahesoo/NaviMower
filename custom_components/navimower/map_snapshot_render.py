@@ -145,33 +145,6 @@ def _static_points(source: dict[str, Any]) -> list[list[float]]:
     return result
 
 
-def _transform(
-    points: list[list[float]],
-    size: int,
-) -> tuple[float, float, float, float]:
-    if not points:
-        points = [[-5.0, -5.0], [5.0, 5.0]]
-    xs = [point[0] for point in points]
-    ys = [point[1] for point in points]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    span_x = max(max_x - min_x, 0.5)
-    span_y = max(max_y - min_y, 0.5)
-    pad = max(span_x, span_y) * 0.08 + 0.5
-    min_x -= pad
-    max_x += pad
-    min_y -= pad
-    max_y += pad
-    span_x = max_x - min_x
-    span_y = max_y - min_y
-    scale = min((size - 1) / span_x, (size - 1) / span_y)
-    draw_w = span_x * scale
-    draw_h = span_y * scale
-    offset_x = (size - draw_w) / 2.0
-    offset_y = (size - draw_h) / 2.0
-    return min_x, max_y, scale, offset_x + 0.0 * offset_y
-
-
 def _projector(points: list[list[float]], size: int):
     if not points:
         points = [[-5.0, -5.0], [5.0, 5.0]]
@@ -314,7 +287,10 @@ def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> Non
         heading = 0.0
     px, py = project([x, y])
     radius = max(9.0, min(19.0, scale * 0.42))
-    front = (math.cos(heading), -math.sin(heading))
+    # Navimower heading is degrees clockwise from North. Screen X grows east
+    # and screen Y grows south, so 0° points straight up and 90° points right.
+    heading_rad = math.radians(heading)
+    front = (math.sin(heading_rad), -math.cos(heading_rad))
     side = (-front[1], front[0])
     points = [
         (
