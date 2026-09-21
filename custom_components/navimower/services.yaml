@@ -240,6 +240,22 @@ relearn_georeference:
         device:
           integration: navimower
 
+refresh_map_snapshot:
+  name: Refresh map snapshot
+  description: >-
+    Render a fresh backend PNG for this mower's Map snapshot image entity and
+    return only after the cached image has been replaced. This is intended for
+    automations and Node-RED flows that want to send the latest map in a
+    notification without keeping a Lovelace dashboard open.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
 export_raw_data:
   name: Export raw development data
   description: >-

@@ -18,6 +18,7 @@ from .const import (
 )
 from .gate_area_editor import delete_gate_area, upsert_gate_area
 from .georeference_tools import async_relearn_georeference
+from .map_snapshot import get_map_snapshot_manager
 from .model_support import supports_ordered_zone_mowing
 from .notification_actions import (
     async_mark_all_notifications_read,
@@ -37,6 +38,7 @@ SERVICE_DELETE_GATE_AREA = "delete_gate_area"
 SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 SERVICE_RELEARN_GEOREFERENCE = "relearn_georeference"
+SERVICE_REFRESH_MAP_SNAPSHOT = "refresh_map_snapshot"
 SERVICE_EXPORT_RAW_DATA = "export_raw_data"
 
 _WEEKDAY_TO_NUM = {
@@ -100,6 +102,7 @@ DELETE_GATE_AREA_SCHEMA = vol.Schema(
 DEVICE_ONLY_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string})
 RESUME_SCHEMA = DEVICE_ONLY_SCHEMA
 RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
+REFRESH_MAP_SNAPSHOT_SCHEMA = DEVICE_ONLY_SCHEMA
 EXPORT_RAW_DATA_SCHEMA = DEVICE_ONLY_SCHEMA
 
 MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
@@ -394,6 +397,20 @@ def async_setup_services(hass: HomeAssistant) -> None:
             notification_id=f"navimower_georeference_relearn_{coordinator.entry.entry_id}",
         )
 
+    async def _refresh_map_snapshot(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        manager = get_map_snapshot_manager(coordinator)
+        try:
+            await manager.async_refresh(
+                reason="manual",
+                force=True,
+                require_fresh=True,
+            )
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimower map snapshot refresh failed: {err}"
+            ) from err
+
     async def _export_raw_data(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         try:
@@ -424,6 +441,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_MARK_NOTIFICATION_READ, _mark_notification_read, MARK_NOTIFICATION_READ_SCHEMA),
         (SERVICE_MARK_ALL_NOTIFICATIONS_READ, _mark_all_notifications_read, MARK_ALL_NOTIFICATIONS_READ_SCHEMA),
         (SERVICE_RELEARN_GEOREFERENCE, _relearn_georeference, RELEARN_GEOREFERENCE_SCHEMA),
+        (SERVICE_REFRESH_MAP_SNAPSHOT, _refresh_map_snapshot, REFRESH_MAP_SNAPSHOT_SCHEMA),
         (SERVICE_EXPORT_RAW_DATA, _export_raw_data, EXPORT_RAW_DATA_SCHEMA),
     )
     for service, handler, schema in registrations:
