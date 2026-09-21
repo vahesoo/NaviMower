@@ -125,7 +125,6 @@ class SessionArchiveManager:
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001
-            self.failure_count += 1
             self.scan_failure_count += 1
             self.last_error = type(err).__name__
             _LOGGER.warning(
