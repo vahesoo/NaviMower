@@ -101,7 +101,8 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert "if image is None:" in image
     assert "Platform.IMAGE" in setup
     assert 'SERVICE_REFRESH_MAP_SNAPSHOT = "refresh_map_snapshot"' in services
-    assert 'await manager.async_refresh(reason="manual", force=True)' in services
+    assert 'reason="manual"' in services
+    assert "require_fresh=True" in services
     assert "refresh_map_snapshot:" in services_yaml
     assert "return only after the cached image has been replaced" in services_yaml
     assert '"render_reason": self._manager.render_reason' in image
