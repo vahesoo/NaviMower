@@ -104,3 +104,6 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert 'await manager.async_refresh(reason="manual", force=True)' in services
     assert "refresh_map_snapshot:" in services_yaml
     assert "return only after the cached image has been replaced" in services_yaml
+    render = RENDER.read_text(encoding="utf-8")
+    assert "raw vendor postureTheta in radians" in render
+    assert "math.cos(heading)" in render
