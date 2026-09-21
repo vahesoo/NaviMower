@@ -78,6 +78,12 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
         "entry_id": entry_id,
         "device_id": device.id if device is not None else None,
         "map_api_path": f"/api/navimower/map/{entry_id}",
+        "prepared_render_model_manifest_path": (
+            f"/api/navimower/map/{entry_id}?render_model_manifest=1"
+        ),
+        "current_cycle_artifacts_manifest_path": (
+            f"/api/navimower/map/{entry_id}?artifacts_only=1"
+        ),
         "sessions_api_path": f"/api/navimower/sessions/{entry_id}",
         "session_render_api_path_template": (
             f"/api/navimower/session-render/{entry_id}/{{session_id}}"

@@ -162,6 +162,18 @@ async def async_get_config_entry_diagnostics(
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_discovery") else None
     )
     private_polling = coordinator.polling_diagnostics() if hasattr(coordinator, "polling_diagnostics") else None
+    prepared_render = getattr(coordinator, "prepared_render_model", None)
+    prepared_render_diagnostics = (
+        prepared_render.diagnostics()
+        if prepared_render is not None and hasattr(prepared_render, "diagnostics")
+        else None
+    )
+    session_archive = getattr(coordinator, "session_archive", None)
+    session_archive_diagnostics = (
+        session_archive.diagnostics()
+        if session_archive is not None and hasattr(session_archive, "diagnostics")
+        else None
+    )
     problem_history = coordinator.problem_diagnostics() if hasattr(coordinator, "problem_diagnostics") else None
     notification_center = getattr(coordinator, "notification_center", None)
     notification_center_diagnostics = (
@@ -280,6 +292,8 @@ async def async_get_config_entry_diagnostics(
         "notification_center": notification_center_diagnostics,
         "last_resume_command": None,
         "private_polling": private_polling,
+        "prepared_render_model": prepared_render_diagnostics,
+        "session_render_archive": session_archive_diagnostics,
         "mqtt_health": mqtt_health,
         "raw": raw_for_diagnostics,
         "notes": [
@@ -288,6 +302,8 @@ async def async_get_config_entry_diagnostics(
             "URL credentials, paths, query strings and fragments are omitted; only service origins remain.",
             "Georeference diagnostics retain local transform/validation context; geographic coordinates are redacted.",
             "Map underlay diagnostics retain availability/session status, not Google keys or session tokens.",
+            "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
+            "Session render archive diagnostics are cached-only counters/latency/error state and never load session Stores.",
             "Local X/Y geometry, names and activity times remain useful support data: review them before sharing.",
             "The explicit navimower.export_raw_data development export is separate and remains unredacted.",
         ],
