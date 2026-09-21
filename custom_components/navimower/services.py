@@ -401,7 +401,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _resolve_coordinator(call)
         manager = get_map_snapshot_manager(coordinator)
         try:
-            await manager.async_refresh(reason="manual", force=True)
+            await manager.async_refresh(
+                reason="manual",
+                force=True,
+                require_fresh=True,
+            )
         except Exception as err:
             raise HomeAssistantError(
                 f"Navimower map snapshot refresh failed: {err}"
