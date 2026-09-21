@@ -110,6 +110,9 @@ async def _async_map_payload(
             "manifest_url": f"/api/navimower/map/{entry_id}?artifacts_only=1",
             "format": "svg", "ready_only": True,
         }
+    prepared = getattr(coordinator, "prepared_render_model", None)
+    if prepared is not None:
+        payload["prepared_render_model"] = prepared.discovery()
     return payload
 
 
@@ -152,6 +155,47 @@ def _zone_artifact_response(coordinator: Any, request: web.Request) -> web.Respo
     return web.Response(body=resource["body"], content_type="image/svg+xml", headers=headers)
 
 
+def _prepared_render_resource_response(
+    coordinator: Any,
+    request: web.Request,
+    *,
+    kind: str,
+    query_key: str,
+) -> web.Response:
+    """Serve one already prepared JSON resource with conditional caching."""
+    resource_id = str(request.query.get(query_key, ""))
+    if not re.fullmatch(r"[a-f0-9]{64}", resource_id):
+        raise web.HTTPBadRequest(
+            text="Invalid prepared render resource identity",
+            headers={"Cache-Control": "no-store"},
+        )
+    manager = getattr(coordinator, "prepared_render_model", None)
+    resource = manager.resource(kind, resource_id) if manager else None
+    if resource is None:
+        raise web.HTTPGone(
+            text="Prepared render resource is not retained; refresh the manifest",
+            headers={"Cache-Control": "no-store"},
+        )
+    headers = {
+        "ETag": f'"{resource_id}"',
+        "Cache-Control": "private, no-cache, must-revalidate",
+        "Vary": "Authorization",
+        "X-Content-Type-Options": "nosniff",
+    }
+    tags = str(request.headers.get("If-None-Match", "")).split(",")
+    if any(
+        tag.strip() == "*"
+        or tag.strip().removeprefix("W/") == headers["ETag"]
+        for tag in tags
+    ):
+        return web.Response(status=304, headers=headers)
+    return web.Response(
+        body=resource["body"],
+        content_type="application/json",
+        headers=headers,
+    )
+
+
 def install_map_api_performance() -> None:
     """Install backward-compatible phased Map API query options."""
     cls = _map_api.NavimowerMapView
@@ -164,6 +208,29 @@ def install_map_api_performance() -> None:
         entry_id: str,
     ) -> web.Response:
         coordinator = _map_api._coordinator(request, entry_id)  # noqa: SLF001
+        if "static_render_model" in request.query:
+            return _prepared_render_resource_response(
+                coordinator,
+                request,
+                kind="static",
+                query_key="static_render_model",
+            )
+        if "live_route_render" in request.query:
+            return _prepared_render_resource_response(
+                coordinator,
+                request,
+                kind="live",
+                query_key="live_route_render",
+            )
+        if _query_requested(request, "render_model_manifest"):
+            manager = getattr(coordinator, "prepared_render_model", None)
+            if manager is None:
+                raise web.HTTPServiceUnavailable(
+                    headers={"Retry-After": "5", "Cache-Control": "no-store"}
+                )
+            response = self.json(manager.manifest())
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if "zone_artifact" in request.query:
             return _zone_artifact_response(coordinator, request)
         if _query_requested(request, "artifacts_only"):
