@@ -334,10 +334,25 @@ def _resolve_navigation_target_ids(
             and task_ids[0] != physical_zone_id
         )
 
+    def _conflicts_with_active_single_zone(value: int | None) -> bool:
+        # A one-zone task that agrees with the live physical zone is stronger
+        # than a contradictory packed work target left over from an older
+        # segment. Keep returning navigation exempt: its direct target may be
+        # the next mapped zone on the route back to an out-of-zone dock.
+        return bool(
+            not is_returning
+            and value is not None
+            and physical_zone_id is not None
+            and len(task_ids) == 1
+            and task_ids[0] == physical_zone_id
+            and value != physical_zone_id
+        )
+
     if (
         mqtt_work_target is not None
         and mqtt_work_target > 0
         and not _stale_origin(mqtt_work_target)
+        and not _conflicts_with_active_single_zone(mqtt_work_target)
     ):
         return [mqtt_work_target], "mqtt_work_target", False
     if mqtt_ids:
@@ -357,6 +372,24 @@ def _resolve_navigation_target_ids(
         if last_ids
         else ([], "none", False)
     )
+
+
+def _published_navigation_target(
+    *,
+    target_ids: list[int],
+    target_source: str,
+    is_returning: bool,
+    dock_zone_id: int | None,
+) -> tuple[list[int], str]:
+    """Return the user-facing mowing target without changing gate routing."""
+    ids = _dedupe_zone_ids(target_ids)
+    if is_returning and dock_zone_id is None:
+        # The route back to a dock outside every mowing polygon can legitimately
+        # traverse several zones. Gate intent still consumes the internal route
+        # target, but the Target zone sensor must not oscillate between those
+        # route segments as if they were active mowing targets.
+        return [], "returning_to_dock"
+    return ids, str(target_source)
 
 
 def _parse_zone_options(raw: str | None) -> list[dict]:
@@ -3424,9 +3457,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         elif target_ids:
             self._last_target_zone_ids = list(target_ids)
 
-        target_names = [
-            zone_names.get(zone_id, f"Zone {zone_id}") for zone_id in target_ids
-        ]
         tunnel_connection = _dedupe_zone_ids((tunnel or {}).get("connection"))
 
         if pose_valid:
@@ -3449,7 +3479,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             physical_state = "Position unavailable"
             physical_source = "pose_unavailable"
 
-        target_state = ", ".join(target_names) if target_names else "No active target"
         live_tunnel_id = _as_int((tunnel or {}).get("id"))
         live_tunnel_distance = _as_float((tunnel or {}).get("distance"))
         if pose_valid:
@@ -3663,13 +3692,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         ):
             transition = True
 
+        published_target_ids, published_target_source = _published_navigation_target(
+            target_ids=target_ids,
+            target_source=target_source,
+            is_returning=is_returning,
+            dock_zone_id=dock_zone_id,
+        )
+        published_target_names = [
+            zone_names.get(zone_id, f"Zone {zone_id}")
+            for zone_id in published_target_ids
+        ]
+        published_target_state = (
+            ", ".join(published_target_names)
+            if published_target_names
+            else "No active target"
+        )
+
         return {
             "current_physical_zone": physical_state,
             "current_physical_zone_id": physical_id,
             "current_physical_zone_source": physical_source,
-            "target_zone": target_state,
-            "target_zone_ids": target_ids,
-            "target_zone_source": target_source,
+            "target_zone": published_target_state,
+            "target_zone_ids": published_target_ids,
+            "target_zone_source": published_target_source,
             "target_zone_command_source": command_source,
             "target_zone_age_seconds": command_target_age,
             "command_target_active": command_fresh,
