@@ -225,6 +225,7 @@ class MapSnapshotManager:
         *,
         reason: str,
         force: bool = False,
+        require_fresh: bool = False,
     ) -> bytes:
         """Build a fresh snapshot and return only when the cache is updated."""
         async with self._lock:
@@ -254,7 +255,7 @@ class MapSnapshotManager:
                     "Navimower map snapshot render failed; keeping last good image",
                     exc_info=True,
                 )
-                if self._image is not None:
+                if self._image is not None and not require_fresh:
                     return self._image
                 raise
 
