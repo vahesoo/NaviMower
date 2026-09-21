@@ -421,7 +421,12 @@ def build_static_render_model(source: dict[str, Any]) -> dict[str, Any]:
         "gate_areas": sum(len(_gate_polygon(row)) >= 3 for row in source.get("gate_areas") or []),
         "custom_areas": sum(isinstance(row, dict) and len(_polygon_points(row.get("polygon"))) >= 3 for row in source.get("custom_areas") or []),
     }
-    parity = all(counts[key] == expected_counts[key] for key in expected_counts)
+    count_parity = all(
+        counts[key] == expected_counts[key]
+        for key in expected_counts
+    )
+    point_parity = source_points == prepared_points
+    parity = count_parity and point_parity
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -430,6 +435,20 @@ def build_static_render_model(source: dict[str, Any]) -> dict[str, Any]:
         "map_revision": map_data.get("revision"),
         "map_version": map_data.get("map_version"),
         "map_modified_count": map_data.get("modified_count"),
+        "map_metadata": {
+            "id": map_data.get("id"),
+            "map_id": map_data.get("map_id"),
+            "map_base_id": map_data.get("map_base_id"),
+            "name": map_data.get("name"),
+            "area_m2": _number(map_data.get("area")),
+            "width_m": _number(map_data.get("width")),
+            "height_m": _number(map_data.get("height")),
+            "north_offset": _number(map_data.get("north_offset")),
+            "version": map_data.get("version"),
+        },
+        "georeference": deepcopy(map_data.get("georeference"))
+        if isinstance(map_data.get("georeference"), dict)
+        else None,
         "layout": {
             "without_gate_areas": without_gate_layout,
             "with_gate_areas": with_gate_layout,
@@ -446,6 +465,8 @@ def build_static_render_model(source: dict[str, Any]) -> dict[str, Any]:
         "geometry_summary": {
             **counts,
             "expected_counts": expected_counts,
+            "count_parity_ok": count_parity,
+            "point_parity_ok": point_parity,
             "parity_ok": parity,
         },
     }
@@ -706,6 +727,7 @@ class PreparedRenderModelManager:
         except Exception as err:  # noqa: BLE001 - optional prepared resource
             self.failure_count += 1
             self.last_error = type(err).__name__
+            self._static_key = None
         finally:
             self._static_task = None
             if self._static_pending and not self._closed:
@@ -772,6 +794,7 @@ class PreparedRenderModelManager:
         except Exception as err:  # noqa: BLE001 - optional prepared resource
             self.failure_count += 1
             self.last_error = type(err).__name__
+            self._live_key = None
         finally:
             self._live_task = None
             if self._live_pending and not self._closed:
