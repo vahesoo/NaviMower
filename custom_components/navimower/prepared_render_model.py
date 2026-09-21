@@ -536,9 +536,13 @@ class PreparedRenderModelManager:
         self.coalesced_static_updates = 0
         self.coalesced_live_updates = 0
         self.failure_count = 0
+        self.static_failure_count = 0
+        self.live_failure_count = 0
         self.last_static_build_ms: float | None = None
         self.last_live_build_ms: float | None = None
         self.last_error: str | None = None
+        self.last_static_error: str | None = None
+        self.last_live_error: str | None = None
         self.last_static_summary: dict[str, Any] | None = None
         self.last_live_summary: dict[str, Any] | None = None
         self.manifest_reads = 0
@@ -580,6 +584,9 @@ class PreparedRenderModelManager:
                 map_data.get("id"),
                 map_data.get("map_id"),
             ],
+            "map_cache_key": repr(
+                getattr(self.coordinator, "_map_cache_key", None)
+            ),
             "map_counts": [
                 len(map_data.get("zones") or []),
                 len(map_data.get("off_limit_areas") or []),
@@ -587,6 +594,7 @@ class PreparedRenderModelManager:
                 len(map_data.get("channels") or []),
             ],
             "station": map_data.get("station"),
+            "georeference": map_data.get("georeference"),
             "gates": self._gate_areas(),
             "custom": self._custom_areas(),
         }
@@ -721,12 +729,15 @@ class PreparedRenderModelManager:
                     ],
                 ][:2]
                 self.static_publication_revision += 1
-            self.last_error = None
+            self.last_static_error = None
+            self.last_error = self.last_live_error
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - optional prepared resource
             self.failure_count += 1
-            self.last_error = type(err).__name__
+            self.static_failure_count += 1
+            self.last_static_error = type(err).__name__
+            self.last_error = self.last_static_error
             self._static_key = None
         finally:
             self._static_task = None
@@ -788,12 +799,15 @@ class PreparedRenderModelManager:
                     ],
                 ][:2]
                 self.live_publication_revision += 1
-            self.last_error = None
+            self.last_live_error = None
+            self.last_error = self.last_static_error
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - optional prepared resource
             self.failure_count += 1
-            self.last_error = type(err).__name__
+            self.live_failure_count += 1
+            self.last_live_error = type(err).__name__
+            self.last_error = self.last_live_error
             self._live_key = None
         finally:
             self._live_task = None
@@ -884,15 +898,21 @@ class PreparedRenderModelManager:
             "coalesced_static_updates": self.coalesced_static_updates,
             "coalesced_live_updates": self.coalesced_live_updates,
             "failure_count": self.failure_count,
+            "static_failure_count": self.static_failure_count,
+            "live_failure_count": self.live_failure_count,
             "last_static_build_ms": self.last_static_build_ms,
             "last_live_build_ms": self.last_live_build_ms,
             "last_error": self.last_error,
+            "last_static_error": self.last_static_error,
+            "last_live_error": self.last_live_error,
             "static_publication_revision": self.static_publication_revision,
             "live_publication_revision": self.live_publication_revision,
             "static_resource_bytes": len(static["body"]) if static else 0,
             "live_resource_bytes": len(live["body"]) if live else 0,
             "static_resource_id": static["resource_id"] if static else None,
             "live_resource_id": live["resource_id"] if live else None,
+            "static_ready": static is not None,
+            "live_ready": live is not None,
             "static_summary": deepcopy(self.last_static_summary),
             "live_summary": deepcopy(self.last_live_summary),
             "manifest_reads": self.manifest_reads,
