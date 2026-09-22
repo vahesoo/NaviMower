@@ -395,7 +395,10 @@ class MapArtifactManager:
             "entry_id": str(self.coordinator.entry.entry_id),
             "coordinate_space": "map_xy_m", "cycle_identity": _cycle_identity(self.store),
             "publication_revision": self.publication_revision,
-            "building": bool(self._task and not self._task.done()),
+            "building": bool(
+                (self._task and not self._task.done())
+                or (self._checkpoint_task and not self._checkpoint_task.done())
+            ),
             "zones": zones, "fallback_zone_ids": sorted(ids - self.store.owned_zone_ids()),
         }
 
