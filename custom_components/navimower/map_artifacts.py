@@ -96,6 +96,10 @@ class MapArtifactManager:
         self.last_checkpoint_ms: float | None = None
         self.last_checkpoint_reason: str | None = None
         self.last_checkpoint_error: str | None = None
+        self.fallback_checkpoint_revision = 0
+        self.fallback_checkpoint_count = 0
+        self.last_fallback_checkpoint_reason: str | None = None
+        self.last_fallback_checkpoint_history_revision: int | None = None
 
     @property
     def store(self):
@@ -113,8 +117,7 @@ class MapArtifactManager:
         # checkpoint remains intentionally frozen. Refresh this presentation
         # cache only when a published artifact (or a real fallback dependency)
         # changes, never for every retained-geometry observation.
-        unowned = ids - self.store.owned_zone_ids()
-        history_revision = getattr(self.coordinator.history, "trail_revision", None) if unowned else None
+        unowned = tuple(sorted(ids - self.store.owned_zone_ids()))
         artifact_state = tuple(
             sorted(
                 (
@@ -129,7 +132,8 @@ class MapArtifactManager:
         key = (
             scope,
             artifact_state,
-            history_revision,
+            self.fallback_checkpoint_revision if unowned else None,
+            unowned,
             (data.get("map") or {}).get("revision"),
             tuple(sorted(ids)),
         )
@@ -155,6 +159,34 @@ class MapArtifactManager:
                 if factory else asyncio.create_task(self._build())
             )
         return self._task
+
+    def request_fallback_checkpoint(
+        self,
+        *,
+        reason: str,
+    ) -> asyncio.Task | None:
+        """Freeze the newest History fallback only at a lifecycle checkpoint."""
+        if self._closed:
+            return None
+        data = self.coordinator.data or {}
+        zones = (data.get("map") or {}).get("zones", [])
+        map_ids = {
+            int(row["id"])
+            for row in zones
+            if isinstance(row, dict) and row.get("id") is not None
+        }
+        unowned = map_ids - self.store.owned_zone_ids()
+        if not unowned:
+            return self._task
+
+        self.fallback_checkpoint_revision += 1
+        self.fallback_checkpoint_count += 1
+        self.last_fallback_checkpoint_reason = reason
+        history_revision = getattr(self.coordinator.history, "trail_revision", None)
+        self.last_fallback_checkpoint_history_revision = (
+            int(history_revision) if history_revision is not None else None
+        )
+        return self.request_refresh()
 
     def request_checkpoint(
         self,
@@ -266,6 +298,7 @@ class MapArtifactManager:
         active = {"mowing", "paused"}
         settled = {"docked", "idle", "charging", "error"}
 
+        fallback_reason: str | None = None
         if (
             previous_zone is not None
             and previous_zone != zone_id
@@ -275,9 +308,14 @@ class MapArtifactManager:
                 zone_ids={previous_zone},
                 reason="zone_exit",
             )
+            fallback_reason = "zone_exit"
 
         if activity in settled and previous_activity not in settled:
             self.request_checkpoint(reason="session_settled")
+            fallback_reason = "session_settled"
+
+        if fallback_reason is not None:
+            self.request_fallback_checkpoint(reason=fallback_reason)
 
     def _notify(self):
         event = self._published
@@ -432,6 +470,13 @@ class MapArtifactManager:
     def diagnostics(self) -> dict[str, Any]:
         """Cached counters only: diagnostics never start work or expose paths."""
         ready = sum(bool(self._valid_resources(zone)) for zone in self.store.owned_zone_ids())
+        data = self.coordinator.data or {}
+        map_ids = {
+            int(row["id"])
+            for row in (data.get("map") or {}).get("zones", [])
+            if isinstance(row, dict) and row.get("id") is not None
+        }
+        fallback_zone_count = len(map_ids - self.store.owned_zone_ids())
         dirty = 0
         for row in self.store.records.values():
             revision = row.get("artifact_revision") or []
@@ -452,6 +497,16 @@ class MapArtifactManager:
             "last_checkpoint_ms": self.last_checkpoint_ms,
             "last_checkpoint_reason": self.last_checkpoint_reason,
             "last_checkpoint_error": self.last_checkpoint_error,
+            "fallback_checkpoint_revision": self.fallback_checkpoint_revision,
+            "fallback_checkpoint_count": self.fallback_checkpoint_count,
+            "last_fallback_checkpoint_reason": self.last_fallback_checkpoint_reason,
+            "last_fallback_checkpoint_history_revision": (
+                self.last_fallback_checkpoint_history_revision
+            ),
+            "current_history_revision": getattr(
+                self.coordinator.history, "trail_revision", None
+            ),
+            "fallback_zone_count": fallback_zone_count,
             "dirty_zone_count": dirty,
             "checkpoint_building": bool(
                 self._checkpoint_task and not self._checkpoint_task.done()
