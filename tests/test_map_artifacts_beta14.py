@@ -63,6 +63,16 @@ def descriptors(manager):
     return {row["zone_id"]: row for row in manager.manifest()["zones"]}
 
 
+async def checkpoint(manager, zone_ids=None, reason="test"):
+    task = manager.request_checkpoint(
+        zone_ids=set(zone_ids) if zone_ids is not None else None,
+        reason=reason,
+    )
+    if task is not None:
+        await task
+    return task
+
+
 def test_prewarmed_100_reads_do_not_rebuild_or_read_history(store):
     seed(store)
     owner = owner_for(store)
@@ -71,7 +81,7 @@ def test_prewarmed_100_reads_do_not_rebuild_or_read_history(store):
     owner.history.session_summaries = forbidden
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         assert owner.hass.svg_builds == 2
         before = manager.build_count
         resource_before = owner.hass.resource_builds
@@ -101,7 +111,7 @@ def test_manifest_and_ready_resources_never_wait_for_slow_builder(store):
             await gate.wait()
         owner.hass.before_svg = hold
         manager = owner.map_artifacts
-        job = manager.request_refresh()
+        job = manager.request_checkpoint(reason="test")
         await started.wait()
         for _ in range(100):
             manifest = manager.manifest()
@@ -129,11 +139,19 @@ def test_only_changed_zone_is_rebuilt_and_transferred(store):
     owner = owner_for(store)
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         before = descriptors(manager)
         old91 = manager.resource(91, before[91]["artifact"]["resource_id"])
+
         store.accept(geometry(end=20))
         await manager.request_refresh()
+        frozen = descriptors(manager)
+        assert frozen[91] == before[91]
+        assert frozen[92]["artifact"]["resource_id"] == before[92]["artifact"]["resource_id"]
+        assert frozen[92]["geometry_ahead"] is True
+        assert owner.hass.svg_builds == 2
+
+        await checkpoint(manager, {92}, reason="zone_exit")
         after = descriptors(manager)
         assert after[91] == before[91]
         assert after[92]["artifact"]["resource_id"] != before[92]["artifact"]["resource_id"]
@@ -141,9 +159,13 @@ def test_only_changed_zone_is_rebuilt_and_transferred(store):
         assert owner.hass.svg_builds == 3
         assert owner.hass.resource_builds == 3
         assert manager.resource(92, before[92]["artifact"]["resource_id"])
+
         for end in (25, 30, 35):
             store.accept(geometry(end=end))
             await manager.request_refresh()
+        assert owner.hass.svg_builds == 3
+        await checkpoint(manager, {92}, reason="session_settled")
+        assert owner.hass.svg_builds == 4
         assert len(manager._resources[92]) == 2
         assert manager.resource(92, before[92]["artifact"]["resource_id"]) is None
         await manager.async_shutdown()
@@ -162,18 +184,19 @@ def test_geometry_advances_coalesce_and_publish_same_cycle_without_starvation(st
             started.set()
             await gate.wait()
         owner.hass.before_svg = hold_once
-        job = manager.request_refresh()
+        job = manager.request_checkpoint(zone_ids={92}, reason="test")
         await started.wait()
         for end in (15, 20, 25, 30):
             store.accept(geometry(end=end))
-            assert manager.request_refresh() is job
+            assert manager.request_checkpoint(zone_ids={92}, reason="zone_exit") is job
         gate.set()
         await asyncio.wait_for(job, 5)
-        assert manager.coalesced_updates == 4
+        assert manager.checkpoint_coalesced_updates == 4
         assert owner.hass.svg_builds == 2
-        assert manager.build_count == 2
+        assert manager.checkpoint_count == 2
         descriptor = descriptors(manager)[92]
         assert not descriptor["pending"]
+        assert descriptor["geometry_ahead"] is False
         assert descriptor["artifact"]["geometry_revision"] == store.records[92]["geometry_revision"]
         await manager.async_shutdown()
     asyncio.run(check())
@@ -184,7 +207,7 @@ def test_reset_revokes_one_zone_and_rejects_inflight_old_resource(store):
     owner = owner_for(store)
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         before = descriptors(manager)
         gate = asyncio.Event()
         started = asyncio.Event()
@@ -194,7 +217,7 @@ def test_reset_revokes_one_zone_and_rejects_inflight_old_resource(store):
             await gate.wait()
         owner.hass.before_svg = hold_once
         store.accept(geometry(end=20))
-        job = manager.request_refresh()
+        job = manager.request_checkpoint(zone_ids={92}, reason="test")
         await started.wait()
         state, _ = ledger.mark_explicit_reset(store.ledger, [92], observed_at_ms=NOW+100_000, reason="test")
         store.reconcile(state)
@@ -216,7 +239,7 @@ def test_map_revision_edit_retains_resources_but_width_change_invalidates(store)
     owner = owner_for(store)
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         before = descriptors(manager)
         owner.data["map"]["revision"] = "added-channel"
         await manager.request_refresh()
@@ -225,6 +248,8 @@ def test_map_revision_edit_retains_resources_but_width_change_invalidates(store)
         owner.data["mowing_path_width_m"] = 0.5
         assert manager.resource(92, before[92]["artifact"]["resource_id"]) is None
         await manager.request_refresh()
+        assert descriptors(manager)[92]["artifact"] is None
+        await checkpoint(manager, reason="width_change")
         assert descriptors(manager)[92]["artifact"]["resource_id"] != before[92]["artifact"]["resource_id"]
         assert owner.hass.svg_builds == 4
         await manager.async_shutdown()
@@ -236,7 +261,7 @@ def test_restart_restores_same_resource_ids_without_rasterizing_again(store):
     owner = owner_for(store)
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         before = descriptors(manager)
         await store.async_flush()
         await manager.async_shutdown()
@@ -270,7 +295,7 @@ def test_cache_failures_are_bounded_diagnostics_are_passive_and_recovery_works(s
             await manager.async_get(ZONES)
         owner.current_cycle_render_manager.async_get = original
         manager._retry_at = 0
-        await manager.request_refresh()
+        await checkpoint(manager, reason="recovery")
         assert manager.last_error is None
         assert manager.build_count == 1
         diagnostic = json.dumps(manager.diagnostics())
@@ -290,7 +315,7 @@ def test_shutdown_cancels_worker_and_pending_http_waiters(store):
             await asyncio.Event().wait()
         owner.hass.before_svg = hold
         manager = owner.map_artifacts
-        manager.request_refresh()
+        manager.request_checkpoint(reason="test")
         await started.wait()
         caller = asyncio.create_task(manager.async_get(ZONES))
         await asyncio.sleep(0)
@@ -310,7 +335,7 @@ def test_mixed_vendor_and_history_fallback_remains_available(store):
     owner = owner_for(store, sessions=history)
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         result = await manager.async_get(ZONES)
         assert result["zone_ids"] == [91, 92]
         assert result["vendor_trail_debug"]["mqtt_fallback_zone_ids"] == [91]
@@ -336,7 +361,7 @@ def test_http_etag_privacy_and_reset_checked_before_304(store):
     response_for = _http_function()
     async def check():
         manager = owner.map_artifacts
-        await manager.request_refresh()
+        await checkpoint(manager)
         descriptor = descriptors(manager)[92]["artifact"]
         resource_id = descriptor["resource_id"]
         request = types.SimpleNamespace(query={"zone_artifact": "92", "artifact_id": resource_id}, headers={})
@@ -368,8 +393,8 @@ def test_same_zone_ids_in_two_mowers_never_share_resources(store, tmp_path):
     first = owner_for(store, entry_id="first")
     second = owner_for(other_store, entry_id="second")
     async def check():
-        await first.map_artifacts.request_refresh()
-        await second.map_artifacts.request_refresh()
+        await checkpoint(first.map_artifacts)
+        await checkpoint(second.map_artifacts)
         first_id = descriptors(first.map_artifacts)[92]["artifact"]["resource_id"]
         second_id = descriptors(second.map_artifacts)[92]["artifact"]["resource_id"]
         assert first_id != second_id
