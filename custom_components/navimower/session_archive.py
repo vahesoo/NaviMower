@@ -55,14 +55,18 @@ def _encode_resource(
     session_id: str,
     render: dict[str, Any],
 ) -> dict[str, Any]:
+    stable_render = deepcopy(render)
+    # Build time is operational metadata, not render identity. Excluding it
+    # keeps the content-addressed resource stable if an archive is regenerated.
+    stable_render.pop("generated_at", None)
     payload = {
         "schema_version": _HISTORY_RESOURCE_SCHEMA_VERSION,
         "scope": "prepared_history_render",
         "coordinate_space": "map_xy_m",
         "session_id": str(session_id),
-        "render_schema_version": render.get("version"),
-        "source": deepcopy(render.get("source") or {}),
-        "render": deepcopy(render),
+        "render_schema_version": stable_render.get("version"),
+        "source": deepcopy(stable_render.get("source") or {}),
+        "render": stable_render,
     }
     body = json.dumps(
         payload,
