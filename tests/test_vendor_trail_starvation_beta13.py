@@ -90,6 +90,7 @@ def geometry(end, *, start=100):
 
 
 def get_render(store):
+    asyncio.run(store.async_artifacts(0.25, build=True))
     owner = types.SimpleNamespace(
         hass=store.hass,
         data={},
