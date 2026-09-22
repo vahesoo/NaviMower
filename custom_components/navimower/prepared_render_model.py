@@ -24,6 +24,17 @@ VIEW_SIZE = 1000.0
 LAYOUT_PADDING_RATIO = 0.05
 LIVE_PREPARE_MIN_INTERVAL_SECONDS = 2.0
 _ACTIVE_ACTIVITIES = {"mowing", "paused", "returning"}
+_GEOREFERENCE_DIAGNOSTIC_KEYS = frozenset({"local_frame_check", "reference_candidates"})
+
+
+def _render_georeference(value: Any) -> dict[str, Any] | None:
+    """Return render-relevant georeference without per-refresh diagnostics."""
+    if not isinstance(value, dict):
+        return None
+    result = deepcopy(value)
+    for key in _GEOREFERENCE_DIAGNOSTIC_KEYS:
+        result.pop(key, None)
+    return result
 
 
 def _number(value: Any) -> float | None:
@@ -446,9 +457,7 @@ def build_static_render_model(source: dict[str, Any]) -> dict[str, Any]:
             "north_offset": _number(map_data.get("north_offset")),
             "version": map_data.get("version"),
         },
-        "georeference": deepcopy(map_data.get("georeference"))
-        if isinstance(map_data.get("georeference"), dict)
-        else None,
+        "georeference": _render_georeference(map_data.get("georeference")),
         "layout": {
             "without_gate_areas": without_gate_layout,
             "with_gate_areas": with_gate_layout,
@@ -594,7 +603,7 @@ class PreparedRenderModelManager:
                 len(map_data.get("channels") or []),
             ],
             "station": map_data.get("station"),
-            "georeference": map_data.get("georeference"),
+            "georeference": _render_georeference(map_data.get("georeference")),
             "gates": self._gate_areas(),
             "custom": self._custom_areas(),
         }

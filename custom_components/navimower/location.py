@@ -150,6 +150,7 @@ def parse_location_payload(
     loc["_task_progress_updated"] = False
     loc["_area_updated"] = False
     loc["_battery_updated"] = False
+    loc["_task_delay_updated"] = False
     changed = False
     for item in data:
         if not isinstance(item, dict):
@@ -227,6 +228,7 @@ def parse_location_payload(
             changed = True
         elif t == 4:
             loc["task_delay"] = item.get("taskDelay")
+            loc["_task_delay_updated"] = "taskDelay" in item
             if "vehicleState" in item:
                 loc["vehicle_state"] = item.get("vehicleState")
             if "time" in item:

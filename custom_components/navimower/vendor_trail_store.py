@@ -14,6 +14,7 @@ import logging
 import math
 from typing import Any
 
+from .const import MQTT_CUTTING_ACTIONS
 from .zone_ledger import as_int, normalize_ledger_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -189,7 +190,13 @@ class VendorTrailStore:
                 stamp = as_int(raw[0]) or 0
                 if stamp <= last_stamp:
                     continue
-                if as_int(raw[7]) != zone_id or str(raw[4]).lower() != "mowing":
+                action = as_int(raw[6]) if len(raw) > 6 else None
+                cutting = (
+                    action in MQTT_CUTTING_ACTIONS
+                    if action is not None
+                    else str(raw[4]).lower() == "mowing"
+                )
+                if as_int(raw[7]) != zone_id or not cutting:
                     split = True
                     continue
                 point = [stamp, float(raw[1]), float(raw[2])]

@@ -13,6 +13,8 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
 
+from homeassistant.util import dt as dt_util
+
 from .navimower_schedule import NavimowerScheduleController, _utc_now
 from .schedule_logic import parse_iso
 
@@ -29,6 +31,7 @@ _ACCEPTED_START_MAX_WAIT_SECONDS = 180.0
 _WEATHER_AUTO_RESUME_GRACE_SECONDS = 120.0
 _EXTERNAL_TRACE_MAX_AGE_SECONDS = 180.0
 _WEATHER_EVENT_MAX_AGE_SECONDS = 600.0
+_CROSS_WINDOW_TASK_DELAY_FRESH_SECONDS = 180.0
 _WEATHER_CODES = {
     "150A": "rain",
     "150F": "snow",
@@ -89,6 +92,7 @@ def _empty_runtime() -> dict[str, Any]:
             "weather_wait_started_at": None,
             "weather_clear_seen_at": None,
             "weather_vendor_code": None,
+            "weather_wait_window_token": None,
             "last_external_mow_source": None,
         }
     )
@@ -115,6 +119,40 @@ def _mqtt_task_delay(controller: NavimowerScheduleController) -> bool | None:
     if text in {"false", "off", "no", ""}:
         return False
     return None
+
+
+def _mqtt_task_delay_age(controller: NavimowerScheduleController) -> float | None:
+    getter = getattr(controller.coordinator, "mqtt_task_delay_age", None)
+    if not callable(getter):
+        return None
+    try:
+        age = getter()
+    except Exception:
+        return None
+    return max(0.0, float(age)) if age is not None else None
+
+
+def _current_window_token(controller: NavimowerScheduleController) -> str | None:
+    try:
+        _open, token = controller._window_state(dt_util.now())  # noqa: SLF001
+    except Exception:
+        return None
+    return str(token) if token is not None else None
+
+
+def _task_delay_crosses_managed_window(
+    controller: NavimowerScheduleController,
+) -> bool:
+    runtime = controller._runtime  # noqa: SLF001
+    if not runtime.get("resume_pending"):
+        return False
+    if str(runtime.get("interrupted_reason") or "") not in _WEATHER_REASONS:
+        return False
+    current = _current_window_token(controller)
+    if current is None:
+        return False
+    waited = runtime.get("weather_wait_window_token")
+    return waited is None or str(waited) != current
 
 
 def _vendor_message_code(item: dict[str, Any]) -> str | None:
@@ -173,6 +211,10 @@ def _weather_delay_reason(
     """Prefer current MQTT taskDelay, using the vendor event only as its label."""
     delayed = _mqtt_task_delay(controller)
     event_reason, event_code = _recent_weather_event(controller, since=since)
+    if delayed is True and _task_delay_crosses_managed_window(controller):
+        age = _mqtt_task_delay_age(controller)
+        if age is None or age > _CROSS_WINDOW_TASK_DELAY_FRESH_SECONDS:
+            delayed = None
     if delayed is True:
         return event_reason or "vendor_task_delay", event_code
     if delayed is False:
@@ -346,6 +388,7 @@ def _adopt_pending_weather(
     )
     runtime["last_ownership_result"] = "scheduler_start_delayed_by_weather"
     runtime["weather_wait_started_at"] = _utc_now()
+    runtime["weather_wait_window_token"] = _current_window_token(controller)
     runtime["weather_clear_seen_at"] = None
     runtime["weather_vendor_code"] = vendor_code
     runtime["last_command"] = f"weather_wait:{reason}:{zone_id}"
@@ -526,6 +569,7 @@ def _set_weather_interruption(
         runtime["charging_limit_reached_at"] = None
         runtime["pending_command"] = None
         runtime["weather_wait_started_at"] = _utc_now()
+        runtime["weather_wait_window_token"] = _current_window_token(controller)
         runtime["weather_clear_seen_at"] = None
         runtime["last_command"] = f"weather_wait:{reason}:{zone_id}"
         runtime["last_command_at"] = _utc_now()
@@ -603,6 +647,7 @@ async def _evaluate_locked(self: NavimowerScheduleController) -> None:
         data = self.coordinator.data or {}
         if self._vendor_mowing(data):
             runtime["weather_wait_started_at"] = None
+            runtime["weather_wait_window_token"] = None
             runtime["weather_clear_seen_at"] = None
             runtime["weather_vendor_code"] = None
             # Let the composed original path clear resume/interruption ownership.
