@@ -77,6 +77,10 @@ class MapArtifactManager:
         self._resources: dict[int, list[dict[str, Any]]] = {}
         self._closed = False
         self._retry_at = 0.0
+        self._checkpoint_task: asyncio.Task | None = None
+        self._checkpoint_zones: set[int] = set()
+        self._observed_activity: str | None = None
+        self._observed_zone_id: int | None = None
         self.build_count = 0
         self.cache_hits = 0
         self.coalesced_updates = 0
@@ -84,6 +88,11 @@ class MapArtifactManager:
         self.last_build_ms: float | None = None
         self.last_error: str | None = None
         self.publication_revision = 0
+        self.checkpoint_count = 0
+        self.checkpoint_zone_build_count = 0
+        self.checkpoint_coalesced_updates = 0
+        self.last_checkpoint_ms: float | None = None
+        self.last_checkpoint_reason: str | None = None
 
     @property
     def store(self):
@@ -97,11 +106,30 @@ class MapArtifactManager:
         zones = map_zones if map_zones is not None else (data.get("map") or {}).get("zones", [])
         scope = self._scope(data)
         ids = {int(row["id"]) for row in zones if row.get("id") is not None}
-        # An all-vendor map does not depend on session starts/stops, MQTT points,
-        # or coverage/ledger revision churn. Only its actual geometry matters.
+        # Raw vendor geometry may advance every 10 seconds while the published
+        # checkpoint remains intentionally frozen. Refresh this presentation
+        # cache only when a published artifact (or a real fallback dependency)
+        # changes, never for every retained-geometry observation.
         unowned = ids - self.store.owned_zone_ids()
         history_revision = getattr(self.coordinator.history, "trail_revision", None) if unowned else None
-        key = (scope, self.store.revision, history_revision, (data.get("map") or {}).get("revision"), tuple(sorted(ids)))
+        artifact_state = tuple(
+            sorted(
+                (
+                    int(zone_id),
+                    str(row.get("cycle_id") or ""),
+                    tuple(row.get("artifact_revision") or ()),
+                )
+                for zone_id, row in self.store.records.items()
+                if row.get("vendor_owned")
+            )
+        )
+        key = (
+            scope,
+            artifact_state,
+            history_revision,
+            (data.get("map") or {}).get("revision"),
+            tuple(sorted(ids)),
+        )
         return key, zones, scope
 
     def request_refresh(self, snapshot=None, map_zones=None) -> asyncio.Task | None:
@@ -124,6 +152,111 @@ class MapArtifactManager:
                 if factory else asyncio.create_task(self._build())
             )
         return self._task
+
+    def request_checkpoint(
+        self,
+        *,
+        zone_ids: set[int] | None = None,
+        reason: str,
+    ) -> asyncio.Task | None:
+        """Queue an expensive vendor->SVG checkpoint only for lifecycle events."""
+        if self._closed:
+            return None
+        selected = (
+            set(self.store.owned_zone_ids())
+            if zone_ids is None
+            else {int(zone) for zone in zone_ids if int(zone) in self.store.records}
+        )
+        if not selected:
+            return self._checkpoint_task
+        if self._checkpoint_task and not self._checkpoint_task.done():
+            self.checkpoint_coalesced_updates += 1
+        self._checkpoint_zones.update(selected)
+        self.last_checkpoint_reason = reason
+        if self._checkpoint_task is None or self._checkpoint_task.done():
+            factory = getattr(self.coordinator.hass, "async_create_background_task", None)
+            self._checkpoint_task = (
+                factory(self._checkpoint_worker(), "navimower-map-checkpoint", eager_start=False)
+                if factory else asyncio.create_task(self._checkpoint_worker())
+            )
+        return self._checkpoint_task
+
+    async def _checkpoint_worker(self) -> None:
+        try:
+            while self._checkpoint_zones and not self._closed:
+                selected = set(self._checkpoint_zones)
+                self._checkpoint_zones.difference_update(selected)
+                before = {
+                    zone: tuple((self.store.records.get(zone) or {}).get("artifact_revision") or ())
+                    for zone in selected
+                }
+                started = time.perf_counter()
+                width = _mowing_width(self.coordinator.data or {})
+                await self.store.async_artifacts(
+                    width,
+                    build=True,
+                    zone_ids=selected,
+                )
+                if self._closed:
+                    return
+                changed = sum(
+                    tuple((self.store.records.get(zone) or {}).get("artifact_revision") or ())
+                    != before.get(zone, ())
+                    for zone in selected
+                )
+                if changed:
+                    self.checkpoint_count += 1
+                    self.checkpoint_zone_build_count += changed
+                    self.last_checkpoint_ms = round(
+                        (time.perf_counter() - started) * 1000,
+                        2,
+                    )
+                    # Re-anchor already collected MQTT points to the newly
+                    # published base before the next Map API read.
+                    self.store.update_live_tail(
+                        self.coordinator.data or {},
+                        getattr(self.coordinator.history, "active_session", None),
+                    )
+                    self.store.schedule_save()
+                    refresh = self.request_refresh()
+                    if refresh is not None:
+                        await refresh
+                await asyncio.sleep(0)
+        finally:
+            self._checkpoint_task = None
+
+    def observe(self, snapshot: dict[str, Any]) -> None:
+        """Turn mower lifecycle transitions into sparse artifact checkpoints."""
+        activity = str(snapshot.get("activity") or "").lower()
+        raw_zone = snapshot.get("current_physical_zone_id")
+        try:
+            zone_id = int(raw_zone) if raw_zone is not None else None
+        except (TypeError, ValueError):
+            zone_id = None
+
+        previous_activity = self._observed_activity
+        previous_zone = self._observed_zone_id
+        self._observed_activity = activity
+        self._observed_zone_id = zone_id
+
+        if previous_activity is None:
+            return
+
+        active = {"mowing", "paused"}
+        settled = {"docked", "idle", "charging", "error"}
+
+        if (
+            previous_zone is not None
+            and previous_zone != zone_id
+            and previous_activity in active
+        ):
+            self.request_checkpoint(
+                zone_ids={previous_zone},
+                reason="zone_exit",
+            )
+
+        if activity in settled and previous_activity not in settled:
+            self.request_checkpoint(reason="session_settled")
 
     def _notify(self):
         event = self._published
@@ -193,18 +326,8 @@ class MapArtifactManager:
                     self.build_count += 1
                     self.last_build_ms = round((time.perf_counter() - started) * 1000, 2)
                     self.last_error = None
-                    pending = any(
-                        not row.get("artifact_revision")
-                        or row["artifact_revision"][1] != row.get("geometry_revision")
-                        for row in self.store.records.values()
-                    )
                     self._notify()
                     if self._desired[0] == key:
-                        if pending:
-                            # A swallowed per-zone SVG failure needs a bounded
-                            # later retry, not a permanent empty cache or hot loop.
-                            self._finished_key = None
-                            self._retry_at = time.monotonic() + RETRY_SECONDS
                         return
                 except asyncio.CancelledError:
                     raise
@@ -251,12 +374,19 @@ class MapArtifactManager:
             row = self.store.records[zone_id]
             resources = self._valid_resources(zone_id)
             resource = resources[0] if resources else None
-            current = [row["cycle_id"], row["geometry_revision"], width,
-                       (row.get("artifact_revision") or [None] * 4)[3]]
+            artifact_revision = row.get("artifact_revision") or [None] * 4
+            artifact_geometry_revision = (
+                artifact_revision[1] if len(artifact_revision) >= 2 else None
+            )
             zones.append({
                 "zone_id": zone_id, "cycle_id": row["cycle_id"], "vendor_owned": True,
-                "pending": resource is None or tuple(current) != resource["build_key"],
+                "pending": resource is None,
                 "geometry_revision": row["geometry_revision"],
+                "artifact_geometry_revision": artifact_geometry_revision,
+                "geometry_ahead": bool(
+                    resource is not None
+                    and artifact_geometry_revision != row.get("geometry_revision")
+                ),
                 "artifact": deepcopy(resource["descriptor"]) if resource else None,
             })
         ids = {int(row["id"]) for row in (self.coordinator.data or {}).get("map", {}).get("zones", []) if row.get("id") is not None}
@@ -278,12 +408,28 @@ class MapArtifactManager:
     def diagnostics(self) -> dict[str, Any]:
         """Cached counters only: diagnostics never start work or expose paths."""
         ready = sum(bool(self._valid_resources(zone)) for zone in self.store.owned_zone_ids())
+        dirty = 0
+        for row in self.store.records.values():
+            revision = row.get("artifact_revision") or []
+            artifact_geometry = revision[1] if len(revision) >= 2 else None
+            if artifact_geometry != row.get("geometry_revision"):
+                dirty += 1
         return {
             "schema_version": RESOURCE_SCHEMA, "format": "svg",
+            "mode": "event_checkpoint_plus_mqtt_live_tail",
             "build_count": self.build_count, "cache_hits": self.cache_hits,
             "coalesced_updates": self.coalesced_updates, "failure_count": self.failure_count,
             "last_build_ms": self.last_build_ms, "last_error": self.last_error,
             "publication_revision": self.publication_revision,
+            "checkpoint_count": self.checkpoint_count,
+            "checkpoint_zone_build_count": self.checkpoint_zone_build_count,
+            "checkpoint_coalesced_updates": self.checkpoint_coalesced_updates,
+            "last_checkpoint_ms": self.last_checkpoint_ms,
+            "last_checkpoint_reason": self.last_checkpoint_reason,
+            "dirty_zone_count": dirty,
+            "checkpoint_building": bool(
+                self._checkpoint_task and not self._checkpoint_task.done()
+            ),
             "ready_zone_count": ready, "owned_zone_count": len(self.store.owned_zone_ids()),
             "resource_bytes": sum(len(item["body"]) for zone in self._resources for item in self._valid_resources(zone)),
             "building": bool(self._task and not self._task.done()),
@@ -291,10 +437,15 @@ class MapArtifactManager:
 
     async def async_shutdown(self):
         self._closed = True
+        if self._checkpoint_task and not self._checkpoint_task.done():
+            self._checkpoint_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._checkpoint_task
         if self._task and not self._task.done():
             self._task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._task
+        self._checkpoint_zones.clear()
         self._cache = None
         self._resources.clear()
         self._notify()
