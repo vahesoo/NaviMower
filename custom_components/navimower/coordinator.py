@@ -4309,7 +4309,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "trail_active": bool(data.get("trail_active")),
             "active_session": active_meta,
             "current_cycle_session_id": (active_meta or {}).get("id"),
-            "history_day_count": 3,
             "completion_threshold_pct": VENDOR_COMPLETION_PROGRESS_MIN,
             "sessions": sessions,
             "session_xy_point_format": list(SESSION_CARD_POINT_FORMAT),
