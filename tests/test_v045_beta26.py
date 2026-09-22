@@ -220,6 +220,33 @@ def test_beta26_prepared_history_prewarm_manifest_and_resources() -> None:
             assert after["resource_first_read_age_s"] is not None
             assert after["resource_last_read_age_s"] is not None
 
+            stable_a = target._encode_resource(
+                "entry",
+                "stable",
+                {
+                    "version": 2,
+                    "generated_at": "2026-09-22T10:00:00+00:00",
+                    "source": {"session_id": "stable"},
+                    "mowed_area": {"path_d": "M0 0Z"},
+                    "travel": {"path_d": ""},
+                    "route": {"path_d": "M0 0"},
+                },
+            )
+            stable_b = target._encode_resource(
+                "entry",
+                "stable",
+                {
+                    "version": 2,
+                    "generated_at": "2026-09-22T11:00:00+00:00",
+                    "source": {"session_id": "stable"},
+                    "mowed_area": {"path_d": "M0 0Z"},
+                    "travel": {"path_d": ""},
+                    "route": {"path_d": "M0 0"},
+                },
+            )
+            assert stable_a["resource_id"] == stable_b["resource_id"]
+            assert b"generated_at" not in stable_a["body"]
+
             discovery = manager.discovery()
             assert discovery["ready_only"] is True
             assert discovery["capabilities"]["content_addressed_resources"] is True
