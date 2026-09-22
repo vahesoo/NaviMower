@@ -125,7 +125,7 @@ def test_live_tail_stays_anchored_to_published_checkpoint_until_next_build(tmp_p
     live = session(end=6)
 
     store.update_live_tail({}, live)
-    assert store.live_tail(92) == [[[x, 0] for x in range(7)]]
+    assert store.live_tail(92) == [[[x, 0] for x in range(2, 7)]]
 
     asyncio.run(store.async_artifacts(0.25, build=True, zone_ids={92}))
     store.update_live_tail({}, live)
