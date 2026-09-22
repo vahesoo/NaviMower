@@ -124,7 +124,8 @@ def test_manifest_and_ready_resources_never_wait_for_slow_builder(store):
         gate.set()
         results = await asyncio.gather(*callers)
         assert all(result == results[0] for result in results)
-        assert manager.build_count == 1
+        assert manager.build_count == 2
+        assert manager.checkpoint_count == 1
         assert owner.hass.svg_builds == 2
         manifest = manager.manifest()
         text = json.dumps(manifest)
