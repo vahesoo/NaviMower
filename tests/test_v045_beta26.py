@@ -118,7 +118,9 @@ def test_beta26_prepared_history_prewarm_manifest_and_resources() -> None:
             def sessions_index_payload(self):
                 rows = []
                 for sid in ("s3", "s2", "s1"):
-                    session = self.sessions[sid]
+                    session = self.sessions.get(sid)
+                    if session is None:
+                        continue
                     rows.append({
                         "id": sid,
                         "active": session["active"],
