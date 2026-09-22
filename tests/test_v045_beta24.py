@@ -21,7 +21,10 @@ def _append_history_point(history) -> None:
 def test_unowned_history_growth_stays_off_map_artifact_hot_path(store) -> None:
     """Live History churn must not rebuild a frozen mixed vendor/fallback base."""
     seed(store, both=False)  # zone 92 vendor-owned; zone 91 remains History fallback
-    history = [session("unowned-live", zone=91, end=5, active=True)]
+    history = [
+        session("unowned-base", zone=91, end=5, active=False),
+        session("owned-live", zone=92, end=5, stamp=2_000_000_000_000, active=True),
+    ]
     owner = owner_for(store, sessions=history)
 
     async def check() -> None:
@@ -65,7 +68,7 @@ def test_unowned_history_growth_stays_off_map_artifact_hot_path(store) -> None:
             await manager._task
 
         refreshed = await manager.async_get(ZONES)
-        assert refreshed["mowed_area"]["path_d"] != frozen_path
+        assert refreshed["mowed_area"]["path_d"] == frozen_path
         assert manager.build_count == build_count + 1
         assert owner.hass.svg_builds == svg_builds + 1
 
@@ -84,7 +87,10 @@ def test_unowned_history_growth_stays_off_map_artifact_hot_path(store) -> None:
 def test_direct_current_cycle_reads_share_frozen_fallback_checkpoint(store) -> None:
     """Snapshot/direct consumers must not bypass the fallback checkpoint cache."""
     seed(store, both=False)
-    history = [session("unowned-live", zone=91, end=5, active=True)]
+    history = [
+        session("unowned-base", zone=91, end=5, active=False),
+        session("owned-live", zone=92, end=5, stamp=2_000_000_000_000, active=True),
+    ]
     owner = owner_for(store, sessions=history)
 
     async def check() -> None:
@@ -106,7 +112,7 @@ def test_direct_current_cycle_reads_share_frozen_fallback_checkpoint(store) -> N
             await task
 
         direct = await owner.current_cycle_render_manager.async_get(ZONES)
-        assert direct["mowed_area"]["path_d"] != frozen_path
+        assert direct["mowed_area"]["path_d"] == frozen_path
         assert owner.hass.svg_builds == svg_builds + 1
         assert (
             direct["vendor_trail_debug"]["fallback_checkpoint_revision"]
