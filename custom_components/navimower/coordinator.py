@@ -1094,6 +1094,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_last_message_update: float | None = None
         self._mqtt_state_last_update: float | None = None
         self._mqtt_action_last_update: float | None = None
+        self._mqtt_task_delay_last_update: float | None = None
         self._mqtt_named_state: str | None = None
         self._mqtt_named_state_last_update: float | None = None
         self._mqtt_battery: int | None = None
@@ -3049,6 +3050,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return None
         return max(0.0, time.monotonic() - self._mqtt_action_last_update)
 
+    def mqtt_task_delay_age(self) -> float | None:
+        """Age in seconds of the latest actual MQTT type-4 taskDelay field."""
+        if self._mqtt_task_delay_last_update is None:
+            return None
+        return max(0.0, time.monotonic() - self._mqtt_task_delay_last_update)
+
     def _fresh_mqtt_vehicle_state(self) -> int | None:
         age = self.mqtt_state_age()
         if age is None or age > MQTT_STATE_STALE_SECONDS:
@@ -3986,6 +3993,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._mqtt_state_last_update = now_monotonic
         if location.get("action") is not None:
             self._mqtt_action_last_update = now_monotonic
+        if bool(location.get("_task_delay_updated")) or (
+            self._mqtt_task_delay_last_update is None
+            and location.get("task_delay") is not None
+        ):
+            self._mqtt_task_delay_last_update = now_monotonic
         if bool(location.get("_battery_updated")) or (
             self._mqtt_battery_last_update is None
             and location.get("battery") is not None
