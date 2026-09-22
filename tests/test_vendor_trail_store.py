@@ -106,6 +106,10 @@ def session(name="s1", zone=92, start=0, end=25, stamp=NOW+10_000, active=True):
 
 
 def get_render(store, sessions=None):
+    # Store/renderer tests request an explicit checkpoint before reading the
+    # published current-cycle render. Runtime scheduling is covered separately
+    # by MapArtifactManager beta23 tests.
+    asyncio.run(store.async_artifacts(0.25, build=True))
     coordinator = types.SimpleNamespace(hass=store.hass, data={}, vendor_trail_store=store, history=History(sessions))
     manager = vendor.VendorTrailCurrentCycleRenderManager(coordinator)
     return asyncio.run(render._authoritative_async_get(manager, ZONES))
