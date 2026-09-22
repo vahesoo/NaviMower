@@ -87,6 +87,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         # cannot run inside async_setup_entry itself. The worker is independently
         # backgrounded by MapArtifactManager with eager_start=False.
         self.hass.loop.call_soon(self.map_artifacts.request_refresh)
+        self.hass.loop.call_soon(
+            lambda: self.map_artifacts.request_checkpoint(reason="startup")
+        )
         self.hass.loop.call_soon(self.prepared_render_model.start)
 
     async def async_shutdown(self) -> None:
@@ -123,6 +126,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         snapshot["vendor_trail_revision"] = f"{store.revision + publication}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
         store.schedule_save()
         if artifacts and self._map_artifact_prewarm_enabled:
+            artifacts.observe(snapshot)
             artifacts.request_refresh(snapshot)
 
     def _build_zone_details(
