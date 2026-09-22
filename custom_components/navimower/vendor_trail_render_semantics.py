@@ -224,10 +224,29 @@ async def _render_current_snapshot(self, map_zones):
     map_ids = {zone_id for row in map_zones if (zone_id := as_int(row.get("id"))) is not None}
     all_vendor = bool(map_ids) and map_ids <= owned
     summaries = [] if all_vendor else self.history.session_summaries(include_points=False)
+    artifact_manager = getattr(self.coordinator, "map_artifacts", None)
+    fallback_checkpoint_revision = getattr(
+        artifact_manager,
+        "fallback_checkpoint_revision",
+        None,
+    )
+    if fallback_checkpoint_revision is None:
+        # Standalone/unit-test owners without MapArtifactManager keep the
+        # historical freshness behaviour. Runtime coordinators always expose
+        # the checkpoint token, so live History point growth stays off the
+        # expensive fallback render hot path.
+        fallback_checkpoint_revision = getattr(self.history, "trail_revision", None)
+    map_revision = (
+        ((self.coordinator.data or {}).get("map") or {}).get("revision")
+        if isinstance(getattr(self.coordinator, "data", None), dict)
+        else None
+    )
     fallback_key = (
-        repr([(row.get("id"), row.get("ended_at"), row.get("point_count"), row.get("active")) for row in summaries]),
+        fallback_checkpoint_revision,
+        tuple(sorted(map_ids - owned)),
         tuple(sorted(owned)),
         repr([(key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()]),
+        map_revision,
         width,
         all_vendor,
     )
@@ -268,6 +287,7 @@ async def _render_current_snapshot(self, map_zones):
             "enabled": True, "authoritative": True,
             "mqtt_base_suppressed_for_zone_ids": sorted(owned),
             "mqtt_fallback_zone_ids": fallback_ids,
+            "fallback_checkpoint_revision": fallback_checkpoint_revision,
             "revision": store.revision,
             "cycle_identity": _cycle_identity(store),
         },

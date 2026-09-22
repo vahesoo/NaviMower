@@ -17,11 +17,11 @@ The manifest is ready-only: it may queue preparation but never waits for SVG con
 - `schema_version: 1`, `scope: current_cycle_artifacts`, `entry_id`, `coordinate_space: map_xy_m`;
 - stable `cycle_identity` pairs, plus a separate `publication_revision` and `building` flag;
 - one `zones[]` descriptor per vendor-owned zone, with `zone_id`, `cycle_id`, desired `geometry_revision`, `pending`, and an optional prepared `artifact`;
-- `fallback_zone_ids` for zones that still use the existing MQTT/History fallback. A new frontend must preserve that fallback instead of assuming a missing vendor artifact is an empty completed zone.
+- `fallback_zone_ids` for zones that still use the existing History fallback. A new frontend must preserve that fallback instead of assuming a missing vendor artifact is an empty completed zone. Live MQTT movement remains a separate presentation layer.
 
 A prepared artifact contains `resource_id`, `format: svg`, `usage: alpha_mask`, actual rendered `geometry_revision`, `byte_length`, `bounds: [min_x, min_y, max_x, max_y]`, and an authenticated `url`. It contains no raw points or `path_d` text.
 
-`pending: true` with an artifact means a valid same-cycle prefix is available while newer geometry is being prepared. `artifact: null` means none is prepared for that current cycle yet. Keep other zones mounted; never substitute an earlier cycle.
+`pending: true` now means that no usable artifact exists for that current cycle. A valid same-cycle artifact remains ready even when `geometry_ahead: true` reports newer retained vendor geometry waiting for the next checkpoint. Keep other zones mounted; never substitute an earlier cycle.
 
 ## Individual resources
 
@@ -51,6 +51,8 @@ Resource identity includes config entry, zone, confirmed cycle, actual rendered 
 ## Work scheduling and diagnostics
 
 Coordinator observations request preparation without waiting. One builder per mower coalesces updates to the newest pending snapshot. Existing beta13 cycle/reset checks remain in the actual renderer. Unchanged zones retain their SVGs; all-vendor maps no longer load History points merely to discard them during source arbitration.
+
+Vendor-owned geometry and mixed History fallback are both checkpoint-driven. Raw vendor geometry or History/MQTT point growth can advance while the published base stays frozen. History fallback checkpoints advance on physical zone exit and session-settled transitions; direct current-cycle consumers use the same checkpoint epoch, so a snapshot read cannot reintroduce live History churn into the expensive base render path. Map/cycle/ownership/width changes remain independent invalidation reasons.
 
 The public vendor trail `revision` remains an opaque presentation-freshness counter and now includes completed publications. Diagnostics separately expose `geometry_store_revision` and `artifact_publication_revision`; neither is a cycle identity.
 
