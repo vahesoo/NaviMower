@@ -21,6 +21,7 @@ from .session_svg import (
 
 _LOGGER = logging.getLogger(__name__)
 _ARCHIVE_STORE_VERSION = 1
+_ARCHIVE_INDEX_VERSION = 1
 _ARCHIVE_SETTLE_SECONDS = 2
 _HISTORY_RESOURCE_SCHEMA_VERSION = 1
 
@@ -48,6 +49,19 @@ def _history_index_store(hass: HomeAssistant, entry_id: str) -> Store:
         return Store(hass, 1, key, serialize_in_event_loop=False)
     except TypeError:
         return Store(hass, 1, key)
+
+
+def _archive_index_store(hass: HomeAssistant, entry_id: str) -> Store:
+    key = f"{DOMAIN}_session_render_index_{entry_id}"
+    try:
+        return Store(
+            hass,
+            _ARCHIVE_INDEX_VERSION,
+            key,
+            serialize_in_event_loop=False,
+        )
+    except TypeError:
+        return Store(hass, _ARCHIVE_INDEX_VERSION, key)
 
 
 def _encode_resource(
@@ -122,6 +136,7 @@ class SessionArchiveManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._resources_by_session: dict[str, dict[str, Any]] = {}
         self._resources_by_id: dict[str, dict[str, Any]] = {}
+        self._known_store_ids: set[str] = set()
 
         # Existing counters remain stable for diagnostics/backward compatibility.
         self.cache_hits = 0
@@ -144,6 +159,8 @@ class SessionArchiveManager:
         self.resource_reads = 0
         self.resource_bytes_served_total = 0
         self.resource_not_modified_count = 0
+        self.pruned_archive_store_count = 0
+        self.archive_index_failure_count = 0
         self._manifest_first_read_mono: float | None = None
         self._manifest_last_read_mono: float | None = None
         self._resource_first_read_mono: float | None = None
@@ -197,6 +214,17 @@ class SessionArchiveManager:
             f"Prepare Navimower session render {self.entry_id}",
         )
 
+    def _retained_ids(self) -> set[str]:
+        try:
+            payload = self.history.sessions_index_payload()
+        except Exception:
+            return set()
+        return {
+            str(row.get("id"))
+            for row in (payload.get("sessions") if isinstance(payload, dict) else []) or []
+            if isinstance(row, dict) and row.get("id")
+        }
+
     def _eligible_rows(self) -> list[dict[str, Any]]:
         try:
             payload = self.history.sessions_index_payload()
@@ -211,6 +239,49 @@ class SessionArchiveManager:
             and int(row.get("point_count") or 0) >= 2
         ]
 
+    async def _async_load_archive_index(self) -> None:
+        try:
+            data = await _archive_index_store(self.hass, self.entry_id).async_load()
+        except Exception:  # noqa: BLE001
+            self.archive_index_failure_count += 1
+            _LOGGER.debug("Prepared History archive index load failed", exc_info=True)
+            return
+        self._known_store_ids = {
+            str(value)
+            for value in (data.get("session_ids") if isinstance(data, dict) else []) or []
+            if value
+        }
+
+    async def _async_save_archive_index(self) -> None:
+        try:
+            await _archive_index_store(self.hass, self.entry_id).async_save(
+                {"session_ids": sorted(self._known_store_ids)}
+            )
+        except Exception:  # noqa: BLE001
+            self.archive_index_failure_count += 1
+            _LOGGER.debug("Prepared History archive index save failed", exc_info=True)
+
+    async def _async_prune_archive_stores(self) -> None:
+        retained = self._retained_ids()
+        stale = sorted(self._known_store_ids - retained)
+        if not stale:
+            await self._async_save_archive_index()
+            return
+        for session_id in stale:
+            try:
+                await _archive_store(self.hass, self.entry_id, session_id).async_remove()
+            except Exception:  # noqa: BLE001
+                self.archive_index_failure_count += 1
+                _LOGGER.debug(
+                    "Prepared History archive prune failed for %s",
+                    session_id,
+                    exc_info=True,
+                )
+                continue
+            self._known_store_ids.discard(session_id)
+            self.pruned_archive_store_count += 1
+        await self._async_save_archive_index()
+
     def _prune_memory(self) -> None:
         retained = {str(row.get("id")) for row in self._eligible_rows()}
         for session_id in list(self._resources_by_session):
@@ -221,6 +292,7 @@ class SessionArchiveManager:
 
     async def _async_prewarm_retained(self) -> None:
         try:
+            await self._async_load_archive_index()
             # Preserve the existing completion-settle guard before treating
             # completed sessions as immutable prepared History resources.
             await asyncio.sleep(_ARCHIVE_SETTLE_SECONDS)
@@ -239,6 +311,7 @@ class SessionArchiveManager:
                     )
                 await asyncio.sleep(0)
             self._prune_memory()
+            await self._async_prune_archive_stores()
             self.prewarm_complete = True
         except asyncio.CancelledError:
             raise
@@ -252,6 +325,7 @@ class SessionArchiveManager:
             if latest and latest.get("id"):
                 await self._async_get(str(latest["id"]), reason="prewarm")
             self._prune_memory()
+            await self._async_prune_archive_stores()
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001
@@ -280,6 +354,7 @@ class SessionArchiveManager:
             self.publication_revision += 1
         self._resources_by_session[str(session_id)] = resource
         self._resources_by_id[resource["resource_id"]] = resource
+        self._known_store_ids.add(str(session_id))
         return resource
 
     async def _async_get(
@@ -305,6 +380,8 @@ class SessionArchiveManager:
                 if reason == "prewarm":
                     self.prewarm_cache_hit_count += 1
                 self._publish_resource(requested, cached)
+                if reason != "prewarm":
+                    await self._async_save_archive_index()
                 self.last_session_id = requested
                 self.last_error = None
                 return deepcopy(cached)
@@ -351,6 +428,8 @@ class SessionArchiveManager:
                 self.lazy_build_count += 1
             self.last_build_ms = round((time.perf_counter() - started) * 1000.0, 2)
             self._publish_resource(requested, artifact)
+            if reason != "prewarm":
+                await self._async_save_archive_index()
             self.last_session_id = requested
             self.last_error = None
             return deepcopy(artifact)
@@ -525,6 +604,9 @@ class SessionArchiveManager:
             ),
             "resource_bytes_served_total": self.resource_bytes_served_total,
             "resource_not_modified_count": self.resource_not_modified_count,
+            "indexed_archive_store_count": len(self._known_store_ids),
+            "pruned_archive_store_count": self.pruned_archive_store_count,
+            "archive_index_failure_count": self.archive_index_failure_count,
             "failure_count": self.failure_count,
             "scan_failure_count": self.scan_failure_count,
             "last_build_ms": self.last_build_ms,
@@ -535,17 +617,32 @@ class SessionArchiveManager:
     @classmethod
     async def async_remove_all(cls, hass: HomeAssistant, entry_id: str) -> None:
         """Remove all derived render Stores when a config entry is deleted."""
-        index = _history_index_store(hass, entry_id)
+        history_index = _history_index_store(hass, entry_id)
+        archive_index = _archive_index_store(hass, entry_id)
         try:
-            data = await index.async_load()
+            data = await history_index.async_load()
         except Exception:  # noqa: BLE001
             data = None
-        session_ids = [
+        try:
+            archive_data = await archive_index.async_load()
+        except Exception:  # noqa: BLE001
+            archive_data = None
+        session_ids = {
             str(item.get("id"))
             for item in (data.get("sessions") if isinstance(data, dict) else []) or []
             if isinstance(item, dict) and item.get("id")
-        ]
-        for session_id in session_ids:
+        }
+        session_ids.update(
+            str(value)
+            for value in (
+                archive_data.get("session_ids")
+                if isinstance(archive_data, dict)
+                else []
+            )
+            or []
+            if value
+        )
+        for session_id in sorted(session_ids):
             try:
                 await _archive_store(hass, entry_id, session_id).async_remove()
             except Exception:  # noqa: BLE001
@@ -554,3 +651,7 @@ class SessionArchiveManager:
                     session_id,
                     exc_info=True,
                 )
+        try:
+            await archive_index.async_remove()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not remove Prepared History archive index", exc_info=True)
