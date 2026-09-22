@@ -24,16 +24,29 @@ VIEW_SIZE = 1000.0
 LAYOUT_PADDING_RATIO = 0.05
 LIVE_PREPARE_MIN_INTERVAL_SECONDS = 2.0
 _ACTIVE_ACTIVITIES = {"mowing", "paused", "returning"}
-_GEOREFERENCE_DIAGNOSTIC_KEYS = frozenset({"local_frame_check", "reference_candidates"})
+_GEOREFERENCE_RENDER_KEYS = (
+    "schema_version",
+    "source",
+    "status",
+    "map_revision",
+    "geodesy_model",
+    "reference",
+    "rotation_rad",
+)
 
 
 def _render_georeference(value: Any) -> dict[str, Any] | None:
-    """Return render-relevant georeference without per-refresh diagnostics."""
+    """Return only the local-map -> WGS84 transform consumed by renderers."""
     if not isinstance(value, dict):
         return None
-    result = deepcopy(value)
-    for key in _GEOREFERENCE_DIAGNOSTIC_KEYS:
-        result.pop(key, None)
+    result = {
+        key: deepcopy(value.get(key))
+        for key in _GEOREFERENCE_RENDER_KEYS
+        if value.get(key) is not None
+    }
+    reference = result.get("reference")
+    if not isinstance(reference, dict) or result.get("rotation_rad") is None:
+        return None
     return result
 
 
@@ -582,32 +595,42 @@ class PreparedRenderModelManager:
             )
         ]
 
-    def _static_signature(self) -> str:
+    def _static_source(self) -> dict[str, Any]:
+        """Return exactly the presentation-stable inputs used by the static model."""
         data = self.coordinator.data or {}
-        map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
-        compact = {
-            "map_identity": [
-                map_data.get("revision"),
-                map_data.get("map_version"),
-                map_data.get("modified_count"),
-                map_data.get("id"),
-                map_data.get("map_id"),
-            ],
-            "map_cache_key": repr(
-                getattr(self.coordinator, "_map_cache_key", None)
-            ),
-            "map_counts": [
-                len(map_data.get("zones") or []),
-                len(map_data.get("off_limit_areas") or []),
-                len(map_data.get("vf_off_areas") or []),
-                len(map_data.get("channels") or []),
-            ],
-            "station": map_data.get("station"),
-            "georeference": _render_georeference(map_data.get("georeference")),
-            "gates": self._gate_areas(),
-            "custom": self._custom_areas(),
+        raw = data.get("map") if isinstance(data.get("map"), dict) else {}
+        map_data = {
+            key: deepcopy(raw.get(key))
+            for key in (
+                "revision",
+                "map_version",
+                "modified_count",
+                "id",
+                "map_id",
+                "map_base_id",
+                "name",
+                "area",
+                "width",
+                "height",
+                "north_offset",
+                "version",
+                "zones",
+                "off_limit_areas",
+                "vf_off_areas",
+                "channels",
+                "station",
+            )
+            if raw.get(key) is not None
         }
-        return _json_hash(compact)
+        map_data["georeference"] = _render_georeference(raw.get("georeference"))
+        return {
+            "map": map_data,
+            "gate_areas": deepcopy(self._gate_areas()),
+            "custom_areas": deepcopy(self._custom_areas()),
+        }
+
+    def _static_signature(self) -> str:
+        return _json_hash(self._static_source())
 
     def _live_signature(self) -> tuple[Any, ...]:
         data = self.coordinator.data or {}
@@ -697,15 +720,7 @@ class PreparedRenderModelManager:
     async def _build_static(self) -> None:
         try:
             started = time.perf_counter()
-            data = self.coordinator.data or {}
-            map_data = data.get("map")
-            if not isinstance(map_data, dict):
-                map_data = {}
-            source = {
-                "map": deepcopy(map_data),
-                "gate_areas": deepcopy(self._gate_areas()),
-                "custom_areas": deepcopy(self._custom_areas()),
-            }
+            source = self._static_source()
             model = await self.hass.async_add_executor_job(
                 build_static_render_model,
                 source,
