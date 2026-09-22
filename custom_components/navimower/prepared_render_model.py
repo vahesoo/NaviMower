@@ -1029,6 +1029,8 @@ class PreparedRenderModelManager:
             and str(self._live_base_trail_session) != str(trail_session)
         ):
             reason = "trail_session_mismatch"
+        elif base_point_count > current_point_count:
+            reason = "trail_rewound"
 
         tail: list[list[list[float]]] = []
         if reason is None:
