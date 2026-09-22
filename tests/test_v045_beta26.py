@@ -174,6 +174,9 @@ def test_beta26_prepared_history_prewarm_manifest_and_resources() -> None:
             assert diag["lazy_build_count"] == 0
             assert diag["failure_count"] == 0
             assert diag["resource_bytes_ready_total"] > 0
+            assert diag["indexed_archive_store_count"] == 2
+            assert diag["pruned_archive_store_count"] == 0
+            assert diag["archive_index_failure_count"] == 0
 
             manifest = manager.manifest()
             assert manifest["scope"] == "prepared_history"
@@ -253,6 +256,15 @@ def test_beta26_prepared_history_prewarm_manifest_and_resources() -> None:
             assert discovery["capabilities"]["retained_session_prewarm"] is True
             assert "{resource_id}" in discovery["resource_url_template"]
             assert "{session_id}" in discovery["legacy_session_render_url_template"]
+
+            # Derived render Stores now follow History retention instead of
+            # accumulating forever after their source session is pruned.
+            coordinator.history.sessions.pop("s1")
+            await manager._async_prune_archive_stores()
+            assert "navimower_session_render_entry_s1" not in Store.values
+            cleanup = manager.diagnostics()
+            assert cleanup["pruned_archive_store_count"] == 1
+            assert cleanup["indexed_archive_store_count"] == 1
 
             await manager.async_stop()
 
