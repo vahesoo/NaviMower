@@ -79,6 +79,7 @@ class MapArtifactManager:
         self._retry_at = 0.0
         self._checkpoint_task: asyncio.Task | None = None
         self._checkpoint_zones: set[int] = set()
+        self._checkpoint_active_zones: set[int] = set()
         self._observed_activity: str | None = None
         self._observed_zone_id: int | None = None
         self.build_count = 0
@@ -169,6 +170,9 @@ class MapArtifactManager:
             if zone_ids is None
             else {int(zone) for zone in zone_ids if int(zone) in self.store.records}
         )
+        if reason == "vendor_adoption":
+            selected.difference_update(self._checkpoint_active_zones)
+            selected.difference_update(self._checkpoint_zones)
         if not selected:
             return self._checkpoint_task
         if self._checkpoint_task and not self._checkpoint_task.done():
@@ -188,6 +192,7 @@ class MapArtifactManager:
             while self._checkpoint_zones and not self._closed:
                 selected = set(self._checkpoint_zones)
                 self._checkpoint_zones.difference_update(selected)
+                self._checkpoint_active_zones = set(selected)
                 before = {
                     zone: tuple((self.store.records.get(zone) or {}).get("artifact_revision") or ())
                     for zone in selected
@@ -235,8 +240,10 @@ class MapArtifactManager:
                     refresh = self.request_refresh()
                     if refresh is not None:
                         await refresh
+                self._checkpoint_active_zones.clear()
                 await asyncio.sleep(0)
         finally:
+            self._checkpoint_active_zones.clear()
             self._checkpoint_task = None
 
     def observe(self, snapshot: dict[str, Any]) -> None:
@@ -465,6 +472,7 @@ class MapArtifactManager:
             with suppress(asyncio.CancelledError):
                 await self._task
         self._checkpoint_zones.clear()
+        self._checkpoint_active_zones.clear()
         self._cache = None
         self._resources.clear()
         self._notify()
