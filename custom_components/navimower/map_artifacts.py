@@ -91,8 +91,10 @@ class MapArtifactManager:
         self.checkpoint_count = 0
         self.checkpoint_zone_build_count = 0
         self.checkpoint_coalesced_updates = 0
+        self.checkpoint_failure_count = 0
         self.last_checkpoint_ms: float | None = None
         self.last_checkpoint_reason: str | None = None
+        self.last_checkpoint_error: str | None = None
 
     @property
     def store(self):
@@ -192,11 +194,22 @@ class MapArtifactManager:
                 }
                 started = time.perf_counter()
                 width = _mowing_width(self.coordinator.data or {})
-                await self.store.async_artifacts(
-                    width,
-                    build=True,
-                    zone_ids=selected,
-                )
+                try:
+                    await self.store.async_artifacts(
+                        width,
+                        build=True,
+                        zone_ids=selected,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001 - optional checkpoint
+                    self.checkpoint_failure_count += 1
+                    self.last_checkpoint_error = type(err).__name__
+                    _LOGGER.warning(
+                        "Map artifact checkpoint failed; retaining last good base",
+                        exc_info=True,
+                    )
+                    continue
                 if self._closed:
                     return
                 changed = sum(
@@ -211,6 +224,7 @@ class MapArtifactManager:
                         (time.perf_counter() - started) * 1000,
                         2,
                     )
+                    self.last_checkpoint_error = None
                     # Re-anchor already collected MQTT points to the newly
                     # published base before the next Map API read.
                     self.store.update_live_tail(
@@ -427,8 +441,10 @@ class MapArtifactManager:
             "checkpoint_count": self.checkpoint_count,
             "checkpoint_zone_build_count": self.checkpoint_zone_build_count,
             "checkpoint_coalesced_updates": self.checkpoint_coalesced_updates,
+            "checkpoint_failure_count": self.checkpoint_failure_count,
             "last_checkpoint_ms": self.last_checkpoint_ms,
             "last_checkpoint_reason": self.last_checkpoint_reason,
+            "last_checkpoint_error": self.last_checkpoint_error,
             "dirty_zone_count": dirty,
             "checkpoint_building": bool(
                 self._checkpoint_task and not self._checkpoint_task.done()
