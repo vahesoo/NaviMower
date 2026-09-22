@@ -5,7 +5,7 @@ import asyncio
 from copy import deepcopy
 
 from test_map_artifacts_beta14 import checkpoint, owner_for, seed
-from test_vendor_trail_store import ZONES, session
+from test_vendor_trail_store import ZONES, session, store
 
 
 def _append_history_point(history) -> None:
