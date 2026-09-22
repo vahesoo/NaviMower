@@ -8,8 +8,8 @@ from test_map_artifacts_beta14 import checkpoint, owner_for, seed
 from test_vendor_trail_store import ZONES, session, store
 
 
-def _append_history_point(history) -> None:
-    row = history.sessions[0]
+def _append_history_point(history, index: int = -1) -> None:
+    row = history.sessions[index]
     point = list(row["points"][-1])
     point[0] += 1000
     point[1] += 1
@@ -39,7 +39,7 @@ def test_unowned_history_growth_stays_off_map_artifact_hot_path(store) -> None:
         frozen_path = baseline["mowed_area"]["path_d"]
 
         for _ in range(50):
-            _append_history_point(owner.history)
+            _append_history_point(owner.history, -1)
             task = manager.request_refresh()
             if task is not None:
                 await task
@@ -101,7 +101,7 @@ def test_direct_current_cycle_reads_share_frozen_fallback_checkpoint(store) -> N
         svg_builds = owner.hass.svg_builds
 
         for _ in range(20):
-            _append_history_point(owner.history)
+            _append_history_point(owner.history, -1)
             direct = await owner.current_cycle_render_manager.async_get(ZONES)
             assert direct["mowed_area"]["path_d"] == frozen_path
 
@@ -120,6 +120,61 @@ def test_direct_current_cycle_reads_share_frozen_fallback_checkpoint(store) -> N
             == 1
         )
 
+        await manager.async_shutdown()
+
+    asyncio.run(check())
+
+
+def test_completed_unowned_session_is_added_only_at_settled_checkpoint(store) -> None:
+    """Active unowned points stay live-only until the session becomes completed."""
+    seed(store, both=False)
+    history = [
+        session("unowned-base", zone=91, end=5, active=False),
+        session(
+            "unowned-live",
+            zone=91,
+            start=6,
+            end=9,
+            stamp=2_000_000_000_000,
+            active=True,
+        ),
+    ]
+    owner = owner_for(store, sessions=history)
+
+    async def check() -> None:
+        manager = owner.map_artifacts
+        await checkpoint(manager, reason="startup")
+        baseline = await manager.async_get(ZONES)
+        frozen_path = baseline["mowed_area"]["path_d"]
+        svg_builds = owner.hass.svg_builds
+
+        for _ in range(20):
+            _append_history_point(owner.history, -1)
+            direct = await owner.current_cycle_render_manager.async_get(ZONES)
+            assert direct["mowed_area"]["path_d"] == frozen_path
+
+        # History closes the session before the settled mower observation.
+        owner.history.sessions[-1]["active"] = False
+        owner.history.trail_revision += 1
+
+        manager.observe({
+            "activity": "mowing",
+            "current_physical_zone_id": 91,
+        })
+        manager.observe({
+            "activity": "docked",
+            "current_physical_zone_id": None,
+        })
+        if manager._task is not None:
+            await manager._task
+
+        refreshed = await manager.async_get(ZONES)
+        assert refreshed["mowed_area"]["path_d"] != frozen_path
+        assert owner.hass.svg_builds == svg_builds + 1
+
+        diagnostics = manager.diagnostics()
+        assert diagnostics["fallback_checkpoint_count"] == 1
+        assert diagnostics["last_fallback_checkpoint_reason"] == "session_settled"
         await manager.async_shutdown()
 
     asyncio.run(check())
