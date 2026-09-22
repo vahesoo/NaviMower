@@ -895,6 +895,13 @@ class PreparedRenderModelManager:
             "ready_only": True,
             "live_route_min_interval_s": LIVE_PREPARE_MIN_INTERVAL_SECONDS,
             "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
+            "history_manifest_url": (
+                f"/api/navimower/history-manifest/{quote(self.entry_id, safe='')}"
+            ),
+            "history_resource_url_template": (
+                f"/api/navimower/history-resource/{quote(self.entry_id, safe='')}/"
+                "{resource_id}"
+            ),
             "capabilities": {
                 "static_svg_paths": True,
                 "card_equivalent_layout": True,
@@ -903,6 +910,9 @@ class PreparedRenderModelManager:
                 "live_route_tail_only_query": True,
                 "current_cycle_zone_resources": True,
                 "history_render_archive": True,
+                "history_ready_manifest": True,
+                "history_content_addressed_resources": True,
+                "history_etag": True,
                 "style_independent": True,
             },
         }
@@ -939,6 +949,12 @@ class PreparedRenderModelManager:
                 f"/api/navimower/map/{entry}?artifacts_only=1"
             ),
             "history_index_url": f"/api/navimower/sessions/{entry}",
+            "history_manifest_url": (
+                f"/api/navimower/history-manifest/{entry}"
+            ),
+            "history_resource_url_template": (
+                f"/api/navimower/history-resource/{entry}/{{resource_id}}"
+            ),
             "session_render_url_template": (
                 f"/api/navimower/session-render/{entry}/{{session_id}}"
             ),

@@ -52,12 +52,14 @@ Grouping is anchor-relative rather than transitive. A mower that is close to ano
 For every member the integration can publish:
 
 - mower/device/entity identifiers already resolved server-side;
-- direct Map, Sessions, Session-render and Site API paths;
+- direct Map, Sessions, Prepared History manifest/resource, legacy Session-render and Site API paths;
 - a local-map -> common-site transform and combined site bounds;
 - stable member ordering based on map footprint (west to east), not the mower's changing live position;
 - provider-ready geographic frame metadata so one underlay change moves the whole site consistently.
 
 The site transform affects presentation only. Every mower keeps its own mower-local X/Y geometry, history, Gate areas, Custom Areas and command target.
+
+Prepared History resources stay mower-local and content-addressed. A Multi-capable Map Card can therefore share one browser resource cache across Single/Multi views while still applying each member's existing site transform at render time.
 
 See [MAP_GEOREFERENCE_AND_UNDERLAYS.md](MAP_GEOREFERENCE_AND_UNDERLAYS.md) for the georeference/provider-frame model.
 

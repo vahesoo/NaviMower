@@ -85,6 +85,10 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
             f"/api/navimower/map/{entry_id}?artifacts_only=1"
         ),
         "sessions_api_path": f"/api/navimower/sessions/{entry_id}",
+        "history_manifest_path": f"/api/navimower/history-manifest/{entry_id}",
+        "history_resource_api_path_template": (
+            f"/api/navimower/history-resource/{entry_id}/{{resource_id}}"
+        ),
         "session_render_api_path_template": (
             f"/api/navimower/session-render/{entry_id}/{{session_id}}"
         ),
@@ -294,14 +298,84 @@ class NavimowerSessionsView(HomeAssistantView):
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         coordinator = _coordinator(request, entry_id)
         payload = coordinator.sessions_payload()
+        manager = getattr(coordinator, "session_archive", None)
+        prepared_history = (
+            manager.discovery()
+            if manager is not None and hasattr(manager, "discovery")
+            else None
+        )
         return self.json(
             {
                 "schema_version": MAP_API_SCHEMA_VERSION,
                 "session_render_api_path_template": (
                     f"/api/navimower/session-render/{entry_id}/{{session_id}}"
                 ),
+                "prepared_history": prepared_history,
                 **payload,
             }
+        )
+
+
+class NavimowerHistoryManifestView(HomeAssistantView):
+    """Return retained History metadata plus ready render descriptors."""
+
+    url = "/api/navimower/history-manifest/{entry_id}"
+    name = "api:navimower:history-manifest"
+    requires_auth = True
+
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        coordinator = _coordinator(request, entry_id)
+        manager = getattr(coordinator, "session_archive", None)
+        if manager is None:
+            raise web.HTTPServiceUnavailable(
+                text="Navimower prepared History manager is unavailable"
+            )
+        return self.json(manager.manifest())
+
+
+class NavimowerHistoryResourceView(HomeAssistantView):
+    """Serve one immutable content-addressed completed-session render."""
+
+    url = "/api/navimower/history-resource/{entry_id}/{resource_id}"
+    name = "api:navimower:history-resource"
+    requires_auth = True
+
+    async def get(
+        self,
+        request: web.Request,
+        entry_id: str,
+        resource_id: str,
+    ) -> web.Response:
+        coordinator = _coordinator(request, entry_id)
+        manager = getattr(coordinator, "session_archive", None)
+        if manager is None:
+            raise web.HTTPServiceUnavailable(
+                text="Navimower prepared History manager is unavailable"
+            )
+        resource = manager.resource(resource_id)
+        if resource is None:
+            raise web.HTTPNotFound(text="Unknown Navimower History resource")
+
+        etag = f'"{resource_id}"'
+        headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        }
+        tags = [
+            item.strip()
+            for item in str(request.headers.get("If-None-Match") or "").split(",")
+            if item.strip()
+        ]
+        if any(tag == "*" or tag.removeprefix("W/") == etag for tag in tags):
+            manager.record_resource_response(not_modified=True)
+            return web.Response(status=304, headers=headers)
+
+        manager.record_resource_response(byte_length=len(resource["body"]))
+        return web.Response(
+            body=resource["body"],
+            content_type="application/json",
+            headers=headers,
         )
 
 
@@ -510,6 +584,8 @@ def async_register_map_api(hass: HomeAssistant) -> None:
     hass.http.register_view(NavimowerMapView())
     hass.http.register_view(NavimowerSiteView())
     hass.http.register_view(NavimowerSessionsView())
+    hass.http.register_view(NavimowerHistoryManifestView())
+    hass.http.register_view(NavimowerHistoryResourceView())
     hass.http.register_view(NavimowerSessionView())
     hass.http.register_view(NavimowerSessionRenderView())
     hass.http.register_view(NavimowerTerrainImageView())

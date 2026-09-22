@@ -79,23 +79,38 @@ backend keeps the full raw trail as an automatic fallback.
 
 ## Current-cycle and History resources
 
-The prepared manifest links rather than duplicates the existing backends:
+Current-cycle rendering remains owned by the existing ZoneLedger/VendorTrailStore
+artifact backend at `?artifacts_only=1`.
 
-- `?artifacts_only=1` for ZoneLedger/VendorTrailStore-owned per-zone
-  current-cycle SVG resources;
-- `/api/navimower/sessions/{entry_id}` for the retained History index;
-- `/api/navimower/session-render/{entry_id}/{session_id}` for completed-session
-  render archives.
+Completed History is prepared independently from the active live route:
 
-This keeps one owner for reset/cycle semantics and one archive contract for
-History.
+- `/api/navimower/sessions/{entry_id}` remains the lightweight legacy/session
+  metadata index and advertises Prepared History discovery;
+- `/api/navimower/history-manifest/{entry_id}` is the new ready-only retained
+  History manifest;
+- every completed retained session with at least two points is prewarmed
+  sequentially after startup;
+- ready sessions expose immutable content-addressed descriptors;
+- `/api/navimower/history-resource/{entry_id}/{resource_id}` serves the compact
+  SVG-ready session artifact;
+- `/api/navimower/session-render/{entry_id}/{session_id}` remains available as
+  the beta14/legacy fallback until the prepared History frontend has been field
+  tested.
+
+The timestamped session Stores remain the source of truth. Prepared History is a
+derived cache only. Active sessions never become History resources; they remain
+on the Prepared Live SVG + short-tail path until the session settles.
+
+The prepared History resource identity excludes the archive's `generated_at`
+timestamp, so rebuilding the same immutable completed session produces the same
+resource id.
 
 ## HTTP caching
 
-Static/live prepared resources are content-addressed by SHA-256 and served from
-the authenticated Map API. They support ETag / `If-None-Match`; stale resource
-ids return HTTP 410 so clients refresh the manifest instead of reviving an
-obsolete render.
+Static/live prepared resources and Prepared History resources are
+content-addressed by SHA-256 and served from authenticated Home Assistant APIs.
+Prepared History resources use `Cache-Control: private, max-age=31536000,
+immutable` and support ETag / `If-None-Match` with HTTP 304 responses.
 
 ## Diagnostics
 
@@ -118,8 +133,11 @@ cached-only health information:
 No prepared SVG paths or local point arrays are copied into diagnostics.
 
 The existing current-cycle `map_artifacts` diagnostics remains under private
-polling, and beta21 also adds `session_render_archive` diagnostics for the
-completed History render cache (build/cache/failure counters and latency).
+polling. Prepared History is exposed as `prepared_history` while the
+`session_render_archive` diagnostics key is retained as a compatibility alias.
+The block reports retained/eligible/ready/pending session counts, prewarm
+completion, cache/build counters, publication revision, manifest/resource reads,
+ready/served bytes, 304 responses and failures.
 
 These diagnostics are intended to be reviewed before changing the Map Card. A
 healthy field test should normally show:
@@ -131,10 +149,17 @@ healthy field test should normally show:
 - low static build count while live build/publication counters advance at the
   30-second active cadence or immediately on lifecycle transitions;
 - current-cycle artifact readiness consistent with owned zones;
-- session archive builds/cache hits after completed sessions are viewed or
-  archived.
+- `prepared_history.prewarm_complete: true`;
+- `prepared_history.ready_session_count` equals
+  `prepared_history.eligible_session_count`;
+- `prepared_history.pending_session_count: 0`;
+- zero Prepared History failures;
+- legacy session-render reads can remain zero until an older card requests one.
 
 ## Compatibility
 
-This is additive. Navimower Map Card keeps using the existing contract until a
-separate frontend change explicitly consumes the prepared manifest/resources.
+The beta26 History backend is additive for Map Card beta14. The existing
+sessions and session-render endpoints remain available. A later Map Card beta
+can switch to the ready-only History manifest and content-addressed resources;
+only after that frontend path is field-tested should the remaining legacy
+History/daily-trail compatibility code be removed.
