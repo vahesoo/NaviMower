@@ -240,11 +240,20 @@ class VendorTrailStore:
                 else None
             )
             target = row.get("artifact_anchor_xy")
+            if (
+                first_adoption
+                and not artifact_revision
+                and row.get("points")
+            ):
+                # Before the first checkpoint exists, retain the old adoption
+                # safety: attach only at the vendor endpoint. Runtime queues one
+                # initial checkpoint immediately after ownership is accepted.
+                target = row["points"][-1]
             anchor_changed = state.get("artifact_revision") != artifact_revision
             if (anchor_changed and artifact_revision and target) or first_adoption:
                 match = None
                 best = 0.75
-                if artifact_revision and isinstance(target, (list, tuple)) and len(target) >= 2:
+                if isinstance(target, (list, tuple)) and len(target) >= 2:
                     for si in range(len(segments)-1, -1, -1):
                         for pi in range(len(segments[si])-1, -1, -1):
                             p = segments[si][pi]
@@ -257,13 +266,11 @@ class VendorTrailStore:
                 if match is not None:
                     si, pi = match
                     segments = [segments[si][pi:]] + segments[si+1:]
-                elif first_adoption and artifact_revision:
-                    # A restored/published base owns the earlier cycle. If its
-                    # endpoint cannot be matched after a restart, never revive
-                    # the whole MQTT session underneath that base.
+                elif first_adoption:
+                    # Unknown pre-adoption history cannot become a full
+                    # fallback, regardless of whether the first base is already
+                    # restored or still being checkpointed.
                     segments = [[segments[-1][-1]]] if segments else []
-                # With no base artifact the live layer owns the whole observed
-                # session, so first adoption deliberately keeps all segments.
                 state["artifact_revision"] = artifact_revision
             state["segments"] = segments
 
