@@ -58,9 +58,24 @@ paths. It does not introduce another trail source, gap detector or cycle/reset
 resolver.
 
 While active, preparation is coalesced and rate-limited to at most one build per
-2 seconds. Idle/state transitions can publish immediately. The latest two
-content-addressed resources are retained so a client already fetching the
-previous descriptor can complete safely.
+30 seconds. Session, activity, physical-zone and trail-active transitions bypass
+that cadence and publish immediately so lifecycle changes never wait for the next
+periodic backbone refresh. The latest two content-addressed resources are retained
+so a client already fetching the previous descriptor can complete safely.
+
+The normal Map API remains backward compatible and keeps returning the full raw
+`trail` and gap-aware `trail_segments`. Newer clients can opt into the
+prepared short-tail contract with `prepared_live_tail=1`. The returned
+`prepared_live_tail` object identifies the prepared live resource it extends and
+contains only points added after that resource, including one overlap point per
+changed segment so the SVG backbone and live tail connect without a gap.
+
+A client that already renders the prepared SVG backbone can request
+`prepared_live_tail_only=1`. When the backend can prove that the short tail is
+aligned with the retained prepared resource, the response omits the full raw
+`trail` and `trail_segments`. If the session changed, the route rewound, the
+prepared resource is unavailable or the tail exceeds the safety limit, the
+backend keeps the full raw trail as an automatic fallback.
 
 ## Current-cycle and History resources
 
@@ -95,7 +110,10 @@ cached-only health information:
 - static/live resource byte sizes and ids;
 - static geometry parity counts;
 - live segment/point counts;
-- manifest/resource read counters.
+- manifest/resource read counters and first/last read ages;
+- actual static/live resource body bytes served and 304 counts;
+- live-tail request/success/fallback counters;
+- latest/base/current short-tail point counts and maximum observed tail size.
 
 No prepared SVG paths or local point arrays are copied into diagnostics.
 
@@ -110,8 +128,8 @@ healthy field test should normally show:
 - `live_ready: true`;
 - `static_summary.parity_ok: true`;
 - zero static/live failures;
-- low static build count while live build/publication counters advance during
-  mowing;
+- low static build count while live build/publication counters advance at the
+  30-second active cadence or immediately on lifecycle transitions;
 - current-cycle artifact readiness consistent with owned zones;
 - session archive builds/cache hits after completed sessions are viewed or
   archived.

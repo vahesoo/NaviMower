@@ -47,6 +47,8 @@ async def _async_map_payload(
     include_sessions: bool,
     include_daily_trails: bool,
     include_current_cycle: bool = True,
+    include_prepared_live_tail: bool = False,
+    prepared_live_tail_only: bool = False,
 ) -> dict[str, Any]:
     """Build only explicitly requested payload sections."""
     current_cycle_render = (
@@ -113,6 +115,19 @@ async def _async_map_payload(
     prepared = getattr(coordinator, "prepared_render_model", None)
     if prepared is not None:
         payload["prepared_render_model"] = prepared.discovery()
+        if include_prepared_live_tail or prepared_live_tail_only:
+            live_tail = prepared.live_tail_payload(
+                payload.get("trail_segments") or [],
+                payload.get("trail_session"),
+            )
+            payload["prepared_live_tail"] = live_tail
+            if prepared_live_tail_only and live_tail.get("usable"):
+                # The prepared SVG resource owns the route backbone. A beta13+
+                # frontend can opt into receiving only the tiny post-resource
+                # live tail instead of serializing/transferring the full raw
+                # flat + segmented trail on every Map API refresh.
+                payload.pop("trail", None)
+                payload.pop("trail_segments", None)
     return payload
 
 
@@ -188,7 +203,11 @@ def _prepared_render_resource_response(
         or tag.strip().removeprefix("W/") == headers["ETag"]
         for tag in tags
     ):
+        if manager is not None:
+            manager.record_resource_response(kind, not_modified=True)
         return web.Response(status=304, headers=headers)
+    if manager is not None:
+        manager.record_resource_response(kind, byte_length=len(resource["body"]))
     return web.Response(
         body=resource["body"],
         content_type="application/json",
@@ -242,6 +261,10 @@ def install_map_api_performance() -> None:
             return response
         if _query_requested(request, "current_cycle_only"):
             return self.json(await _async_current_cycle_only(coordinator))
+        prepared_live_tail_only = _query_requested(
+            request,
+            "prepared_live_tail_only",
+        )
         return self.json(
             await _async_map_payload(
                 coordinator,
@@ -257,6 +280,11 @@ def install_map_api_performance() -> None:
                     request,
                     "include_current_cycle",
                 ),
+                include_prepared_live_tail=(
+                    prepared_live_tail_only
+                    or _query_requested(request, "prepared_live_tail")
+                ),
+                prepared_live_tail_only=prepared_live_tail_only,
             )
         )
 
