@@ -895,6 +895,13 @@ class PreparedRenderModelManager:
             "ready_only": True,
             "live_route_min_interval_s": LIVE_PREPARE_MIN_INTERVAL_SECONDS,
             "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
+            "history_manifest_url": (
+                f"/api/navimower/history-manifest/{quote(self.entry_id, safe='')}"
+            ),
+            "history_resource_url_template": (
+                f"/api/navimower/history-resource/{quote(self.entry_id, safe='')}/"
+                "{resource_id}"
+            ),
             "capabilities": {
                 "static_svg_paths": True,
                 "card_equivalent_layout": True,
