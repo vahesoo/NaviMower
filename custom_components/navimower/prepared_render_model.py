@@ -903,6 +903,9 @@ class PreparedRenderModelManager:
                 "live_route_tail_only_query": True,
                 "current_cycle_zone_resources": True,
                 "history_render_archive": True,
+                "history_ready_manifest": True,
+                "history_content_addressed_resources": True,
+                "history_etag": True,
                 "style_independent": True,
             },
         }
@@ -939,6 +942,12 @@ class PreparedRenderModelManager:
                 f"/api/navimower/map/{entry}?artifacts_only=1"
             ),
             "history_index_url": f"/api/navimower/sessions/{entry}",
+            "history_manifest_url": (
+                f"/api/navimower/history-manifest/{entry}"
+            ),
+            "history_resource_url_template": (
+                f"/api/navimower/history-resource/{entry}/{{resource_id}}"
+            ),
             "session_render_url_template": (
                 f"/api/navimower/session-render/{entry}/{{session_id}}"
             ),
