@@ -123,7 +123,7 @@ def test_beta25_noncritical_churn_waits_but_zone_transition_publishes_now() -> N
         await _wait_tasks(manager)
         assert manager.live_build_count == 2
         assert manager._live_timer is None
-        assert manager.diagnostics()["live_summary"]["current_physical_zone_id"] is None or True
+        assert manager.diagnostics()["live_build_count"] == 2
 
         await manager.async_shutdown()
 
