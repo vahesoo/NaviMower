@@ -22,7 +22,8 @@ from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
 SCHEMA_VERSION = 1
 VIEW_SIZE = 1000.0
 LAYOUT_PADDING_RATIO = 0.05
-LIVE_PREPARE_MIN_INTERVAL_SECONDS = 2.0
+LIVE_PREPARE_MIN_INTERVAL_SECONDS = 30.0
+LIVE_TAIL_MAX_POINTS = 128
 _ACTIVE_ACTIVITIES = {"mowing", "paused", "returning"}
 _GEOREFERENCE_RENDER_KEYS = (
     "schema_version",
@@ -548,6 +549,10 @@ class PreparedRenderModelManager:
         self._static_resources: list[dict[str, Any]] = []
         self._live_resources: list[dict[str, Any]] = []
         self._last_live_build_mono: float | None = None
+        self._live_base_resource_id: str | None = None
+        self._live_base_trail_session: Any = None
+        self._live_base_segment_point_counts: dict[int, int] = {}
+        self._live_base_point_count = 0
 
         self.static_build_count = 0
         self.live_build_count = 0
@@ -570,6 +575,24 @@ class PreparedRenderModelManager:
         self.manifest_reads = 0
         self.static_resource_reads = 0
         self.live_resource_reads = 0
+        self.static_resource_bytes_served_total = 0
+        self.live_resource_bytes_served_total = 0
+        self.static_resource_not_modified_count = 0
+        self.live_resource_not_modified_count = 0
+        self._manifest_first_read_mono: float | None = None
+        self._manifest_last_read_mono: float | None = None
+        self._static_first_read_mono: float | None = None
+        self._static_last_read_mono: float | None = None
+        self._live_first_read_mono: float | None = None
+        self._live_last_read_mono: float | None = None
+        self.live_tail_requests = 0
+        self.live_tail_success_count = 0
+        self.live_tail_full_fallback_count = 0
+        self.live_tail_max_points_observed = 0
+        self.last_live_tail_point_count = 0
+        self.last_live_tail_base_point_count = 0
+        self.last_live_tail_current_point_count = 0
+        self.last_live_tail_reason: str | None = None
 
     def start(self) -> None:
         if self._closed or self._unsub is not None:
@@ -659,18 +682,30 @@ class PreparedRenderModelManager:
                 self._start_static_build()
 
         live_key = self._live_signature()
-        if not force_live and live_key == self._live_key:
+        previous_live_key = self._live_key
+        if not force_live and live_key == previous_live_key:
             return
         self._live_key = live_key
         activity = str((self.coordinator.data or {}).get("activity") or "").lower()
+        critical_change = (
+            previous_live_key is None
+            or live_key[0] != previous_live_key[0]
+            or live_key[1] != previous_live_key[1]
+            or live_key[4] != previous_live_key[4]
+            or live_key[5] != previous_live_key[5]
+        )
         immediate = (
             force_live
+            or critical_change
             or activity not in _ACTIVE_ACTIVITIES
             or self._last_live_build_mono is None
             or time.monotonic() - self._last_live_build_mono
             >= LIVE_PREPARE_MIN_INTERVAL_SECONDS
         )
         if immediate:
+            if self._live_timer is not None:
+                self._live_timer.cancel()
+                self._live_timer = None
             self._queue_live_build()
             return
         if self._live_timer is None:
@@ -810,6 +845,15 @@ class PreparedRenderModelManager:
                 "trail_active": model.get("trail_active"),
                 "activity": model.get("activity"),
             }
+            self._live_base_resource_id = resource["resource_id"]
+            self._live_base_trail_session = model.get("trail_session")
+            self._live_base_segment_point_counts = {
+                int(row.get("id")): int(row.get("point_count") or 0)
+                for row in model.get("segments") or []
+                if _integer(row.get("id")) is not None
+                and _integer(row.get("point_count")) is not None
+            }
+            self._live_base_point_count = int(model.get("point_count") or 0)
             current = self._live_resources[0] if self._live_resources else None
             if current and current["resource_id"] == resource["resource_id"]:
                 self.live_unchanged_count += 1
@@ -849,10 +893,14 @@ class PreparedRenderModelManager:
                 "?render_model_manifest=1"
             ),
             "ready_only": True,
+            "live_route_min_interval_s": LIVE_PREPARE_MIN_INTERVAL_SECONDS,
+            "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
             "capabilities": {
                 "static_svg_paths": True,
                 "card_equivalent_layout": True,
                 "live_route_svg_paths": True,
+                "live_route_short_tail": True,
+                "live_route_tail_only_query": True,
                 "current_cycle_zone_resources": True,
                 "history_render_archive": True,
                 "style_independent": True,
@@ -861,6 +909,10 @@ class PreparedRenderModelManager:
 
     def manifest(self) -> dict[str, Any]:
         self.manifest_reads += 1
+        now = time.monotonic()
+        if self._manifest_first_read_mono is None:
+            self._manifest_first_read_mono = now
+        self._manifest_last_read_mono = now
         self.request_refresh()
         static = self._static_resources[0]["descriptor"] if self._static_resources else None
         live = self._live_resources[0]["descriptor"] if self._live_resources else None
@@ -879,6 +931,8 @@ class PreparedRenderModelManager:
                 "static": self.static_publication_revision,
                 "live_route": self.live_publication_revision,
             },
+            "live_route_min_interval_s": LIVE_PREPARE_MIN_INTERVAL_SECONDS,
+            "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
             "static": deepcopy(static),
             "live_route": deepcopy(live),
             "current_cycle_manifest_url": (
@@ -902,11 +956,129 @@ class PreparedRenderModelManager:
             None,
         )
         if resource is not None:
+            now = time.monotonic()
             if kind == "static":
                 self.static_resource_reads += 1
+                if self._static_first_read_mono is None:
+                    self._static_first_read_mono = now
+                self._static_last_read_mono = now
             else:
                 self.live_resource_reads += 1
+                if self._live_first_read_mono is None:
+                    self._live_first_read_mono = now
+                self._live_last_read_mono = now
         return resource
+
+    def record_resource_response(
+        self,
+        kind: str,
+        *,
+        byte_length: int = 0,
+        not_modified: bool = False,
+    ) -> None:
+        """Track actual prepared resource response bytes for field diagnostics."""
+        if kind == "static":
+            self.static_resource_bytes_served_total += max(0, int(byte_length))
+            if not_modified:
+                self.static_resource_not_modified_count += 1
+            return
+        self.live_resource_bytes_served_total += max(0, int(byte_length))
+        if not_modified:
+            self.live_resource_not_modified_count += 1
+
+    @staticmethod
+    def _age_seconds(value: float | None) -> float | None:
+        if value is None:
+            return None
+        return round(max(0.0, time.monotonic() - value), 1)
+
+    def live_tail_payload(
+        self,
+        trail_segments: Any,
+        trail_session: Any,
+    ) -> dict[str, Any]:
+        """Return only points added after the latest prepared live resource."""
+        self.live_tail_requests += 1
+        raw_segments = trail_segments if isinstance(trail_segments, list) else []
+        clean_segments = [_points(raw) for raw in raw_segments]
+        current_point_count = sum(len(points) for points in clean_segments)
+        base_resource_id = self._live_base_resource_id
+        base_point_count = self._live_base_point_count
+        result: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "scope": "prepared_live_tail",
+            "coordinate_space": "map_xy_m",
+            "usable": False,
+            "base_resource_id": base_resource_id,
+            "trail_session": trail_session,
+            "base_point_count": base_point_count,
+            "current_point_count": current_point_count,
+            "point_count": 0,
+            "segment_count": 0,
+            "max_points": LIVE_TAIL_MAX_POINTS,
+            "segments": [],
+            "reason": None,
+        }
+
+        reason: str | None = None
+        if not base_resource_id:
+            reason = "prepared_live_unavailable"
+        elif (
+            self._live_base_trail_session is not None
+            and trail_session is not None
+            and str(self._live_base_trail_session) != str(trail_session)
+        ):
+            reason = "trail_session_mismatch"
+
+        tail: list[list[list[float]]] = []
+        if reason is None:
+            for index, points in enumerate(clean_segments):
+                if len(points) < 2:
+                    continue
+                base_count = max(
+                    0,
+                    int(self._live_base_segment_point_counts.get(index, 0)),
+                )
+                if base_count > len(points):
+                    reason = "trail_rewound"
+                    break
+                if base_count == 0:
+                    piece = points
+                elif len(points) > base_count:
+                    piece = points[max(0, base_count - 1):]
+                else:
+                    piece = []
+                if len(piece) >= 2:
+                    tail.append(piece)
+
+        tail_point_count = sum(len(points) for points in tail)
+        if reason is None and tail_point_count > LIVE_TAIL_MAX_POINTS:
+            reason = "tail_limit_exceeded"
+
+        self.last_live_tail_base_point_count = base_point_count
+        self.last_live_tail_current_point_count = current_point_count
+        self.last_live_tail_point_count = tail_point_count
+        self.live_tail_max_points_observed = max(
+            self.live_tail_max_points_observed,
+            tail_point_count,
+        )
+        self.last_live_tail_reason = reason
+
+        if reason is not None:
+            self.live_tail_full_fallback_count += 1
+            result["reason"] = reason
+            return result
+
+        self.live_tail_success_count += 1
+        result.update(
+            {
+                "usable": True,
+                "point_count": tail_point_count,
+                "segment_count": len(tail),
+                "segments": deepcopy(tail),
+            }
+        )
+        return result
 
     def diagnostics(self) -> dict[str, Any]:
         static = self._static_resources[0] if self._static_resources else None
@@ -940,8 +1112,27 @@ class PreparedRenderModelManager:
             "static_summary": deepcopy(self.last_static_summary),
             "live_summary": deepcopy(self.last_live_summary),
             "manifest_reads": self.manifest_reads,
+            "manifest_first_read_age_s": self._age_seconds(self._manifest_first_read_mono),
+            "manifest_last_read_age_s": self._age_seconds(self._manifest_last_read_mono),
             "static_resource_reads": self.static_resource_reads,
+            "static_resource_bytes_served_total": self.static_resource_bytes_served_total,
+            "static_resource_not_modified_count": self.static_resource_not_modified_count,
+            "static_resource_first_read_age_s": self._age_seconds(self._static_first_read_mono),
+            "static_resource_last_read_age_s": self._age_seconds(self._static_last_read_mono),
             "live_resource_reads": self.live_resource_reads,
+            "live_resource_bytes_served_total": self.live_resource_bytes_served_total,
+            "live_resource_not_modified_count": self.live_resource_not_modified_count,
+            "live_resource_first_read_age_s": self._age_seconds(self._live_first_read_mono),
+            "live_resource_last_read_age_s": self._age_seconds(self._live_last_read_mono),
+            "live_tail_requests": self.live_tail_requests,
+            "live_tail_success_count": self.live_tail_success_count,
+            "live_tail_full_fallback_count": self.live_tail_full_fallback_count,
+            "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
+            "live_tail_max_points_observed": self.live_tail_max_points_observed,
+            "last_live_tail_point_count": self.last_live_tail_point_count,
+            "last_live_tail_base_point_count": self.last_live_tail_base_point_count,
+            "last_live_tail_current_point_count": self.last_live_tail_current_point_count,
+            "last_live_tail_reason": self.last_live_tail_reason,
             "building": {
                 "static": bool(self._static_task and not self._static_task.done()),
                 "live_route": bool(self._live_task and not self._live_task.done())
