@@ -115,6 +115,8 @@ class VendorTrailStore:
             "geometry_revision": digest,
             "artifact": previous.get("artifact"),
             "artifact_revision": previous.get("artifact_revision"),
+            "artifact_anchor_xy": previous.get("artifact_anchor_xy"),
+            "artifact_point_count": previous.get("artifact_point_count"),
             "tail": previous.get("tail", {}),
         })
         self.records[zone_id] = record
@@ -124,12 +126,23 @@ class VendorTrailStore:
     def owned_zone_ids(self) -> set[int]:
         return {zone_id for zone_id, row in self.records.items() if row.get("vendor_owned")}
 
-    async def async_artifacts(self, width: float) -> list[dict[str, Any]]:
+    async def async_artifacts(
+        self,
+        width: float,
+        *,
+        build: bool = True,
+        zone_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
         from .session_svg import SESSION_SVG_ARCHIVE_VERSION, build_session_svg_archive
         from .vendor_trail import build_vendor_render_source
 
         async with self._render_lock:
+            if not build:
+                return [deepcopy(row) for row in self.records.values()]
+            selected = None if zone_ids is None else {int(zone) for zone in zone_ids}
             for zone_id, row in list(self.records.items()):
+                if selected is not None and zone_id not in selected:
+                    continue
                 key = [row["cycle_id"], row["geometry_revision"], width, SESSION_SVG_ARCHIVE_VERSION]
                 if row.get("artifact_revision") == key and row.get("artifact") is not None:
                     continue
@@ -163,6 +176,15 @@ class VendorTrailStore:
 
                 target["artifact"] = artifact
                 target["artifact_revision"] = key
+                points = row.get("points") or []
+                target["artifact_anchor_xy"] = (
+                    [float(points[-1][0]), float(points[-1][1])]
+                    if points
+                    and isinstance(points[-1], (list, tuple))
+                    and len(points[-1]) >= 2
+                    else None
+                )
+                target["artifact_point_count"] = len(points)
                 self.schedule_save()
             return [deepcopy(row) for row in self.records.values()]
 
@@ -211,25 +233,45 @@ class VendorTrailStore:
             state["break_before_next"] = split
             state.update({"session_id": session_id, "initialized": True,
                           "last_stamp": max([last_stamp] + [as_int(p[0]) or 0 for p in points if isinstance(p, list) and p])})
-            if state.get("vendor_revision") != row["geometry_revision"] or first_adoption:
+            revision = row.get("artifact_revision")
+            artifact_revision = (
+                revision[1]
+                if isinstance(revision, (list, tuple)) and len(revision) >= 2
+                else None
+            )
+            target = row.get("artifact_anchor_xy")
+            if (
+                first_adoption
+                and not artifact_revision
+                and row.get("points")
+            ):
+                # Before the first checkpoint exists, retain the old adoption
+                # safety: attach only at the vendor endpoint. Runtime queues one
+                # initial checkpoint immediately after ownership is accepted.
                 target = row["points"][-1]
+            anchor_changed = state.get("artifact_revision") != artifact_revision
+            if (anchor_changed and artifact_revision and target) or first_adoption:
                 match = None
                 best = 0.75
-                for si in range(len(segments)-1, -1, -1):
-                    for pi in range(len(segments[si])-1, -1, -1):
-                        p = segments[si][pi]
-                        distance = math.hypot(p[1]-target[0], p[2]-target[1])
-                        if distance < best:
-                            best, match = distance, (si, pi)
+                if isinstance(target, (list, tuple)) and len(target) >= 2:
+                    for si in range(len(segments)-1, -1, -1):
+                        for pi in range(len(segments[si])-1, -1, -1):
+                            p = segments[si][pi]
+                            distance = math.hypot(
+                                p[1] - float(target[0]),
+                                p[2] - float(target[1]),
+                            )
+                            if distance < best:
+                                best, match = distance, (si, pi)
                 if match is not None:
                     si, pi = match
                     segments = [segments[si][pi:]] + segments[si+1:]
                 elif first_adoption:
-                    # Unknown pre-adoption history cannot become a full fallback.
-                    # Keep the last observed point to attach future live samples.
+                    # Unknown pre-adoption history cannot become a full
+                    # fallback, regardless of whether the first base is already
+                    # restored or still being checkpointed.
                     segments = [[segments[-1][-1]]] if segments else []
-                if match is not None:
-                    state["vendor_revision"] = row["geometry_revision"]
+                state["artifact_revision"] = artifact_revision
             state["segments"] = segments
 
     def live_tail(self, zone_id: int) -> list[list[list[float]]]:

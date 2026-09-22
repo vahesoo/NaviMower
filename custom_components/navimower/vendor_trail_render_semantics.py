@@ -217,7 +217,7 @@ async def _authoritative_async_get(self, map_zones):
 async def _render_current_snapshot(self, map_zones):
     store = self.coordinator.vendor_trail_store
     width = _mowing_width(self.coordinator.data or {})
-    rows = await store.async_artifacts(width)
+    rows = await store.async_artifacts(width, build=False)
     owned = store.owned_zone_ids()
     # Loading every historical point only to discard it is unnecessary once all
     # mapped zones have a vendor owner. History selection remains independent.

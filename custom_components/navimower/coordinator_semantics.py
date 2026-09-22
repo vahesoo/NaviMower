@@ -87,6 +87,9 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         # cannot run inside async_setup_entry itself. The worker is independently
         # backgrounded by MapArtifactManager with eager_start=False.
         self.hass.loop.call_soon(self.map_artifacts.request_refresh)
+        self.hass.loop.call_soon(
+            lambda: self.map_artifacts.request_checkpoint(reason="startup")
+        )
         self.hass.loop.call_soon(self.prepared_render_model.start)
 
     async def async_shutdown(self) -> None:
@@ -111,8 +114,16 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
     def _accept_vendor_observations(self, snapshot: dict[str, Any]) -> None:
         store = self.vendor_trail_store
         store.reconcile(self._zone_ledger_shadow_state)
+        adoption_checkpoint_ids: set[int] = set()
         for row in snapshot.pop("_vendor_trail_observations", []):
-            store.accept(row)
+            try:
+                zone_id = int(row.get("zone_id"))
+            except (TypeError, ValueError):
+                zone_id = None
+            accepted = store.accept(row)
+            current = store.records.get(zone_id) if zone_id is not None else None
+            if accepted and isinstance(current, dict) and not current.get("artifact"):
+                adoption_checkpoint_ids.add(zone_id)
         store.update_live_tail(snapshot, self.history.active_session)
         self._vendor_trail_cache = store.records
         self._vendor_trail_revision = store.revision
@@ -123,6 +134,12 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
         snapshot["vendor_trail_revision"] = f"{store.revision + publication}:{store.ledger.get('revision', 0)}:{self.history.active_session_no}"
         store.schedule_save()
         if artifacts and self._map_artifact_prewarm_enabled:
+            artifacts.observe(snapshot)
+            if adoption_checkpoint_ids:
+                artifacts.request_checkpoint(
+                    zone_ids=adoption_checkpoint_ids,
+                    reason="vendor_adoption",
+                )
             artifacts.request_refresh(snapshot)
 
     def _build_zone_details(

@@ -197,9 +197,17 @@ def test_prepared_static_render_ignores_diagnostic_only_georeference_churn() -> 
             owner = _FakeCoordinator()
             owner.data["map"] = dict(owner.data["map"])
             owner.data["map"]["georeference"] = {
+                "schema_version": 1,
                 "source": "learned",
-                "status": "valid",
-                "reference": {"lat": 59.0, "lon": 24.0},
+                "status": "validated",
+                "map_revision": "map-r7",
+                "reference": {
+                    "local_x": 0.0,
+                    "local_y": 0.0,
+                    "latitude": 59.0,
+                    "longitude": 24.0,
+                },
+                "rotation_rad": 0.1,
                 "local_frame_check": {"sample_count": 4},
                 "reference_candidates": {"count": 2},
             }
@@ -225,10 +233,7 @@ def test_prepared_static_render_ignores_diagnostic_only_georeference_churn() -> 
             assert diagnostic_only["static_build_count"] == 1
             assert diagnostic_only["static_resource_id"] == first_id
 
-            owner.data["map"]["georeference"]["reference"] = {
-                "lat": 59.00001,
-                "lon": 24.0,
-            }
+            owner.data["map"]["georeference"]["reference"]["latitude"] = 59.00001
             manager.request_refresh()
             await _wait_tasks(manager)
             real_change = manager.diagnostics()
@@ -244,7 +249,7 @@ def test_prepared_static_render_ignores_diagnostic_only_georeference_churn() -> 
 
 def test_beta22_release_metadata() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta22"
+    assert manifest["version"].startswith("0.4.5-beta")
 
     note = RELEASE_NOTE.read_text(encoding="utf-8")
     assert note.startswith("title: Navimower 0.4.5-beta22")

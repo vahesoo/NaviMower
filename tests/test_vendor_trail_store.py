@@ -106,6 +106,10 @@ def session(name="s1", zone=92, start=0, end=25, stamp=NOW+10_000, active=True):
 
 
 def get_render(store, sessions=None):
+    # Store/renderer tests request an explicit checkpoint before reading the
+    # published current-cycle render. Runtime scheduling is covered separately
+    # by MapArtifactManager beta23 tests.
+    asyncio.run(store.async_artifacts(0.25, build=True))
     coordinator = types.SimpleNamespace(hass=store.hass, data={}, vendor_trail_store=store, history=History(sessions))
     manager = vendor.VendorTrailCurrentCycleRenderManager(coordinator)
     return asyncio.run(render._authoritative_async_get(manager, ZONES))
@@ -234,11 +238,23 @@ def test_i108_zone92_tail_exceeds_8m_then_vendor_confirms_prefix(store):
     store.accept(geometry(end=10))
     live = session(end=30)
     store.update_live_tail(snap, live)
+    # First adoption still attaches safely to the observed vendor endpoint.
     assert store.live_tail(92) == [[[x, 0] for x in range(10, 31)]]
+
+    asyncio.run(store.async_artifacts(0.25, build=True, zone_ids={92}))
+    store.update_live_tail(snap, live)
+    assert store.live_tail(92) == [[[x, 0] for x in range(10, 31)]]
+
     store.accept(geometry(end=20))
     store.update_live_tail(snap, live)
+    # Raw vendor geometry may advance, but the visible live tail stays attached
+    # to the last published base until the next lifecycle checkpoint.
+    assert store.live_tail(92) == [[[x, 0] for x in range(10, 31)]]
+
+    asyncio.run(store.async_artifacts(0.25, build=True, zone_ids={92}))
+    store.update_live_tail(snap, live)
     assert store.live_tail(92) == [[[x, 0] for x in range(20, 31)]]
-    # A repeated cached snapshot cannot bring the confirmed prefix back.
+    # A repeated cached snapshot cannot bring the published prefix back.
     store.update_live_tail(snap, live)
     assert store.live_tail(92)[0][0] == [20, 0]
 
