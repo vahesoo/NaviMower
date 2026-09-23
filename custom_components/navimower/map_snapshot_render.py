@@ -1,11 +1,19 @@
 """Pure Pillow renderer for cached Navimower map snapshots."""
 from __future__ import annotations
 
+from functools import lru_cache
 from io import BytesIO
 import math
+import re
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
+
+from .map_snapshot_mower_art import (
+    H2_SNAPSHOT_SVG_PATHS,
+    MOWER_ART_HEIGHT,
+    MOWER_ART_WIDTH,
+)
 
 SNAPSHOT_SIZE = 1024
 CUTTING_ACTIONS = {5, 8}
@@ -20,9 +28,143 @@ _VF_OFF = (54, 112, 210, 110)
 _CHANNEL = (97, 97, 97, 175)
 _GATE = (123, 67, 151, 110)
 _DOCK = (55, 71, 79, 255)
-_MOWER = (38, 50, 56, 255)
-_MOWER_FRONT = (255, 109, 0, 255)
 _TEXT = (55, 71, 79, 255)
+
+
+
+_SVG_PATH_TOKEN_RE = re.compile(
+    r"[MmLlHhVvCcZz]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+)
+
+
+@lru_cache(maxsize=128)
+def _svg_path_polygons(path_d: str) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """Sample the small SVG command subset used by the embedded mower artwork."""
+    tokens = _SVG_PATH_TOKEN_RE.findall(path_d)
+    polygons: list[tuple[tuple[float, float], ...]] = []
+    current: list[tuple[float, float]] = []
+    command: str | None = None
+    x = y = 0.0
+    start_x = start_y = 0.0
+    index = 0
+
+    def number() -> float:
+        nonlocal index
+        value = float(tokens[index])
+        index += 1
+        return value
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token in "MmLlHhVvCcZz":
+            command = token
+            index += 1
+            if command in "Zz":
+                if current:
+                    if current[-1] != (start_x, start_y):
+                        current.append((start_x, start_y))
+                    if len(current) >= 3:
+                        polygons.append(tuple(current))
+                current = []
+                x, y = start_x, start_y
+                command = None
+            continue
+        if command is None:
+            index += 1
+            continue
+
+        relative = command.islower()
+        op = command.lower()
+        if op == "m":
+            nx, ny = number(), number()
+            if relative:
+                nx += x
+                ny += y
+            if current and len(current) >= 3:
+                polygons.append(tuple(current))
+            current = [(nx, ny)]
+            x, y = nx, ny
+            start_x, start_y = x, y
+            command = "l" if relative else "L"
+        elif op == "l":
+            nx, ny = number(), number()
+            if relative:
+                nx += x
+                ny += y
+            x, y = nx, ny
+            current.append((x, y))
+        elif op == "h":
+            nx = number()
+            x = x + nx if relative else nx
+            current.append((x, y))
+        elif op == "v":
+            ny = number()
+            y = y + ny if relative else ny
+            current.append((x, y))
+        elif op == "c":
+            x1, y1, x2, y2, nx, ny = (
+                number(),
+                number(),
+                number(),
+                number(),
+                number(),
+                number(),
+            )
+            if relative:
+                x1, y1 = x + x1, y + y1
+                x2, y2 = x + x2, y + y2
+                nx, ny = x + nx, y + ny
+            origin_x, origin_y = x, y
+            for step in range(1, 7):
+                t = step / 6.0
+                one = 1.0 - t
+                px = (
+                    one**3 * origin_x
+                    + 3 * one**2 * t * x1
+                    + 3 * one * t**2 * x2
+                    + t**3 * nx
+                )
+                py = (
+                    one**3 * origin_y
+                    + 3 * one**2 * t * y1
+                    + 3 * one * t**2 * y2
+                    + t**3 * ny
+                )
+                current.append((px, py))
+            x, y = nx, ny
+        else:
+            # The snapshot artwork intentionally contains only M/L/H/V/C/Z.
+            break
+
+    if current and len(current) >= 3:
+        polygons.append(tuple(current))
+    return tuple(polygons)
+
+
+def _hex_rgba(value: str) -> tuple[int, int, int, int]:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return (61, 67, 78, 255)
+    return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16), 255)
+
+
+@lru_cache(maxsize=1)
+def _mower_art_layers() -> tuple[
+    tuple[tuple[tuple[float, float], ...], tuple[int, int, int, int]], ...
+]:
+    layers = []
+    for translate_x, translate_y, path_d, fill in H2_SNAPSHOT_SVG_PATHS:
+        for polygon in _svg_path_polygons(path_d):
+            layers.append(
+                (
+                    tuple(
+                        (point[0] + translate_x, point[1] + translate_y)
+                        for point in polygon
+                    ),
+                    _hex_rgba(fill),
+                )
+            )
+    return tuple(layers)
 
 
 def _as_float(value: Any) -> float | None:
@@ -276,6 +418,7 @@ def _draw_station(image: Image.Image, station: Any, project, scale: float) -> No
 
 
 def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> None:
+    """Draw the Map Card mower SVG artwork at the live local-map pose."""
     if not isinstance(position, dict):
         return
     x = _as_float(position.get("x"))
@@ -285,33 +428,43 @@ def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> Non
     heading = _as_float(position.get("heading"))
     if heading is None:
         heading = 0.0
+
     px, py = project([x, y])
-    radius = max(9.0, min(19.0, scale * 0.42))
-    # Coordinator position.heading is the raw vendor postureTheta in radians.
-    # Local map +Y grows upward while image +Y grows downward, hence the sign
-    # flip on the screen-space Y component.
-    front = (math.cos(heading), -math.sin(heading))
-    side = (-front[1], front[0])
-    points = [
-        (
-            px + front[0] * radius * 1.25,
-            py + front[1] * radius * 1.25,
-        ),
-        (
-            px - front[0] * radius * 0.8 + side[0] * radius * 0.8,
-            py - front[1] * radius * 0.8 + side[1] * radius * 0.8,
-        ),
-        (
-            px - front[0] * radius * 0.8 - side[0] * radius * 0.8,
-            py - front[1] * radius * 0.8 - side[1] * radius * 0.8,
-        ),
-    ]
-    draw = ImageDraw.Draw(image)
-    draw.polygon(points, fill=_MOWER, outline=(255, 255, 255, 255))
-    fx = px + front[0] * radius * 0.55
-    fy = py + front[1] * radius * 0.55
-    fr = max(3.0, radius * 0.28)
-    draw.ellipse((fx - fr, fy - fr, fx + fr, fy + fr), fill=_MOWER_FRONT)
+    # Keep notification snapshots legible on both very large and small maps.
+    target_height = max(34.0, min(64.0, image.width / 18.0))
+    artwork_scale = target_height / MOWER_ART_HEIGHT
+
+    # The Map Card artwork faces SVG-up. Coordinator heading is raw
+    # postureTheta radians, where heading=0 points along local +X. Replicate the
+    # card's screen transform: rotate(90deg - heading).
+    angle = math.pi / 2.0 - heading
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    center_x = MOWER_ART_WIDTH / 2.0
+    center_y = MOWER_ART_HEIGHT / 2.0
+
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    for layer_index, (polygon, fill) in enumerate(_mower_art_layers()):
+        transformed = []
+        for art_x, art_y in polygon:
+            dx = (art_x - center_x) * artwork_scale
+            dy = (art_y - center_y) * artwork_scale
+            transformed.append(
+                (
+                    px + dx * cos_a - dy * sin_a,
+                    py + dx * sin_a + dy * cos_a,
+                )
+            )
+        if len(transformed) < 3:
+            continue
+        draw.polygon(
+            transformed,
+            fill=fill,
+            outline=(255, 255, 255, 235) if layer_index == 0 else None,
+            width=max(1, round(image.width / 512)) if layer_index == 0 else 1,
+        )
+    image.alpha_composite(layer)
 
 
 def _draw_placeholder(image: Image.Image, text: str) -> None:
