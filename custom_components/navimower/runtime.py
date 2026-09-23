@@ -50,6 +50,7 @@ from .state_semantics import install_state_semantics
 from .vendor_progress_semantics import install_vendor_progress_semantics
 from .vendor_tail_semantics import install_vendor_tail_semantics
 from .vendor_trail_render_semantics import install_vendor_trail_render_semantics
+from .weather_state_semantics import install_weather_state_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
 from .zone_ledger_semantics import install_zone_ledger_shadow_semantics
 
@@ -62,6 +63,10 @@ def install_runtime_extensions() -> None:
     # bounded poll/sensor layer before later capability and UI semantics wrap
     # coordinator refreshes or the sensor platform setup.
     install_mowing_report_semantics()
+    # The vendor weather endpoint exposes the current rain/snow/wind/frost/heat
+    # decision used by the app. Install it before scheduler layers so managed
+    # dispatch can fail closed on an active weather hold.
+    install_weather_state_semantics()
     install_capability_extensions()
     install_capability_profile()
     install_capability_semantics()
