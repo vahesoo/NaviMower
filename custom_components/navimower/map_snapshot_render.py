@@ -448,8 +448,8 @@ def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> Non
     target_height = max(34.0, min(64.0, image.width / 18.0))
     artwork_scale = target_height / MOWER_ART_HEIGHT
 
-    # The Map Card artwork faces SVG-up. Coordinator heading is the raw vendor
-    # postureTheta in radians, where heading=0 points along local +X. Replicate the
+    # The Map Card artwork faces SVG-up. Coordinator heading is the raw vendor postureTheta in radians.
+    # heading=0 points along local +X. Replicate the
     # card's screen transform: rotate(90deg - heading).
     angle = math.pi / 2.0 - heading
     cos_a = math.cos(angle)
