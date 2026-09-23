@@ -142,4 +142,5 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert "raw vendor postureTheta in radians" in render
     assert "H2_SNAPSHOT_SVG_PATHS" in render
     assert "_svg_path_polygons" in render
-    assert "math.cos(heading)" in render
+    assert "angle = math.pi / 2.0 - heading" in render
+    assert "math.cos(angle)" in render
