@@ -36,7 +36,12 @@ _WEATHER_CODES = {
     "150A": "rain",
     "150F": "snow",
 }
-_WEATHER_REASONS = frozenset({"rain", "snow", "vendor_task_delay"})
+_DIRECT_WEATHER_REASONS = frozenset(
+    {"rain", "snow", "wind", "frost", "high_temperature"}
+)
+_WEATHER_REASONS = frozenset(
+    {*_DIRECT_WEATHER_REASONS, "vendor_weather_delay", "vendor_task_delay"}
+)
 
 
 def _as_int(value: Any) -> int | None:
@@ -93,6 +98,8 @@ def _empty_runtime() -> dict[str, Any]:
             "weather_clear_seen_at": None,
             "weather_vendor_code": None,
             "weather_wait_window_token": None,
+            "weather_dispatch_hold_reason": None,
+            "weather_dispatch_hold_started_at": None,
             "last_external_mow_source": None,
         }
     )
@@ -130,6 +137,21 @@ def _mqtt_task_delay_age(controller: NavimowerScheduleController) -> float | Non
     except Exception:
         return None
     return max(0.0, float(age)) if age is not None else None
+
+
+def _direct_weather_decision(
+    controller: NavimowerScheduleController,
+) -> tuple[bool | None, str | None]:
+    """Return the fresh vendor weather hold decision, if it is known."""
+    data = controller.coordinator.data or {}
+    if data.get("weather_state_fresh") is not True:
+        return None, None
+    active = data.get("weather_hold_active")
+    if active is True:
+        return True, str(data.get("weather_hold_reason") or "vendor_weather_delay")
+    if active is False:
+        return False, None
+    return None, None
 
 
 def _current_window_token(controller: NavimowerScheduleController) -> str | None:
@@ -208,7 +230,11 @@ def _weather_delay_reason(
     *,
     since: Any,
 ) -> tuple[str | None, str | None]:
-    """Prefer current MQTT taskDelay, using the vendor event only as its label."""
+    """Prefer the fresh vendor weather decision, then retained-task evidence."""
+    direct_active, direct_reason = _direct_weather_decision(controller)
+    if direct_active is True:
+        return direct_reason or "vendor_weather_delay", None
+
     delayed = _mqtt_task_delay(controller)
     event_reason, event_code = _recent_weather_event(controller, since=since)
     if delayed is True and _task_delay_crosses_managed_window(controller):
@@ -560,7 +586,19 @@ def _set_weather_interruption(
         return False
     runtime = controller._runtime
     changed = False
-    if not runtime.get("resume_pending") or runtime.get("interrupted_reason") not in _WEATHER_REASONS:
+    current_reason = str(runtime.get("interrupted_reason") or "")
+    if (
+        runtime.get("resume_pending")
+        and current_reason
+        and current_reason not in _WEATHER_REASONS
+    ):
+        # Weather can overlap low-battery/window/manual interruption. Keep the
+        # stronger existing ownership reason and simply hold evaluation until
+        # the fresh weather decision clears.
+        controller.coordinator.clear_pending_activity()
+        controller.coordinator.clear_command_target()
+        return False
+    if not runtime.get("resume_pending") or current_reason not in _WEATHER_REASONS:
         runtime["resume_pending"] = True
         runtime["interrupted_reason"] = reason
         runtime["interrupted_zone_id"] = zone_id
@@ -600,6 +638,47 @@ def _external_override_trace(
 
 async def _evaluate_locked(self: NavimowerScheduleController) -> None:
     runtime = self._runtime
+
+    # A fresh vendor weather decision is also a pre-dispatch guard. This is the
+    # missing case where the mower is physically Docked but the Navimow app says
+    # Rain/Snow/Wind/Frost/High temperature delay: do not send a mowing command.
+    direct_active, direct_reason = _direct_weather_decision(self)
+    dispatch_hold = runtime.get("weather_dispatch_hold_reason")
+    no_owned_task = (
+        runtime.get("active_zone_id") is None
+        and not runtime.get("resume_pending")
+        and not isinstance(runtime.get("pending_command"), dict)
+    )
+    if (
+        direct_active is True
+        and self._window_open_now()
+        and no_owned_task
+        and not runtime.get("suspended_reason")
+    ):
+        reason = direct_reason or "vendor_weather_delay"
+        if dispatch_hold != reason:
+            runtime["weather_dispatch_hold_reason"] = reason
+            runtime["weather_dispatch_hold_started_at"] = (
+                runtime.get("weather_dispatch_hold_started_at") or _utc_now()
+            )
+            runtime["last_command"] = f"weather_dispatch_hold:{reason}"
+            runtime["last_command_at"] = _utc_now()
+            runtime["last_error"] = None
+            await self._save()
+        return
+
+    if dispatch_hold is not None:
+        if direct_active is None:
+            # A hold must be released only by a fresh explicit clear decision.
+            return
+        if direct_active is True:
+            return
+        runtime["weather_dispatch_hold_reason"] = None
+        runtime["weather_dispatch_hold_started_at"] = None
+        runtime["last_command"] = f"weather_dispatch_clear:{dispatch_hold}"
+        runtime["last_command_at"] = _utc_now()
+        runtime["last_error"] = None
+        await self._save()
 
     # A later explicit HA mowing command must never be relabelled as the managed
     # scheduler's own acknowledgement. Same-zone work may be adopted so the queue
