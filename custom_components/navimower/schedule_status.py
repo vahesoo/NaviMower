@@ -97,10 +97,25 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
         queue.append({"id": zone_id, "name": _zone_name(by_id[zone_id], zone_id), "status": "upcoming"})
 
     suspended_reason = diagnostics.get("suspended_reason")
+    interrupted_reason = str(diagnostics.get("interrupted_reason") or "")
+    weather_reason = diagnostics.get("weather_dispatch_hold_reason")
+    if not weather_reason and diagnostics.get("resume_pending") and interrupted_reason in {
+        "rain",
+        "snow",
+        "wind",
+        "frost",
+        "high_temperature",
+        "vendor_weather_delay",
+        "vendor_task_delay",
+    }:
+        weather_reason = interrupted_reason
+
     if not diagnostics.get("enabled"):
         state = "off"
     elif suspended_reason:
         state = "suspended"
+    elif weather_reason:
+        state = "weather_delay"
     elif active_id is not None:
         state = "running"
     elif diagnostics.get("window_open"):
@@ -133,6 +148,9 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
         "eligible_zone_ids": diagnostics.get("eligible_zone_ids") or [],
         "resume_pending": bool(diagnostics.get("resume_pending")),
         "interrupted_zone_id": diagnostics.get("interrupted_zone_id"),
+        "weather_delay_reason": weather_reason,
+        "weather_state": (controller.coordinator.data or {}).get("weather_state"),
+        "weather_fresh": (controller.coordinator.data or {}).get("weather_state_fresh"),
         "last_command": diagnostics.get("last_command"),
         "last_error": diagnostics.get("last_error"),
         "suspended_reason": suspended_reason,

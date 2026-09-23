@@ -4319,6 +4319,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 f"/api/navimower/session/{entry_id}/{{session_id}}"
             ),
             "activity": data.get("activity"),
+            "display_state": data.get("display_state") or data.get("state"),
+            "weather_state": data.get("weather_state"),
+            "weather_hold_active": data.get("weather_hold_active"),
+            "weather_hold_reason": data.get("weather_hold_reason"),
+            "weather_state_fresh": data.get("weather_state_fresh"),
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
             "current_channel": data.get("current_channel"),
