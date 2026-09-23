@@ -15,6 +15,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 from .session_svg import (
+    SESSION_SVG_CLASSIFIER_VERSION,
     build_session_svg_archive,
     render_matches_session,
 )
@@ -564,6 +565,7 @@ class SessionArchiveManager:
         return {
             "store_version": _ARCHIVE_STORE_VERSION,
             "prepared_history_schema_version": _HISTORY_RESOURCE_SCHEMA_VERSION,
+            "render_classifier_version": SESSION_SVG_CLASSIFIER_VERSION,
             "started": self._unsub is not None and not self._stopped,
             "building": bool(
                 (self._scan_task is not None and not self._scan_task.done())
