@@ -11,6 +11,7 @@ from typing import Any
 
 from .const import SWATH_WIDTH_M
 from .map_snapshot_render import render_snapshot_png
+from .model_capabilities import model_family
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,6 +93,12 @@ def _state_signature(data: dict[str, Any]) -> tuple[Any, ...]:
         str(data.get("state_code") or ""),
         str(data.get("error_code") or ""),
         bool(data.get("docked")),
+        str(data.get("model") or ""),
+        str(
+            data.get("model_family")
+            or model_family(data.get("model"), data.get("vehicle_type"))
+            or ""
+        ),
         str(
             data.get("current_physical_zone_id")
             or data.get("active_zone_progress_zone_id")
@@ -163,6 +170,13 @@ async def _async_snapshot_source(coordinator: Any) -> dict[str, Any]:
         "position": _position(data),
         "activity": str(data.get("activity") or ""),
         "name": str(data.get("name") or "Navimow"),
+        "model": str(data.get("model") or ""),
+        "vehicle_type": data.get("vehicle_type"),
+        "model_family": str(
+            data.get("model_family")
+            or model_family(data.get("model"), data.get("vehicle_type"))
+            or ""
+        ),
         "show_zone_labels": True,
         "current_cycle_revision": (
             str(current_cycle.get("revision") or "")
