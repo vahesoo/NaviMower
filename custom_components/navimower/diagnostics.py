@@ -206,9 +206,12 @@ async def async_get_config_entry_diagnostics(
         "cached_only": True,
         "entry": {"data": dict(entry.data), "options": _diagnostic_options(entry)},
         "mower": _selected(data, (
-            "name", "model", "vehicle_type", "state", "state_code", "activity",
-            "docked", "docked_source", "error", "error_text", "error_code",
-            "error_title", "error_content", "error_kind", "problem_source", "last_problem",
+            "name", "model", "vehicle_type", "state", "display_state", "state_code", "activity",
+            "weather_state", "weather_hold_active", "weather_hold_reason",
+            "weather_hold_reasons", "weather_state_source", "weather_state_age",
+            "weather_state_fresh", "docked", "docked_source", "error", "error_text",
+            "error_code", "error_title", "error_content", "error_kind", "problem_source",
+            "last_problem",
         )),
         "connectivity": _selected(data, (
             "private_cloud_connected", "private_cloud_error", "oauth_configured",

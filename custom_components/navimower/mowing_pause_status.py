@@ -1,9 +1,10 @@
 """Expose a conservative mowing-pause reason for UI and automations.
 
 The mower's generic Returning/Docked states do not identify *why* mowing was
-interrupted.  Reuse the notification center's existing transition attribution,
-but do not call a low-battery pause automation-safe until the vendor Device
-notification feed confirms the low-battery return (currently code 1502).
+interrupted.  Prefer a fresh current vendor weather hold when one is available,
+then reuse the notification center's existing transition attribution.  Do not
+call a low-battery pause automation-safe until the vendor Device notification
+feed confirms the low-battery return (currently code 1502).
 """
 from __future__ import annotations
 
@@ -83,6 +84,7 @@ def classify_mowing_pause(
     active_task: dict[str, Any] | None,
     settings: dict[str, Any] | None,
     vendor_messages: list[dict[str, Any]] | None,
+    weather_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a stable status model for the current retained mowing interruption.
 
@@ -94,35 +96,61 @@ def classify_mowing_pause(
     """
     task = active_task if isinstance(active_task, dict) else {}
     config = settings if isinstance(settings, dict) else {}
-    reason = str(interrupted_reason or "").strip().lower() or None
-    paused_at = task.get("charging_paused_at") if reason == "charging" else task.get("night_paused_at")
-    confirmation = (
-        _low_battery_confirmation(vendor_messages, paused_at)
-        if reason == "charging"
-        else None
-    )
+    weather = weather_status if isinstance(weather_status, dict) else {}
+    transition_reason = str(interrupted_reason or "").strip().lower() or None
 
-    if reason is None:
-        state = "none"
-        confidence = None
-    elif reason == "charging" and confirmation is not None:
-        state = "low_battery"
-        confidence = "vendor_reported"
-    elif reason == "charging":
-        state = "low_battery_pending"
-        confidence = task.get("charging_pause_confidence") or "inferred_from_return_battery_threshold"
-    elif reason == "night":
-        state = "night"
-        confidence = "inferred_from_sunset_and_night_mowing_off"
-    elif reason == "manual_dock":
-        state = "manual_dock"
-        confidence = "confirmed_ha_command"
-    elif reason == "unknown":
-        state = "unknown"
-        confidence = "unattributed"
+    weather_fresh = weather.get("fresh") is True
+    weather_active = weather_fresh and weather.get("hold_active") is True
+    weather_reason = str(weather.get("hold_reason") or "").strip().lower() or None
+    weather_reasons = [
+        str(value).strip().lower()
+        for value in (weather.get("hold_reasons") or [])
+        if str(value).strip()
+    ]
+    weather_state = str(weather.get("state") or "").strip().lower() or None
+
+    # The current vendor weather decision is stronger than an older transition
+    # attribution such as manual_dock.  This is intentionally freshness-gated:
+    # a stale weather row must never hide a newer manual/charging/night reason.
+    if weather_active:
+        if len(weather_reasons) > 1 or weather_state == "weather_delay":
+            state = "weather"
+        else:
+            state = weather_reason or "weather"
+        reason = weather_reason or "weather"
+        paused_at = None
+        confirmation = None
+        confidence = "vendor_weather_state"
     else:
-        state = reason
-        confidence = "attributed"
+        reason = transition_reason
+        paused_at = task.get("charging_paused_at") if reason == "charging" else task.get("night_paused_at")
+        confirmation = (
+            _low_battery_confirmation(vendor_messages, paused_at)
+            if reason == "charging"
+            else None
+        )
+
+        if reason is None:
+            state = "none"
+            confidence = None
+        elif reason == "charging" and confirmation is not None:
+            state = "low_battery"
+            confidence = "vendor_reported"
+        elif reason == "charging":
+            state = "low_battery_pending"
+            confidence = task.get("charging_pause_confidence") or "inferred_from_return_battery_threshold"
+        elif reason == "night":
+            state = "night"
+            confidence = "inferred_from_sunset_and_night_mowing_off"
+        elif reason == "manual_dock":
+            state = "manual_dock"
+            confidence = "confirmed_ha_command"
+        elif reason == "unknown":
+            state = "unknown"
+            confidence = "unattributed"
+        else:
+            state = reason
+            confidence = "attributed"
 
     confirmation_code = _vendor_code(confirmation or {})
     confirmation_stamp = _vendor_message_timestamp(confirmation or {})
@@ -136,6 +164,15 @@ def classify_mowing_pause(
         "state": state,
         "reason": reason,
         "confidence": confidence,
+        "underlying_interrupted_reason": transition_reason,
+        "weather_state": weather_state,
+        "weather_hold_active": weather_active,
+        "weather_hold_reason": weather_reason,
+        "weather_hold_reasons": weather_reasons,
+        "weather_source": weather.get("source"),
+        "weather_age_s": weather.get("age_s"),
+        "weather_fresh": weather_fresh,
+        "automation_safe_weather": weather_active,
         "low_battery_confirmed": state == "low_battery",
         "automation_safe_low_battery": state == "low_battery",
         "progress_before_pause": task.get("progress_before_pause"),
@@ -165,6 +202,15 @@ def _status_for_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str
         active_task=task,
         settings=snapshot.get("settings") if isinstance(snapshot, dict) else None,
         vendor_messages=vendor_messages,
+        weather_status={
+            "state": snapshot.get("weather_state"),
+            "hold_active": snapshot.get("weather_hold_active"),
+            "hold_reason": snapshot.get("weather_hold_reason"),
+            "hold_reasons": snapshot.get("weather_hold_reasons"),
+            "source": snapshot.get("weather_state_source"),
+            "age_s": snapshot.get("weather_state_age"),
+            "fresh": snapshot.get("weather_state_fresh"),
+        },
     )
 
 

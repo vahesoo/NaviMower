@@ -621,6 +621,28 @@ def _set_weather_interruption(
         runtime["last_command_at"] = _utc_now()
         runtime["last_error"] = None
         changed = True
+    else:
+        # A retained interruption may have first been identified only as the
+        # generic MQTT taskDelay. Once the fresh current-weather endpoint names
+        # the reason, retain that more specific cause for UI/diagnostics.
+        if reason in _DIRECT_WEATHER_REASONS and current_reason != reason:
+            runtime["interrupted_reason"] = reason
+            runtime["last_command"] = f"weather_wait:{reason}:{zone_id}"
+            runtime["last_command_at"] = _utc_now()
+            runtime["last_error"] = None
+            changed = True
+        # If weather becomes active again during the post-clear grace period,
+        # revoke the old clear timestamp. A later real clear must earn a fresh
+        # grace period instead of resuming immediately from stale evidence.
+        if runtime.get("weather_clear_seen_at") is not None:
+            runtime["weather_clear_seen_at"] = None
+            changed = True
+        if runtime.get("weather_wait_started_at") is None:
+            runtime["weather_wait_started_at"] = _utc_now()
+            changed = True
+        if runtime.get("weather_wait_window_token") is None:
+            runtime["weather_wait_window_token"] = _current_window_token(controller)
+            changed = True
     if vendor_code and runtime.get("weather_vendor_code") != vendor_code:
         runtime["weather_vendor_code"] = vendor_code
         changed = True
@@ -753,7 +775,12 @@ async def _evaluate_locked(self: NavimowerScheduleController) -> None:
                 since=runtime.get("weather_wait_started_at") or runtime.get("dispatch_started_at"),
             )
             if reason is not None:
-                runtime["weather_vendor_code"] = vendor_code or runtime.get("weather_vendor_code")
+                if _set_weather_interruption(
+                    self,
+                    reason=reason,
+                    vendor_code=vendor_code,
+                ):
+                    await self._save()
                 return
             if not self._window_open_now():
                 return
