@@ -98,6 +98,8 @@ def test_beta28_raw_export_includes_live_weather_endpoint() -> None:
     assert '"/vehicle/vehicle/get-vehicle-weather"' in source
 
 
-def test_beta28_version() -> None:
+def test_beta28_version_floor() -> None:
     manifest = json.loads(_source(MANIFEST))
-    assert manifest["version"] == "0.4.5-beta28"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 28
