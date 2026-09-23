@@ -1011,10 +1011,31 @@ class PreparedRenderModelManager:
                 build_live_route_render_model,
                 source,
             )
+            semantic = deepcopy(model.get("semantic_route") or {})
+            legacy_model = deepcopy(model)
+            legacy_model.pop("semantic_route", None)
+            semantic_model = {
+                "schema_version": SCHEMA_VERSION,
+                "scope": "live_semantic_route_render_model",
+                "coordinate_space": "map_xy_m",
+                "trail_session": model.get("trail_session"),
+                "trail_active": model.get("trail_active"),
+                "activity": model.get("activity"),
+                "current_physical_zone_id": model.get(
+                    "current_physical_zone_id"
+                ),
+                **semantic,
+            }
             resource = await self.hass.async_add_executor_job(
                 _encode_resource,
                 "live",
-                model,
+                legacy_model,
+                self.entry_id,
+            )
+            semantic_resource = await self.hass.async_add_executor_job(
+                _encode_resource,
+                "live_semantic",
+                semantic_model,
                 self.entry_id,
             )
             self.live_build_count += 1
@@ -1023,10 +1044,11 @@ class PreparedRenderModelManager:
                 (time.perf_counter() - started) * 1000.0,
                 2,
             )
-            semantic = model.get("semantic_route") or {}
             self.last_live_summary = {
                 "resource_id": resource["resource_id"],
                 "byte_length": len(resource["body"]),
+                "semantic_resource_id": semantic_resource["resource_id"],
+                "semantic_byte_length": len(semantic_resource["body"]),
                 "segment_count": model.get("segment_count"),
                 "point_count": model.get("point_count"),
                 "invalid_segment_count": model.get("invalid_segment_count"),
@@ -1054,7 +1076,7 @@ class PreparedRenderModelManager:
                 and _integer(row.get("point_count")) is not None
             }
             self._live_base_point_count = int(model.get("point_count") or 0)
-            semantic = model.get("semantic_route") or {}
+            self._live_base_semantic_resource_id = semantic_resource["resource_id"]
             self._live_base_semantic_session_id = (
                 str(semantic.get("session_id"))
                 if semantic.get("session_id")
@@ -1063,6 +1085,7 @@ class PreparedRenderModelManager:
             self._live_base_semantic_point_count = int(
                 semantic.get("source_point_count") or 0
             )
+
             current = self._live_resources[0] if self._live_resources else None
             if current and current["resource_id"] == resource["resource_id"]:
                 self.live_unchanged_count += 1
@@ -1076,6 +1099,28 @@ class PreparedRenderModelManager:
                     ],
                 ][:2]
                 self.live_publication_revision += 1
+
+            current_semantic = (
+                self._live_semantic_resources[0]
+                if self._live_semantic_resources
+                else None
+            )
+            if (
+                not current_semantic
+                or current_semantic["resource_id"]
+                != semantic_resource["resource_id"]
+            ):
+                self._live_semantic_resources = [
+                    semantic_resource,
+                    *[
+                        item
+                        for item in self._live_semantic_resources
+                        if item["resource_id"]
+                        != semantic_resource["resource_id"]
+                    ],
+                ][:2]
+                self.live_semantic_publication_revision += 1
+
             self.last_live_error = None
             self.last_error = self.last_static_error
         except asyncio.CancelledError:
@@ -1116,7 +1161,9 @@ class PreparedRenderModelManager:
                 "card_equivalent_layout": True,
                 "live_route_svg_paths": True,
                 "live_route_semantic_segments": True,
+                "live_semantic_route_resource": True,
                 "live_tail_semantic_segments": True,
+                "live_semantic_tail_query": True,
                 "mowed_edge_requires_same_zone": True,
                 "live_route_short_tail": True,
                 "live_route_tail_only_query": True,
@@ -1138,6 +1185,11 @@ class PreparedRenderModelManager:
         self.request_refresh()
         static = self._static_resources[0]["descriptor"] if self._static_resources else None
         live = self._live_resources[0]["descriptor"] if self._live_resources else None
+        live_semantic = (
+            self._live_semantic_resources[0]["descriptor"]
+            if self._live_semantic_resources
+            else None
+        )
         entry = quote(self.entry_id, safe="")
         return {
             "schema_version": SCHEMA_VERSION,
@@ -1152,11 +1204,13 @@ class PreparedRenderModelManager:
             "publication_revision": {
                 "static": self.static_publication_revision,
                 "live_route": self.live_publication_revision,
+                "live_semantic_route": self.live_semantic_publication_revision,
             },
             "live_route_min_interval_s": LIVE_PREPARE_MIN_INTERVAL_SECONDS,
             "live_tail_max_points": LIVE_TAIL_MAX_POINTS,
             "static": deepcopy(static),
             "live_route": deepcopy(live),
+            "live_semantic_route": deepcopy(live_semantic),
             "current_cycle_manifest_url": (
                 f"/api/navimower/map/{entry}?artifacts_only=1"
             ),
@@ -1178,7 +1232,12 @@ class PreparedRenderModelManager:
         kind: str,
         resource_id: str,
     ) -> dict[str, Any] | None:
-        resources = self._static_resources if kind == "static" else self._live_resources
+        if kind == "static":
+            resources = self._static_resources
+        elif kind == "live_semantic":
+            resources = self._live_semantic_resources
+        else:
+            resources = self._live_resources
         resource = next(
             (item for item in resources if item["resource_id"] == resource_id),
             None,
@@ -1190,6 +1249,11 @@ class PreparedRenderModelManager:
                 if self._static_first_read_mono is None:
                     self._static_first_read_mono = now
                 self._static_last_read_mono = now
+            elif kind == "live_semantic":
+                self.live_semantic_resource_reads += 1
+                if self._live_semantic_first_read_mono is None:
+                    self._live_semantic_first_read_mono = now
+                self._live_semantic_last_read_mono = now
             else:
                 self.live_resource_reads += 1
                 if self._live_first_read_mono is None:
@@ -1209,6 +1273,14 @@ class PreparedRenderModelManager:
             self.static_resource_bytes_served_total += max(0, int(byte_length))
             if not_modified:
                 self.static_resource_not_modified_count += 1
+            return
+        if kind == "live_semantic":
+            self.live_semantic_resource_bytes_served_total += max(
+                0,
+                int(byte_length),
+            )
+            if not_modified:
+                self.live_semantic_resource_not_modified_count += 1
             return
         self.live_resource_bytes_served_total += max(0, int(byte_length))
         if not_modified:
