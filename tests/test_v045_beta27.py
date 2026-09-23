@@ -88,11 +88,7 @@ def test_beta27_strict_zone_classifier_and_semantic_live_models() -> None:
             [[0.0, 0.0], [1.0, 0.0]],
             [[2.0, 0.0], [3.0, 0.0]],
         ]
-        assert travel == [
-            [[1.0, 0.0], [2.0, 0.0]],
-            [[3.0, 0.0], [4.0, 0.0], [5.0, 0.0], [6.0, 0.0], [6.0, 0.0]],
-        ] or travel
-        # Strong semantic assertions without depending on segment coalescing
+        assert travel, "zone-boundary/outside movement must be retained as travel"\n        # Strong semantic assertions without depending on segment coalescing
         # details: no cutting edge may cross zones or use a missing zone id.
         cutting_edges = {
             (tuple(seg[i]), tuple(seg[i + 1]))
@@ -170,10 +166,13 @@ def test_beta27_strict_zone_classifier_and_semantic_live_models() -> None:
 
 def test_beta27_backend_contract_is_additive_for_beta15() -> None:
     prepared = (COMPONENT / "prepared_render_model.py").read_text(encoding="utf-8")
+    performance = (COMPONENT / "map_api_performance.py").read_text(encoding="utf-8")
     svg = (COMPONENT / "session_svg.py").read_text(encoding="utf-8")
 
     assert '"live_route_semantic_segments": True' in prepared
+    assert '"live_semantic_route_resource": True' in prepared
     assert '"live_tail_semantic_segments": True' in prepared
+    assert '"live_semantic_tail_query": True' in prepared
     assert '"mowed_edge_requires_same_zone": True' in prepared
     assert '"semantic": semantic' in prepared
     assert '"semantic_route": semantic' in prepared
@@ -182,8 +181,18 @@ def test_beta27_backend_contract_is_additive_for_beta15() -> None:
     # Keep the beta15 all-movement fields intact until the frontend migration.
     assert '"segments": rows' in prepared
     assert '"segments": deepcopy(tail)' in prepared
+    assert 'legacy_model.pop("semantic_route", None)' in prepared
+    assert '"live_semantic_route": deepcopy(live_semantic)' in prepared
     assert '"live_route_short_tail": True' in prepared
     assert '"live_route_tail_only_query": True' in prepared
+
+    # beta15 does not request or serialize semantic geometry; the future
+    # frontend must opt into both the resource and short-tail query.
+    assert 'if "live_semantic_route_render" in request.query:' in performance
+    assert 'query_key="live_semantic_route_render"' in performance
+    assert '"prepared_live_semantic_tail"' in performance
+    assert "include_prepared_semantic_live_tail" in performance
+    assert "include_semantic=include_prepared_semantic_live_tail" in performance
 
     assert "SESSION_SVG_ARCHIVE_VERSION = 2" in svg
     assert "SESSION_SVG_CLASSIFIER_VERSION = 2" in svg
