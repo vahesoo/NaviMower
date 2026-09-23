@@ -14,8 +14,9 @@ WEATHER_POLL_ACTIVE_SECONDS = 15
 WEATHER_POLL_IDLE_SECONDS = 30
 WEATHER_FRESH_SECONDS = 120.0
 
-# These are current vendor decisions, not configuration switches. The recovered
-# vendor contract and live probes use 1 for an active condition.
+# These fields are vendor *current decision* state, not configuration switches.
+# Live H2 evidence has confirmed 0 = inactive and 1 = active. Preserve any
+# unexpected value as unknown instead of silently assigning it semantics.
 _WEATHER_FIELDS: tuple[tuple[str, str, str, str], ...] = (
     ("rain", "rainState", "rain_delay", "Rain delay"),
     ("snow", "snowState", "snow_delay", "Snow delay"),
@@ -30,14 +31,19 @@ _WEATHER_FIELDS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
-def _as_active(value: Any) -> bool:
+def _flag_state(value: Any) -> bool | None:
+    """Return True/False only for the observed vendor 1/0 flag contract."""
     if isinstance(value, bool):
         return value
     try:
-        return int(float(value)) != 0
+        numeric = int(float(value))
     except (TypeError, ValueError):
-        text = str(value or "").strip().lower()
-        return text in {"true", "on", "yes", "active"}
+        return None
+    if numeric == 0:
+        return False
+    if numeric == 1:
+        return True
+    return None
 
 
 def _endpoint_age(coordinator: NavimowCoordinator) -> float | None:
@@ -62,8 +68,16 @@ def normalize_vendor_weather(
     row = raw if isinstance(raw, dict) else {}
     available = any(field in row for _, field, _, _ in _WEATHER_FIELDS)
     active: list[dict[str, str]] = []
+    inactive: list[str] = []
+    unknown: list[str] = []
+    normalized: dict[str, bool | None] = {}
+
     for reason, field, state, label in _WEATHER_FIELDS:
-        if field in row and _as_active(row.get(field)):
+        if field not in row:
+            continue
+        parsed = _flag_state(row.get(field))
+        normalized[reason] = parsed
+        if parsed is True:
             active.append(
                 {
                     "reason": reason,
@@ -72,48 +86,68 @@ def normalize_vendor_weather(
                     "label": label,
                 }
             )
+        elif parsed is False:
+            inactive.append(reason)
+        else:
+            unknown.append(reason)
 
     if not available:
         state = "unavailable"
         label = None
         reason = None
         hold_active: bool | None = None
-    elif not active:
+    elif active:
+        hold_active = True
+        if len(active) == 1:
+            state = active[0]["state"]
+            label = active[0]["label"]
+            reason = active[0]["reason"]
+        else:
+            state = "weather_delay"
+            label = "Weather delay"
+            reason = active[0]["reason"]
+    elif unknown:
+        state = "unknown"
+        label = None
+        reason = None
+        hold_active = None
+    else:
         state = "clear"
         label = None
         reason = None
         hold_active = False
-    elif len(active) == 1:
-        state = active[0]["state"]
-        label = active[0]["label"]
-        reason = active[0]["reason"]
-        hold_active = True
-    else:
-        state = "weather_delay"
-        label = "Weather delay"
-        reason = active[0]["reason"]
-        hold_active = True
+
+    fresh = bool(
+        available
+        and age_s is not None
+        and age_s <= WEATHER_FRESH_SECONDS
+    )
+    raw_states = {
+        field: row.get(field)
+        for _, field, _, _ in _WEATHER_FIELDS
+        if field in row
+    }
+    if "rainLevel" in row:
+        raw_states["rainLevel"] = row.get("rainLevel")
 
     return {
         "available": available,
-        "fresh": bool(
-            available
-            and age_s is not None
-            and age_s <= WEATHER_FRESH_SECONDS
-        ),
+        "fresh": fresh,
         "age_s": round(age_s, 1) if age_s is not None else None,
         "state": state,
         "hold_active": hold_active,
         "hold_reason": reason,
         "hold_reasons": [item["reason"] for item in active],
+        "inactive_reasons": inactive,
+        "unknown_reasons": unknown,
         "label": label,
         "rain_level": row.get("rainLevel"),
-        "raw": {
-            field: row.get(field)
-            for _, field, _, _ in _WEATHER_FIELDS
-            if field in row
-        }
-        | ({"rainLevel": row.get("rainLevel")} if "rainLevel" in row else {}),
+        "rain_state": normalized.get("rain"),
+        "snow_state": normalized.get("snow"),
+        "storm_state": normalized.get("wind"),
+        "frost_state": normalized.get("frost"),
+        "high_temperature_state": normalized.get("high_temperature"),
+        "raw": raw_states,
         "source": "private_cloud_vehicle_weather" if available else None,
     }
 
@@ -132,13 +166,20 @@ def _decorate_snapshot(
     snapshot["weather_hold_active"] = weather["hold_active"]
     snapshot["weather_hold_reason"] = weather["hold_reason"]
     snapshot["weather_hold_reasons"] = weather["hold_reasons"]
+    snapshot["weather_unknown_reasons"] = weather["unknown_reasons"]
+    snapshot["weather_rain_state"] = weather["rain_state"]
+    snapshot["weather_snow_state"] = weather["snow_state"]
+    snapshot["weather_storm_state"] = weather["storm_state"]
+    snapshot["weather_frost_state"] = weather["frost_state"]
+    snapshot["weather_high_temperature_state"] = weather["high_temperature_state"]
     snapshot["weather_rain_level"] = weather["rain_level"]
 
-    # Keep HA's physical lawn_mower activity canonical. This display state is
-    # for the user-facing Status sensor / mower attributes only.
+    # Home Assistant's lawn_mower activity remains physical/canonical. A fresh
+    # vendor weather decision composes only the human-facing status layer.
     base_state = snapshot.get("state")
     if (
-        weather["hold_active"] is True
+        weather["fresh"]
+        and weather["hold_active"] is True
         and weather["label"]
         and snapshot.get("error") is not True
     ):
