@@ -679,6 +679,7 @@ def _clear_confirmed_weather_dock_pending(
     controller.coordinator.clear_pending_activity()
     return True
 
+
 def _external_override_trace(
     controller: NavimowerScheduleController,
 ) -> dict[str, Any] | None:
