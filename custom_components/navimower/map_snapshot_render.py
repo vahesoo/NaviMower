@@ -9,6 +9,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+# Map Card H2 SVG snapshot subset: preserve the recognisable body/deck/nose layers.
 MOWER_ART_WIDTH = 120.0
 MOWER_ART_HEIGHT = 159.0
 
@@ -447,8 +448,8 @@ def _draw_mower(image: Image.Image, position: Any, project, scale: float) -> Non
     target_height = max(34.0, min(64.0, image.width / 18.0))
     artwork_scale = target_height / MOWER_ART_HEIGHT
 
-    # The Map Card artwork faces SVG-up. Coordinator heading is raw
-    # postureTheta radians, where heading=0 points along local +X. Replicate the
+    # The Map Card artwork faces SVG-up. Coordinator heading is the raw vendor
+    # postureTheta in radians, where heading=0 points along local +X. Replicate the
     # card's screen transform: rotate(90deg - heading).
     angle = math.pi / 2.0 - heading
     cos_a = math.cos(angle)
