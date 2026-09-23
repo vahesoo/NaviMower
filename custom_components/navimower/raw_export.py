@@ -45,6 +45,13 @@ def _fresh_private_payloads(coordinator: Any) -> dict[str, Any]:
         ("index2", lambda: client.index2(sn)),
         ("device_info", lambda: client.device_info(sn)),
         ("set_list", lambda: client.set_list(sn)),
+        (
+            "vehicle_weather",
+            lambda: client.call(
+                "/vehicle/vehicle/get-vehicle-weather",
+                {"vehicle_sn": sn},
+            ),
+        ),
         ("vehicle_config", lambda: client.vehicle_config(sn)),
         ("today_plan", lambda: client.today_plan(sn, vehicle_type)),
         ("location", lambda: client.location(sn, vehicle_type)),
