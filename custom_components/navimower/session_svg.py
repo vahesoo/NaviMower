@@ -23,7 +23,8 @@ from .const import (
 )
 from .zone_state import simplify_xy_points
 
-SESSION_SVG_ARCHIVE_VERSION = 3
+SESSION_SVG_ARCHIVE_VERSION = 2
+SESSION_SVG_CLASSIFIER_VERSION = 2
 SESSION_SVG_GRID_M = 0.025
 SESSION_SVG_MAX_ESTIMATED_CELLS = 1_500_000
 
@@ -412,6 +413,7 @@ def session_render_fingerprint(session: dict[str, Any]) -> dict[str, Any]:
         "point_count": len(session.get("points") or []),
         "ended_at_ms": _as_int(session.get("ended_at_ms")),
         "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
+        "classifier_version": SESSION_SVG_CLASSIFIER_VERSION,
     }
 
 
