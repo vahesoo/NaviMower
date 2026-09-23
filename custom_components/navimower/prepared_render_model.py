@@ -673,6 +673,7 @@ def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
         rows.append(row)
         total_points += row["point_count"]
         all_points.extend(points)
+    semantic = _semantic_route_model(source.get("active_session"))
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": "live_route_render_model",
@@ -681,11 +682,14 @@ def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
         "trail_active": bool(source.get("trail_active")),
         "activity": source.get("activity"),
         "current_physical_zone_id": source.get("current_physical_zone_id"),
+        # Legacy all-movement route remains unchanged for beta15 and older cards.
         "segments": rows,
         "bounds": _bounds(all_points),
         "segment_count": len(rows),
         "point_count": total_points,
         "invalid_segment_count": invalid,
+        # Future cards can render blade-on and travel paths independently.
+        "semantic_route": semantic,
     }
 
 
@@ -712,6 +716,8 @@ class PreparedRenderModelManager:
         self._live_base_trail_session: Any = None
         self._live_base_segment_point_counts: dict[int, int] = {}
         self._live_base_point_count = 0
+        self._live_base_semantic_session_id: str | None = None
+        self._live_base_semantic_point_count = 0
 
         self.static_build_count = 0
         self.live_build_count = 0
@@ -752,6 +758,12 @@ class PreparedRenderModelManager:
         self.last_live_tail_base_point_count = 0
         self.last_live_tail_current_point_count = 0
         self.last_live_tail_reason: str | None = None
+        self.semantic_live_tail_success_count = 0
+        self.semantic_live_tail_fallback_count = 0
+        self.last_semantic_live_tail_point_count = 0
+        self.last_semantic_live_tail_cutting_segment_count = 0
+        self.last_semantic_live_tail_travel_segment_count = 0
+        self.last_semantic_live_tail_reason: str | None = None
 
     def start(self) -> None:
         if self._closed or self._unsub is not None:
