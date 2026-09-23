@@ -1296,6 +1296,8 @@ class PreparedRenderModelManager:
         self,
         trail_segments: Any,
         trail_session: Any,
+        *,
+        include_semantic: bool = False,
     ) -> dict[str, Any]:
         """Return only points added after the latest prepared live resource."""
         self.live_tail_requests += 1
@@ -1311,6 +1313,7 @@ class PreparedRenderModelManager:
             base_session_id=self._live_base_semantic_session_id,
             base_point_count=self._live_base_semantic_point_count,
         )
+        semantic["base_resource_id"] = self._live_base_semantic_resource_id
         self.last_semantic_live_tail_point_count = int(
             semantic.get("point_count") or 0
         )
@@ -1339,9 +1342,10 @@ class PreparedRenderModelManager:
             "segment_count": 0,
             "max_points": LIVE_TAIL_MAX_POINTS,
             "segments": [],
-            "semantic": semantic,
             "reason": None,
         }
+        if include_semantic:
+            result["semantic"] = semantic
 
         reason: str | None = None
         if not base_resource_id:
@@ -1408,6 +1412,11 @@ class PreparedRenderModelManager:
     def diagnostics(self) -> dict[str, Any]:
         static = self._static_resources[0] if self._static_resources else None
         live = self._live_resources[0] if self._live_resources else None
+        live_semantic = (
+            self._live_semantic_resources[0]
+            if self._live_semantic_resources
+            else None
+        )
         return {
             "schema_version": SCHEMA_VERSION,
             "prewarm_started": self._unsub is not None and not self._closed,
@@ -1428,12 +1437,22 @@ class PreparedRenderModelManager:
             "last_live_error": self.last_live_error,
             "static_publication_revision": self.static_publication_revision,
             "live_publication_revision": self.live_publication_revision,
+            "live_semantic_publication_revision": (
+                self.live_semantic_publication_revision
+            ),
             "static_resource_bytes": len(static["body"]) if static else 0,
             "live_resource_bytes": len(live["body"]) if live else 0,
+            "live_semantic_resource_bytes": (
+                len(live_semantic["body"]) if live_semantic else 0
+            ),
             "static_resource_id": static["resource_id"] if static else None,
             "live_resource_id": live["resource_id"] if live else None,
+            "live_semantic_resource_id": (
+                live_semantic["resource_id"] if live_semantic else None
+            ),
             "static_ready": static is not None,
             "live_ready": live is not None,
+            "live_semantic_ready": live_semantic is not None,
             "static_summary": deepcopy(self.last_static_summary),
             "live_summary": deepcopy(self.last_live_summary),
             "manifest_reads": self.manifest_reads,
@@ -1449,6 +1468,19 @@ class PreparedRenderModelManager:
             "live_resource_not_modified_count": self.live_resource_not_modified_count,
             "live_resource_first_read_age_s": self._age_seconds(self._live_first_read_mono),
             "live_resource_last_read_age_s": self._age_seconds(self._live_last_read_mono),
+            "live_semantic_resource_reads": self.live_semantic_resource_reads,
+            "live_semantic_resource_bytes_served_total": (
+                self.live_semantic_resource_bytes_served_total
+            ),
+            "live_semantic_resource_not_modified_count": (
+                self.live_semantic_resource_not_modified_count
+            ),
+            "live_semantic_resource_first_read_age_s": self._age_seconds(
+                self._live_semantic_first_read_mono
+            ),
+            "live_semantic_resource_last_read_age_s": self._age_seconds(
+                self._live_semantic_last_read_mono
+            ),
             "live_tail_requests": self.live_tail_requests,
             "live_tail_success_count": self.live_tail_success_count,
             "live_tail_full_fallback_count": self.live_tail_full_fallback_count,
@@ -1494,3 +1526,4 @@ class PreparedRenderModelManager:
         self._live_task = None
         self._static_resources.clear()
         self._live_resources.clear()
+        self._live_semantic_resources.clear()
