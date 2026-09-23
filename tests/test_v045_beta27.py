@@ -88,7 +88,8 @@ def test_beta27_strict_zone_classifier_and_semantic_live_models() -> None:
             [[0.0, 0.0], [1.0, 0.0]],
             [[2.0, 0.0], [3.0, 0.0]],
         ]
-        assert travel, "zone-boundary/outside movement must be retained as travel"\n        # Strong semantic assertions without depending on segment coalescing
+        assert travel, "zone-boundary/outside movement must be retained as travel"
+        # Strong semantic assertions without depending on segment coalescing
         # details: no cutting edge may cross zones or use a missing zone id.
         cutting_edges = {
             (tuple(seg[i]), tuple(seg[i + 1]))
@@ -175,8 +176,9 @@ def test_beta27_backend_contract_is_additive_for_beta15() -> None:
     assert '"live_semantic_tail_query": True' in prepared
     assert '"live_semantic_tail_only_query": True' in prepared
     assert '"mowed_edge_requires_same_zone": True' in prepared
-    assert '"semantic": semantic' in prepared
     assert '"semantic_route": semantic' in prepared
+    assert '"scope": "live_semantic_route_render_model"' in prepared
+    assert "**semantic" in prepared
     assert '"active_session": deepcopy(active_session)' in prepared
 
     # Keep the beta15 all-movement fields intact until the frontend migration.
