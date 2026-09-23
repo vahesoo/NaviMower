@@ -26,6 +26,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
+from .model_capabilities import capability_profile
 from .setting_write import async_write_settings
 
 
@@ -148,6 +149,45 @@ def _wire_value(desc: NavimowNumberDescription, data: dict) -> int | None:
         return None
 
 
+
+def _battery_config(data: dict[str, Any]) -> dict[str, Any]:
+    raw = data.get("raw") or {}
+    device = raw.get("device_info") if isinstance(raw, dict) else None
+    if not isinstance(device, dict):
+        return {}
+    nonstandard = device.get("nonstandardVehicleConfig")
+    if not isinstance(nonstandard, dict):
+        return {}
+    config = nonstandard.get("batteryConfig")
+    return config if isinstance(config, dict) else {}
+
+
+def _charging_limit_supported(data: dict[str, Any]) -> bool:
+    """Expose charge ceiling only from positive family or vendor-bound evidence."""
+    profile = capability_profile(data.get("model"), data.get("vehicle_type"))
+    if profile.charging_limit_control is not None:
+        return profile.charging_limit_control
+
+    config = _battery_config(data)
+    try:
+        minimum = int(float(config.get("chargingLimitMin")))
+        maximum = int(float(config.get("chargingLimitMax")))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= minimum < maximum <= 100
+
+
+def _description_supported(
+    desc: NavimowNumberDescription,
+    data: dict[str, Any],
+) -> bool:
+    if _wire_value(desc, data) is None:
+        return False
+    if desc.key == "charging_limit":
+        return _charging_limit_supported(data)
+    return True
+
+
 def _remove_unsupported_registry_entities(
     hass: HomeAssistant,
     coordinator: NavimowCoordinator,
@@ -170,9 +210,7 @@ async def async_setup_entry(
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
     data = coordinator.data or {}
-    supported_descriptions = [
-        desc for desc in NUMBERS if _wire_value(desc, data) is not None
-    ]
+    supported_descriptions = [desc for desc in NUMBERS if _description_supported(desc, data)]
 
     if _set_list(data) is not None:
         _remove_unsupported_registry_entities(
