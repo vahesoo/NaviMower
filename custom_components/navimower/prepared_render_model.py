@@ -269,7 +269,11 @@ def _encode_resource(
         + b":"
         + body
     ).hexdigest()
-    query_key = "static_render_model" if kind == "static" else "live_route_render"
+    query_key = {
+        "static": "static_render_model",
+        "live": "live_route_render",
+        "live_semantic": "live_semantic_route_render",
+    }[kind]
     return {
         "kind": kind,
         "resource_id": resource_id,
