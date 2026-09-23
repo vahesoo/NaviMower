@@ -176,7 +176,16 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         state_code = str(data.get("state_code") or "")
         return {
             "state_code": data.get("state_code"),
-            "state": data.get("state"),
+            "state": data.get("display_state") or data.get("state"),
+            "vendor_state": data.get("state"),
+            "weather_state": data.get("weather_state"),
+            "weather_hold_active": data.get("weather_hold_active"),
+            "weather_hold_reason": data.get("weather_hold_reason"),
+            "weather_hold_reasons": data.get("weather_hold_reasons"),
+            "weather_source": data.get("weather_state_source"),
+            "weather_age_s": data.get("weather_state_age"),
+            "weather_fresh": data.get("weather_state_fresh"),
+            "rain_level": data.get("weather_rain_level"),
             "model": data.get("model") or self.coordinator.entry.data.get("model"),
             "vehicle_type": self.coordinator.vehicle_type,
             "map_editing": state_code in MAP_EDIT_STATES,
