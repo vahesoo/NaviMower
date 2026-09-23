@@ -101,6 +101,49 @@ def test_snapshot_uses_svg_derived_mower_artwork() -> None:
     assert len(renderer.H2_SNAPSHOT_SVG_PATHS) >= 10
     assert len(renderer._mower_art_layers()) >= 10
 
+
+def test_snapshot_selects_model_specific_mower_artwork() -> None:
+    renderer = _render_module()
+
+    assert renderer._mower_art_key({"model_family": "h2", "model": "H215"}) == "h2"
+    assert renderer._mower_art_key({"model_family": "i1", "model": "i108"}) == "i_light"
+    assert renderer._mower_art_key({"model_family": "i2_awd", "model": "i208 AWD"}) == "i_light"
+    assert renderer._mower_art_key({"model_family": "i2_lidar", "model": "i215 LiDAR"}) == "i2_lidar"
+    assert renderer._mower_art_key({"model_family": "x3", "model": "X390"}) == "x3"
+    assert renderer._mower_art_key({"model_family": "x4", "model": "X450"}) == "x4"
+    assert renderer._mower_art_key({"model_family": "h5", "model": "H510 Pro"}) == "h2"
+
+    assert renderer._raster_mower_art("i_light").size == (86, 120)
+    assert renderer._raster_mower_art("i2_lidar").size == (82, 120)
+    assert renderer._raster_mower_art("x3").size == (96, 120)
+    assert renderer._raster_mower_art("x4").size == (84, 120)
+
+
+def test_snapshot_png_changes_with_mower_model_artwork() -> None:
+    renderer = _render_module()
+    base = {
+        "map": {
+            "zones": [
+                {
+                    "id": 1,
+                    "name": "Test",
+                    "polygon": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                }
+            ],
+        },
+        "position": {"x": 5.0, "y": 5.0, "heading": 0.0},
+        "mowing_path_width_m": 0.4,
+        "show_zone_labels": False,
+    }
+
+    h2 = renderer.render_snapshot_png({**base, "model_family": "h2", "model": "H215"}, size=640)
+    x3 = renderer.render_snapshot_png({**base, "model_family": "x3", "model": "X390"}, size=640)
+    i1 = renderer.render_snapshot_png({**base, "model_family": "i1", "model": "i108"}, size=640)
+
+    assert h2 != x3
+    assert h2 != i1
+    assert x3 != i1
+
 def test_cutting_segments_do_not_turn_return_route_into_mowed_area() -> None:
     renderer = _render_module()
     segments = renderer._session_cutting_segments(
@@ -138,6 +181,8 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert '"render_reason": self._manager.render_reason' in image
     assert '"render_age_seconds"' in image
     assert "current_physical_zone_id" in manager
+    assert '"model_family": str(' in manager
+    assert '"model": str(data.get("model") or "")' in manager
     render = RENDER.read_text(encoding="utf-8")
     assert "raw vendor postureTheta in radians" in render
     assert "H2_SNAPSHOT_SVG_PATHS" in render
