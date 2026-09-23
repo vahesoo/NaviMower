@@ -101,6 +101,7 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
     weather_reason = diagnostics.get("weather_dispatch_hold_reason")
     if not weather_reason and diagnostics.get("resume_pending") and interrupted_reason in {
         "rain",
+        "rain_delay",
         "snow",
         "wind",
         "frost",
@@ -151,6 +152,8 @@ def schedule_status_snapshot(controller: Any) -> dict[str, Any]:
         "weather_delay_reason": weather_reason,
         "weather_state": (controller.coordinator.data or {}).get("weather_state"),
         "weather_fresh": (controller.coordinator.data or {}).get("weather_state_fresh"),
+        "rain_delay_remaining_minutes": (controller.coordinator.data or {}).get("rain_delay_remaining_minutes"),
+        "rain_delay_until": (controller.coordinator.data or {}).get("rain_delay_until"),
         "last_command": diagnostics.get("last_command"),
         "last_error": diagnostics.get("last_error"),
         "suspended_reason": suspended_reason,

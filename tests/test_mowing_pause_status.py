@@ -131,7 +131,7 @@ def test_fresh_vendor_rain_overrides_older_manual_dock_attribution() -> None:
         settings={},
         vendor_messages=[],
         weather_status={
-            "state": "rain_delay",
+            "state": "raining",
             "hold_active": True,
             "hold_reason": "rain",
             "hold_reasons": ["rain"],
@@ -140,13 +140,37 @@ def test_fresh_vendor_rain_overrides_older_manual_dock_attribution() -> None:
             "fresh": True,
         },
     )
-    assert status["state"] == "rain"
+    assert status["state"] == "raining"
     assert status["reason"] == "rain"
     assert status["underlying_interrupted_reason"] == "manual_dock"
     assert status["confidence"] == "vendor_weather_state"
     assert status["automation_safe_weather"] is True
-    assert status["weather_state"] == "rain_delay"
+    assert status["weather_state"] == "raining"
     assert status["weather_hold_reason"] == "rain"
+
+
+def test_derived_post_rain_delay_is_distinct_and_automation_safe() -> None:
+    status = MODULE.classify_mowing_pause(
+        interrupted_reason="rain",
+        active_task={},
+        settings={},
+        vendor_messages=[],
+        weather_status={
+            "state": "rain_delay",
+            "hold_active": True,
+            "hold_reason": "rain_delay",
+            "hold_reasons": ["rain_delay"],
+            "source": "private_cloud_vehicle_weather+derived_rain_delay",
+            "age_s": 5.0,
+            "fresh": True,
+            "rain_delay_remaining_minutes": 17,
+            "rain_delay_until": "2026-09-23T12:00:00+00:00",
+        },
+    )
+    assert status["state"] == "rain_delay"
+    assert status["reason"] == "rain_delay"
+    assert status["automation_safe_weather"] is True
+    assert status["rain_delay_remaining_minutes"] == 17
 
 
 def test_stale_vendor_weather_never_hides_newer_transition_reason() -> None:

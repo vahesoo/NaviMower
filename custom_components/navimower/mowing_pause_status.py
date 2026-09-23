@@ -113,7 +113,11 @@ def classify_mowing_pause(
     # attribution such as manual_dock.  This is intentionally freshness-gated:
     # a stale weather row must never hide a newer manual/charging/night reason.
     if weather_active:
-        if len(weather_reasons) > 1 or weather_state == "weather_delay":
+        if weather_state == "raining":
+            state = "raining"
+        elif weather_state == "rain_delay":
+            state = "rain_delay"
+        elif len(weather_reasons) > 1 or weather_state == "weather_delay":
             state = "weather"
         else:
             state = weather_reason or "weather"
@@ -172,6 +176,8 @@ def classify_mowing_pause(
         "weather_source": weather.get("source"),
         "weather_age_s": weather.get("age_s"),
         "weather_fresh": weather_fresh,
+        "rain_delay_remaining_minutes": weather.get("rain_delay_remaining_minutes"),
+        "rain_delay_until": weather.get("rain_delay_until"),
         "automation_safe_weather": weather_active,
         "low_battery_confirmed": state == "low_battery",
         "automation_safe_low_battery": state == "low_battery",
@@ -210,6 +216,8 @@ def _status_for_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str
             "source": snapshot.get("weather_state_source"),
             "age_s": snapshot.get("weather_state_age"),
             "fresh": snapshot.get("weather_state_fresh"),
+            "rain_delay_remaining_minutes": snapshot.get("rain_delay_remaining_minutes"),
+            "rain_delay_until": snapshot.get("rain_delay_until"),
         },
     )
 
