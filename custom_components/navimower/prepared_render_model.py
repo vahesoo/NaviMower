@@ -978,12 +978,17 @@ class PreparedRenderModelManager:
     def _live_source(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
         payload = self.coordinator._map_payload_with_sessions([], None)  # noqa: SLF001
+        history = getattr(self.coordinator, "history", None)
+        active_session = getattr(history, "active_session", None)
         return {
             "trail_segments": deepcopy(payload.get("trail_segments") or []),
             "trail_session": payload.get("trail_session"),
             "trail_active": bool(payload.get("trail_active")),
             "activity": data.get("activity"),
             "current_physical_zone_id": data.get("current_physical_zone_id"),
+            "active_session": deepcopy(active_session)
+            if isinstance(active_session, dict)
+            else None,
         }
 
     async def _build_live(self) -> None:
@@ -1006,6 +1011,7 @@ class PreparedRenderModelManager:
                 (time.perf_counter() - started) * 1000.0,
                 2,
             )
+            semantic = model.get("semantic_route") or {}
             self.last_live_summary = {
                 "resource_id": resource["resource_id"],
                 "byte_length": len(resource["body"]),
@@ -1015,6 +1021,17 @@ class PreparedRenderModelManager:
                 "trail_session": model.get("trail_session"),
                 "trail_active": model.get("trail_active"),
                 "activity": model.get("activity"),
+                "semantic_available": bool(semantic.get("available")),
+                "semantic_session_id": semantic.get("session_id"),
+                "semantic_source_point_count": semantic.get("source_point_count"),
+                "cutting_segment_count": semantic.get("cutting_segment_count"),
+                "travel_segment_count": semantic.get("travel_segment_count"),
+                "cutting_render_point_count": semantic.get(
+                    "cutting_render_point_count"
+                ),
+                "travel_render_point_count": semantic.get(
+                    "travel_render_point_count"
+                ),
             }
             self._live_base_resource_id = resource["resource_id"]
             self._live_base_trail_session = model.get("trail_session")
@@ -1025,6 +1042,15 @@ class PreparedRenderModelManager:
                 and _integer(row.get("point_count")) is not None
             }
             self._live_base_point_count = int(model.get("point_count") or 0)
+            semantic = model.get("semantic_route") or {}
+            self._live_base_semantic_session_id = (
+                str(semantic.get("session_id"))
+                if semantic.get("session_id")
+                else None
+            )
+            self._live_base_semantic_point_count = int(
+                semantic.get("source_point_count") or 0
+            )
             current = self._live_resources[0] if self._live_resources else None
             if current and current["resource_id"] == resource["resource_id"]:
                 self.live_unchanged_count += 1
@@ -1077,6 +1103,9 @@ class PreparedRenderModelManager:
                 "static_svg_paths": True,
                 "card_equivalent_layout": True,
                 "live_route_svg_paths": True,
+                "live_route_semantic_segments": True,
+                "live_tail_semantic_segments": True,
+                "mowed_edge_requires_same_zone": True,
                 "live_route_short_tail": True,
                 "live_route_tail_only_query": True,
                 "current_cycle_zone_resources": True,
