@@ -54,6 +54,7 @@ def test_beta26_prepared_history_prewarm_manifest_and_resources() -> None:
         const = module("custom_components.navimower.const")
         const.DOMAIN = "navimower"
         svg = module("custom_components.navimower.session_svg")
+        svg.SESSION_SVG_CLASSIFIER_VERSION = 2
 
         def fingerprint(session):
             return {
