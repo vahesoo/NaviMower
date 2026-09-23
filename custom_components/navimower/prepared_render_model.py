@@ -1220,6 +1220,28 @@ class PreparedRenderModelManager:
         current_point_count = sum(len(points) for points in clean_segments)
         base_resource_id = self._live_base_resource_id
         base_point_count = self._live_base_point_count
+        history = getattr(self.coordinator, "history", None)
+        active_session = getattr(history, "active_session", None)
+        semantic = _semantic_tail_model(
+            active_session,
+            base_session_id=self._live_base_semantic_session_id,
+            base_point_count=self._live_base_semantic_point_count,
+        )
+        self.last_semantic_live_tail_point_count = int(
+            semantic.get("point_count") or 0
+        )
+        self.last_semantic_live_tail_cutting_segment_count = int(
+            semantic.get("cutting_segment_count") or 0
+        )
+        self.last_semantic_live_tail_travel_segment_count = int(
+            semantic.get("travel_segment_count") or 0
+        )
+        self.last_semantic_live_tail_reason = semantic.get("reason")
+        if semantic.get("usable"):
+            self.semantic_live_tail_success_count += 1
+        else:
+            self.semantic_live_tail_fallback_count += 1
+
         result: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "scope": "prepared_live_tail",
@@ -1233,6 +1255,7 @@ class PreparedRenderModelManager:
             "segment_count": 0,
             "max_points": LIVE_TAIL_MAX_POINTS,
             "segments": [],
+            "semantic": semantic,
             "reason": None,
         }
 
@@ -1351,6 +1374,16 @@ class PreparedRenderModelManager:
             "last_live_tail_base_point_count": self.last_live_tail_base_point_count,
             "last_live_tail_current_point_count": self.last_live_tail_current_point_count,
             "last_live_tail_reason": self.last_live_tail_reason,
+            "semantic_live_tail_success_count": self.semantic_live_tail_success_count,
+            "semantic_live_tail_fallback_count": self.semantic_live_tail_fallback_count,
+            "last_semantic_live_tail_point_count": self.last_semantic_live_tail_point_count,
+            "last_semantic_live_tail_cutting_segment_count": (
+                self.last_semantic_live_tail_cutting_segment_count
+            ),
+            "last_semantic_live_tail_travel_segment_count": (
+                self.last_semantic_live_tail_travel_segment_count
+            ),
+            "last_semantic_live_tail_reason": self.last_semantic_live_tail_reason,
             "building": {
                 "static": bool(self._static_task and not self._static_task.done()),
                 "live_route": bool(self._live_task and not self._live_task.done())
