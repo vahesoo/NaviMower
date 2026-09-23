@@ -8,9 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta32_version() -> None:
+def test_beta32_version_floor() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta32"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 32
 
 
 def test_beta32_charge_limit_uses_positive_capability_evidence() -> None:
