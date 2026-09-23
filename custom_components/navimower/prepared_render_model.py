@@ -770,6 +770,7 @@ class PreparedRenderModelManager:
         self.last_live_tail_base_point_count = 0
         self.last_live_tail_current_point_count = 0
         self.last_live_tail_reason: str | None = None
+        self.semantic_live_tail_requests = 0
         self.semantic_live_tail_success_count = 0
         self.semantic_live_tail_fallback_count = 0
         self.last_semantic_live_tail_point_count = 0
@@ -1164,6 +1165,7 @@ class PreparedRenderModelManager:
                 "live_semantic_route_resource": True,
                 "live_tail_semantic_segments": True,
                 "live_semantic_tail_query": True,
+                "live_semantic_tail_only_query": True,
                 "mowed_edge_requires_same_zone": True,
                 "live_route_short_tail": True,
                 "live_route_tail_only_query": True,
@@ -1296,41 +1298,14 @@ class PreparedRenderModelManager:
         self,
         trail_segments: Any,
         trail_session: Any,
-        *,
-        include_semantic: bool = False,
     ) -> dict[str, Any]:
-        """Return only points added after the latest prepared live resource."""
+        """Return the beta25 legacy short tail after the prepared live resource."""
         self.live_tail_requests += 1
         raw_segments = trail_segments if isinstance(trail_segments, list) else []
         clean_segments = [_points(raw) for raw in raw_segments]
         current_point_count = sum(len(points) for points in clean_segments)
         base_resource_id = self._live_base_resource_id
         base_point_count = self._live_base_point_count
-        semantic: dict[str, Any] | None = None
-        if include_semantic:
-            history = getattr(self.coordinator, "history", None)
-            active_session = getattr(history, "active_session", None)
-            semantic = _semantic_tail_model(
-                active_session,
-                base_session_id=self._live_base_semantic_session_id,
-                base_point_count=self._live_base_semantic_point_count,
-            )
-            semantic["base_resource_id"] = self._live_base_semantic_resource_id
-            self.last_semantic_live_tail_point_count = int(
-                semantic.get("point_count") or 0
-            )
-            self.last_semantic_live_tail_cutting_segment_count = int(
-                semantic.get("cutting_segment_count") or 0
-            )
-            self.last_semantic_live_tail_travel_segment_count = int(
-                semantic.get("travel_segment_count") or 0
-            )
-            self.last_semantic_live_tail_reason = semantic.get("reason")
-            if semantic.get("usable"):
-                self.semantic_live_tail_success_count += 1
-            else:
-                self.semantic_live_tail_fallback_count += 1
-
         result: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "scope": "prepared_live_tail",
@@ -1346,8 +1321,6 @@ class PreparedRenderModelManager:
             "segments": [],
             "reason": None,
         }
-        if semantic is not None:
-            result["semantic"] = semantic
 
         reason: str | None = None
         if not base_resource_id:
@@ -1410,6 +1383,41 @@ class PreparedRenderModelManager:
             }
         )
         return result
+
+    def semantic_live_tail_payload(self) -> dict[str, Any]:
+        """Return only classified active-session points after semantic backbone."""
+        self.semantic_live_tail_requests += 1
+        history = getattr(self.coordinator, "history", None)
+        active_session = getattr(history, "active_session", None)
+        semantic = _semantic_tail_model(
+            active_session,
+            base_session_id=self._live_base_semantic_session_id,
+            base_point_count=self._live_base_semantic_point_count,
+        )
+        semantic.update(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "scope": "prepared_live_semantic_tail",
+                "coordinate_space": "map_xy_m",
+                "base_resource_id": self._live_base_semantic_resource_id,
+                "max_points": LIVE_TAIL_MAX_POINTS,
+            }
+        )
+        self.last_semantic_live_tail_point_count = int(
+            semantic.get("point_count") or 0
+        )
+        self.last_semantic_live_tail_cutting_segment_count = int(
+            semantic.get("cutting_segment_count") or 0
+        )
+        self.last_semantic_live_tail_travel_segment_count = int(
+            semantic.get("travel_segment_count") or 0
+        )
+        self.last_semantic_live_tail_reason = semantic.get("reason")
+        if semantic.get("usable"):
+            self.semantic_live_tail_success_count += 1
+        else:
+            self.semantic_live_tail_fallback_count += 1
+        return semantic
 
     def diagnostics(self) -> dict[str, Any]:
         static = self._static_resources[0] if self._static_resources else None
@@ -1492,6 +1500,7 @@ class PreparedRenderModelManager:
             "last_live_tail_base_point_count": self.last_live_tail_base_point_count,
             "last_live_tail_current_point_count": self.last_live_tail_current_point_count,
             "last_live_tail_reason": self.last_live_tail_reason,
+            "semantic_live_tail_requests": self.semantic_live_tail_requests,
             "semantic_live_tail_success_count": self.semantic_live_tail_success_count,
             "semantic_live_tail_fallback_count": self.semantic_live_tail_fallback_count,
             "last_semantic_live_tail_point_count": self.last_semantic_live_tail_point_count,
