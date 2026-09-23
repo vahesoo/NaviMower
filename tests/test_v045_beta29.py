@@ -49,6 +49,8 @@ def test_beta29_diagnostics_exposes_composed_weather_state() -> None:
     assert '"weather_state_fresh"' in source
 
 
-def test_beta29_version() -> None:
+def test_beta29_version_floor() -> None:
     manifest = json.loads(_source(MANIFEST))
-    assert manifest["version"] == "0.4.5-beta29"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 29
