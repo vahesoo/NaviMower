@@ -497,6 +497,163 @@ def build_static_render_model(source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _prepared_semantic_lines(
+    segments: list[list[list[float]]],
+    *,
+    kind: str,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return compact SVG-ready rows for one semantic route class."""
+    rows: list[dict[str, Any]] = []
+    rendered_points = 0
+    for index, raw in enumerate(segments):
+        points = simplify_xy_points(raw)
+        if len(points) < 2:
+            continue
+        row = _prepared_line(
+            points,
+            identity=index,
+            extra={"kind": kind},
+        )
+        if row is None:
+            continue
+        rows.append(row)
+        rendered_points += int(row.get("point_count") or 0)
+    return rows, rendered_points
+
+
+def _semantic_route_model(session: Any) -> dict[str, Any]:
+    """Classify one active History session into cutting and travel SVG paths."""
+    if not isinstance(session, dict):
+        return {
+            "available": False,
+            "classification": "mqtt_action_activity_same_zone",
+            "session_id": None,
+            "source_point_count": 0,
+            "cutting_segments": [],
+            "travel_segments": [],
+            "cutting_segment_count": 0,
+            "travel_segment_count": 0,
+            "cutting_render_point_count": 0,
+            "travel_render_point_count": 0,
+        }
+
+    _all_segments, cutting, travel = split_session_route_segments(session)
+    cutting_rows, cutting_points = _prepared_semantic_lines(
+        cutting,
+        kind="cutting",
+    )
+    travel_rows, travel_points = _prepared_semantic_lines(
+        travel,
+        kind="travel",
+    )
+    return {
+        "available": True,
+        "classification": "mqtt_action_activity_same_zone",
+        "session_id": str(session.get("id") or "") or None,
+        "source_point_count": len(session.get("points") or []),
+        "cutting_segments": cutting_rows,
+        "travel_segments": travel_rows,
+        "cutting_segment_count": len(cutting_rows),
+        "travel_segment_count": len(travel_rows),
+        "cutting_render_point_count": cutting_points,
+        "travel_render_point_count": travel_points,
+    }
+
+
+def _semantic_tail_model(
+    session: Any,
+    *,
+    base_session_id: str | None,
+    base_point_count: int,
+) -> dict[str, Any]:
+    """Return SVG-ready cutting/travel fragments added after a prepared base."""
+    result: dict[str, Any] = {
+        "usable": False,
+        "classification": "mqtt_action_activity_same_zone",
+        "base_session_id": base_session_id,
+        "session_id": None,
+        "base_point_count": max(0, int(base_point_count)),
+        "current_point_count": 0,
+        "point_count": 0,
+        "cutting_segments": [],
+        "travel_segments": [],
+        "cutting_segment_count": 0,
+        "travel_segment_count": 0,
+        "cutting_render_point_count": 0,
+        "travel_render_point_count": 0,
+        "reason": None,
+    }
+    if not isinstance(session, dict):
+        result["reason"] = "no_active_session"
+        return result
+
+    session_id = str(session.get("id") or "") or None
+    points = [
+        list(point)
+        for point in session.get("points") or []
+        if isinstance(point, list) and len(point) >= 3
+    ]
+    current_count = len(points)
+    result["session_id"] = session_id
+    result["current_point_count"] = current_count
+
+    reason: str | None = None
+    if not base_session_id:
+        reason = "semantic_base_unavailable"
+    elif session_id != base_session_id:
+        reason = "semantic_session_mismatch"
+    elif base_point_count > current_count:
+        reason = "semantic_trail_rewound"
+
+    tail_points: list[list[Any]] = []
+    if reason is None and current_count > base_point_count:
+        start = max(0, int(base_point_count) - 1)
+        tail_points = points[start:]
+    if reason is None and len(tail_points) > LIVE_TAIL_MAX_POINTS:
+        reason = "semantic_tail_limit_exceeded"
+
+    result["point_count"] = len(tail_points)
+    if reason is not None:
+        result["reason"] = reason
+        return result
+
+    if len(tail_points) >= 2:
+        first_stamp = _integer(tail_points[0][0])
+        starts = [
+            value
+            for value in (
+                _integer(item)
+                for item in session.get("segment_starts_ms") or []
+            )
+            if value is not None
+            and (first_stamp is None or value >= first_stamp)
+        ]
+        tail_session = {
+            "id": session_id,
+            "active": True,
+            "points": tail_points,
+            "segment_starts_ms": starts,
+        }
+        semantic = _semantic_route_model(tail_session)
+        result.update(
+            {
+                "cutting_segments": semantic["cutting_segments"],
+                "travel_segments": semantic["travel_segments"],
+                "cutting_segment_count": semantic["cutting_segment_count"],
+                "travel_segment_count": semantic["travel_segment_count"],
+                "cutting_render_point_count": semantic[
+                    "cutting_render_point_count"
+                ],
+                "travel_render_point_count": semantic[
+                    "travel_render_point_count"
+                ],
+            }
+        )
+
+    result["usable"] = True
+    return result
+
+
 def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
     """Prepare current route as SVG-ready paths without changing route ownership."""
     rows: list[dict[str, Any]] = []
