@@ -143,7 +143,7 @@ def _direct_weather_decision(
     controller: NavimowerScheduleController,
 ) -> tuple[bool | None, str | None]:
     """Return the fresh vendor weather hold decision, if it is known."""
-    data = controller.coordinator.data or {}
+    data = getattr(controller.coordinator, "data", None) or {}
     if data.get("weather_state_fresh") is not True:
         return None, None
     active = data.get("weather_hold_active")
