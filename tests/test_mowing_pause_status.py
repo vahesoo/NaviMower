@@ -194,4 +194,5 @@ def test_status_does_not_treat_generic_vehicle_states_as_low_battery_proof() -> 
     assert "STATE_PAUSED" not in source
     assert "0211" not in source
     assert "0220" not in source
-    assert "vendor Device\nnotification feed confirms" in source
+    assert "vendor Device notification" in source
+    assert "confirms the low-battery return" in source
