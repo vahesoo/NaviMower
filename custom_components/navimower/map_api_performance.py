@@ -48,7 +48,9 @@ async def _async_map_payload(
     include_daily_trails: bool,
     include_current_cycle: bool = True,
     include_prepared_live_tail: bool = False,
+    include_prepared_semantic_live_tail: bool = False,
     prepared_live_tail_only: bool = False,
+    prepared_live_semantic_tail_only: bool = False,
 ) -> dict[str, Any]:
     """Build only explicitly requested payload sections."""
     current_cycle_render = (
@@ -126,6 +128,21 @@ async def _async_map_payload(
                 # frontend can opt into receiving only the tiny post-resource
                 # live tail instead of serializing/transferring the full raw
                 # flat + segmented trail on every Map API refresh.
+                payload.pop("trail", None)
+                payload.pop("trail_segments", None)
+
+        if (
+            include_prepared_semantic_live_tail
+            or prepared_live_semantic_tail_only
+        ):
+            semantic_tail = prepared.semantic_live_tail_payload()
+            payload["prepared_live_semantic_tail"] = semantic_tail
+            if (
+                prepared_live_semantic_tail_only
+                and semantic_tail.get("usable")
+            ):
+                # Future semantic-route consumers need only the classified
+                # cutting/travel tail after the semantic prepared backbone.
                 payload.pop("trail", None)
                 payload.pop("trail_segments", None)
     return payload
@@ -241,6 +258,13 @@ def install_map_api_performance() -> None:
                 kind="live",
                 query_key="live_route_render",
             )
+        if "live_semantic_route_render" in request.query:
+            return _prepared_render_resource_response(
+                coordinator,
+                request,
+                kind="live_semantic",
+                query_key="live_semantic_route_render",
+            )
         if _query_requested(request, "render_model_manifest"):
             manager = getattr(coordinator, "prepared_render_model", None)
             if manager is None:
@@ -265,6 +289,14 @@ def install_map_api_performance() -> None:
             request,
             "prepared_live_tail_only",
         )
+        prepared_live_semantic_tail = _query_requested(
+            request,
+            "prepared_live_semantic_tail",
+        )
+        prepared_live_semantic_tail_only = _query_requested(
+            request,
+            "prepared_live_semantic_tail_only",
+        )
         return self.json(
             await _async_map_payload(
                 coordinator,
@@ -284,7 +316,14 @@ def install_map_api_performance() -> None:
                     prepared_live_tail_only
                     or _query_requested(request, "prepared_live_tail")
                 ),
+                include_prepared_semantic_live_tail=(
+                    prepared_live_semantic_tail
+                    or prepared_live_semantic_tail_only
+                ),
                 prepared_live_tail_only=prepared_live_tail_only,
+                prepared_live_semantic_tail_only=(
+                    prepared_live_semantic_tail_only
+                ),
             )
         )
 

@@ -24,6 +24,7 @@ from .const import (
 from .zone_state import simplify_xy_points
 
 SESSION_SVG_ARCHIVE_VERSION = 2
+SESSION_SVG_CLASSIFIER_VERSION = 2
 SESSION_SVG_GRID_M = 0.025
 SESSION_SVG_MAX_ESTIMATED_CELLS = 1_500_000
 
@@ -86,15 +87,16 @@ def _valid_points(
     return result
 
 
-def _route_segments(
+def split_session_route_segments(
     session: dict[str, Any],
 ) -> tuple[list[list[list[float]]], list[list[list[float]]], list[list[list[float]]]]:
     """Return full, cutting-only and travel-only polyline fragments.
 
-    An edge is considered mowed only when both endpoint samples are confirmed
-    blade-on. Transition edges remain in the travel path, preserving dock,
-    pause, return and zone-to-zone movement without falsely widening them into
-    mowed footprint.
+    A mowing edge must have both endpoint samples confirmed blade-on and both
+    endpoints must belong to the same physical mowing zone. Missing zone ids,
+    zone-boundary crossings, pauses, returns and other transitions are treated
+    conservatively as travel. This prevents a sampled edge from widening the
+    mowed footprint across a zone boundary or outside a mowing zone.
     """
     points = _valid_points(session)
     if len(points) < 2:
@@ -129,7 +131,9 @@ def _route_segments(
             edge_cutting = (
                 previous[3]
                 and current_point[3]
-                and (previous[4] is not None or current_point[4] is not None)
+                and previous[4] is not None
+                and current_point[4] is not None
+                and previous[4] == current_point[4]
             )
             start_xy = [previous[1], previous[2]]
             end_xy = [current_point[1], current_point[2]]
@@ -409,6 +413,7 @@ def session_render_fingerprint(session: dict[str, Any]) -> dict[str, Any]:
         "point_count": len(session.get("points") or []),
         "ended_at_ms": _as_int(session.get("ended_at_ms")),
         "segment_count": max(1, len(session.get("segment_starts_ms") or [])),
+        "classifier_version": SESSION_SVG_CLASSIFIER_VERSION,
     }
 
 
@@ -425,7 +430,7 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
     """Return a compact SVG-ready archive for one completed session."""
     if session.get("active"):
         return None
-    all_segments, cutting_segments, travel_segments = _route_segments(session)
+    all_segments, cutting_segments, travel_segments = split_session_route_segments(session)
     if not all_segments:
         return None
 

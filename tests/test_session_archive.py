@@ -50,6 +50,7 @@ def test_completed_session_archive_manager() -> None:
         const = module("custom_components.navimower.const")
         const.DOMAIN = "navimower"
         svg = module("custom_components.navimower.session_svg")
+        svg.SESSION_SVG_CLASSIFIER_VERSION = 2
 
         def fingerprint(session):
             return {

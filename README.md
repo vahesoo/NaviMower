@@ -217,9 +217,11 @@ A current-cycle trail can remain visible across midnight until that zone begins 
 
 Navimower prepares completed current-cycle mowing geometry on the Home Assistant side. The phased Map API lets a compatible frontend load the base map separately from the compact current-cycle artifact.
 
-Completed History sessions are also prepared on the backend. Retained completed sessions are prewarmed sequentially into immutable, content-addressed SVG-ready resources. A ready-only History manifest exposes those resource descriptors, while the exact timestamped session Stores remain the source of truth. Active sessions stay on the live Prepared SVG + MQTT short-tail path until they settle and become completed History.
+Completed History sessions are also prepared on the backend. Retained completed sessions are prewarmed sequentially into immutable, content-addressed SVG-ready resources. A ready-only History manifest exposes those resource descriptors, while the exact timestamped session Stores remain the source of truth.
 
-The legacy session-render endpoint remains available for older Map Card versions while the content-addressed History path is introduced and field-tested.
+Active sessions stay on Prepared Live + short-tail transport. In beta27 the backend also prepares an **opt-in semantic live route** that separates confirmed blade-on cutting edges from travel/transit edges. A cutting edge is accepted only when both samples are blade-on and both belong to the same physical mowing zone; zone-boundary crossings and missing-zone movement remain travel. This fixes a general route-classification issue rather than an X3-specific one.
+
+The existing beta15 all-movement Prepared Live resource remains unchanged and does not download the new semantic geometry. The legacy session-render endpoint also remains available while compatibility cleanup is staged.
 
 ### Trail retention
 

@@ -50,32 +50,52 @@ inverted exactly once by the matrix, matching the current Map Card layout.
 The resource intentionally does not decide color, opacity, visibility, label
 collision policy, zoom, pan, mower artwork, selection or dialogs.
 
-## Live-route render resource
+## Live-route render resources
 
-The live resource reuses the integration's existing authoritative
-`trail_segments` semantics and converts the current segments to compact SVG
-paths. It does not introduce another trail source, gap detector or cycle/reset
-resolver.
+The legacy prepared live resource reuses the integration's existing authoritative
+`trail_segments` semantics and converts the current all-movement route to
+compact SVG paths. This contract remains unchanged for Map Card beta15 and older
+prepared-live consumers.
+
+Beta27 additionally prepares a separate content-addressed
+`live_semantic_route` resource from the exact timestamped active History
+session. It classifies route edges with the same backend rules used by
+current-cycle and completed History rendering:
+
+- MQTT cutting action is preferred over normalized activity;
+- both edge endpoints must be confirmed blade-on;
+- both endpoints must have a physical mowing-zone id;
+- both endpoints must belong to the **same** physical zone;
+- zone-boundary crossings, missing-zone samples, pause/return/transit and unknown
+  states remain travel.
+
+The semantic resource contains separate SVG-ready `cutting_segments` and
+`travel_segments`. It is prepared at the same 30-second cadence as the legacy
+live backbone but is **not** downloaded by beta15. The manifest only advertises
+its descriptor; a future card opts into that resource explicitly with
+`live_semantic_route_render=<resource_id>`.
 
 While active, preparation is coalesced and rate-limited to at most one build per
 30 seconds. Session, activity, physical-zone and trail-active transitions bypass
 that cadence and publish immediately so lifecycle changes never wait for the next
-periodic backbone refresh. The latest two content-addressed resources are retained
-so a client already fetching the previous descriptor can complete safely.
+periodic backbone refresh. The latest two content-addressed resources of each
+live kind are retained so an in-flight client can complete safely.
 
-The normal Map API remains backward compatible and keeps returning the full raw
-`trail` and gap-aware `trail_segments`. Newer clients can opt into the
-prepared short-tail contract with `prepared_live_tail=1`. The returned
-`prepared_live_tail` object identifies the prepared live resource it extends and
-contains only points added after that resource, including one overlap point per
-changed segment so the SVG backbone and live tail connect without a gap.
+The normal Map API remains backward compatible. The beta25 short-tail contracts
+`prepared_live_tail=1` and `prepared_live_tail_only=1` are unchanged.
 
-A client that already renders the prepared SVG backbone can request
-`prepared_live_tail_only=1`. When the backend can prove that the short tail is
-aligned with the retained prepared resource, the response omits the full raw
-`trail` and `trail_segments`. If the session changed, the route rewound, the
-prepared resource is unavailable or the tail exceeds the safety limit, the
-backend keeps the full raw trail as an automatic fallback.
+Beta27 adds a separate semantic short-tail contract:
+
+- `prepared_live_semantic_tail=1` returns only the classified active-session
+  points added after the semantic backbone, with separate cutting/travel SVG
+  paths;
+- `prepared_live_semantic_tail_only=1` additionally omits full raw
+  `trail`/`trail_segments` when the semantic tail is safely aligned;
+- session mismatch, rewind, missing semantic base or the 128-point safety limit
+  leaves raw trail available as fallback.
+
+Keeping semantic transport separate means beta15 neither downloads nor computes
+the new semantic short tail on its normal Map API requests.
 
 ## Current-cycle and History resources
 
@@ -107,7 +127,7 @@ resource id.
 
 ## HTTP caching
 
-Static/live prepared resources and Prepared History resources are
+Static/live/semantic-live prepared resources and Prepared History resources are
 content-addressed by SHA-256 and served from authenticated Home Assistant APIs.
 Prepared History resources use `Cache-Control: private, max-age=31536000,
 immutable` and support ETag / `If-None-Match` with HTTP 304 responses.
@@ -122,12 +142,14 @@ cached-only health information:
 - unchanged/coalesced update counts;
 - static/live failure counts and last errors;
 - build durations;
-- static/live resource byte sizes and ids;
+- static/live/semantic-live resource byte sizes and ids;
 - static geometry parity counts;
-- live segment/point counts;
+- legacy live segment/point counts plus semantic cutting/travel segment counts;
 - manifest/resource read counters and first/last read ages;
-- actual static/live resource body bytes served and 304 counts;
-- live-tail request/success/fallback counters;
+- actual static/live/semantic-live resource body bytes served and 304 counts;
+- legacy live-tail request/success/fallback counters;
+- semantic live-tail request/success/fallback counters and latest
+  cutting/travel segment counts;
 - latest/base/current short-tail point counts and maximum observed tail size.
 
 No prepared SVG paths or local point arrays are copied into diagnostics.
@@ -158,8 +180,15 @@ healthy field test should normally show:
 
 ## Compatibility
 
-The beta26 History backend is additive for Map Card beta14. The existing
-sessions and session-render endpoints remain available. A later Map Card beta
-can switch to the ready-only History manifest and content-addressed resources;
-only after that frontend path is field-tested should the remaining legacy
-History/daily-trail compatibility code be removed.
+Map Card beta15 remains fully compatible with beta27. Its legacy prepared-live
+resource and short-tail response stay unchanged, while the new semantic resource
+and semantic tail are opt-in only.
+
+The beta26 Prepared History contract remains unchanged. Because beta27 tightens
+the shared cutting classifier, retained completed-session render caches without
+`classifier_version: 2` are rebuilt once during prewarm; the public render
+schema remains version 2.
+
+Frontend presentation remains intentionally out of scope here. Matching active
+cutting opacity to mowed-area opacity and restoring the selected-session 3x glow
+are Map Card composition/interaction changes, not backend geometry work.
