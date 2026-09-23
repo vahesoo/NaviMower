@@ -1306,28 +1306,30 @@ class PreparedRenderModelManager:
         current_point_count = sum(len(points) for points in clean_segments)
         base_resource_id = self._live_base_resource_id
         base_point_count = self._live_base_point_count
-        history = getattr(self.coordinator, "history", None)
-        active_session = getattr(history, "active_session", None)
-        semantic = _semantic_tail_model(
-            active_session,
-            base_session_id=self._live_base_semantic_session_id,
-            base_point_count=self._live_base_semantic_point_count,
-        )
-        semantic["base_resource_id"] = self._live_base_semantic_resource_id
-        self.last_semantic_live_tail_point_count = int(
-            semantic.get("point_count") or 0
-        )
-        self.last_semantic_live_tail_cutting_segment_count = int(
-            semantic.get("cutting_segment_count") or 0
-        )
-        self.last_semantic_live_tail_travel_segment_count = int(
-            semantic.get("travel_segment_count") or 0
-        )
-        self.last_semantic_live_tail_reason = semantic.get("reason")
-        if semantic.get("usable"):
-            self.semantic_live_tail_success_count += 1
-        else:
-            self.semantic_live_tail_fallback_count += 1
+        semantic: dict[str, Any] | None = None
+        if include_semantic:
+            history = getattr(self.coordinator, "history", None)
+            active_session = getattr(history, "active_session", None)
+            semantic = _semantic_tail_model(
+                active_session,
+                base_session_id=self._live_base_semantic_session_id,
+                base_point_count=self._live_base_semantic_point_count,
+            )
+            semantic["base_resource_id"] = self._live_base_semantic_resource_id
+            self.last_semantic_live_tail_point_count = int(
+                semantic.get("point_count") or 0
+            )
+            self.last_semantic_live_tail_cutting_segment_count = int(
+                semantic.get("cutting_segment_count") or 0
+            )
+            self.last_semantic_live_tail_travel_segment_count = int(
+                semantic.get("travel_segment_count") or 0
+            )
+            self.last_semantic_live_tail_reason = semantic.get("reason")
+            if semantic.get("usable"):
+                self.semantic_live_tail_success_count += 1
+            else:
+                self.semantic_live_tail_fallback_count += 1
 
         result: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -1344,7 +1346,7 @@ class PreparedRenderModelManager:
             "segments": [],
             "reason": None,
         }
-        if include_semantic:
+        if semantic is not None:
             result["semantic"] = semantic
 
         reason: str | None = None
