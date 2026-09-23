@@ -234,6 +234,14 @@ def _weather_delay_reason(
     direct_active, direct_reason = _direct_weather_decision(controller)
     if direct_active is True:
         return direct_reason or "vendor_weather_delay", None
+    if direct_active is False:
+        # Once a retained task was explicitly classified by the live vendor
+        # weather endpoint, its fresh clear is authoritative for that weather
+        # interruption. Do not let an older MQTT taskDelay keep Rain/Snow/etc.
+        # latched after Navimow itself has cleared the condition.
+        interrupted = str(controller._runtime.get("interrupted_reason") or "")  # noqa: SLF001
+        if interrupted in _DIRECT_WEATHER_REASONS:
+            return None, None
 
     delayed = _mqtt_task_delay(controller)
     event_reason, event_code = _recent_weather_event(controller, since=since)
@@ -638,6 +646,15 @@ def _external_override_trace(
 
 async def _evaluate_locked(self: NavimowerScheduleController) -> None:
     runtime = self._runtime
+
+    # Preserve the base controller's enable/native-schedule ownership checks.
+    # A weather hold must never keep a disabled managed scheduler alive or mask
+    # the user's decision to re-enable Navimow's native schedule.
+    data = self.coordinator.data or {}
+    if not self._enabled or (data.get("settings") or {}).get("schedule_enabled") is True:
+        assert _ORIGINAL_EVALUATE_LOCKED is not None
+        await _ORIGINAL_EVALUATE_LOCKED(self)
+        return
 
     # A fresh vendor weather decision is also a pre-dispatch guard. This is the
     # missing case where the mower is physically Docked but the Navimow app says
