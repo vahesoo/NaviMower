@@ -173,6 +173,7 @@ def test_beta27_backend_contract_is_additive_for_beta15() -> None:
     assert '"live_semantic_route_resource": True' in prepared
     assert '"live_tail_semantic_segments": True' in prepared
     assert '"live_semantic_tail_query": True' in prepared
+    assert '"live_semantic_tail_only_query": True' in prepared
     assert '"mowed_edge_requires_same_zone": True' in prepared
     assert '"semantic": semantic' in prepared
     assert '"semantic_route": semantic' in prepared
@@ -191,8 +192,12 @@ def test_beta27_backend_contract_is_additive_for_beta15() -> None:
     assert 'if "live_semantic_route_render" in request.query:' in performance
     assert 'query_key="live_semantic_route_render"' in performance
     assert '"prepared_live_semantic_tail"' in performance
+    assert '"prepared_live_semantic_tail_only"' in performance
+    assert 'payload["prepared_live_semantic_tail"] = semantic_tail' in performance
     assert "include_prepared_semantic_live_tail" in performance
-    assert "include_semantic=include_prepared_semantic_live_tail" in performance
+    assert "prepared_live_semantic_tail_only" in performance
+    assert "semantic_live_tail_payload()" in performance
+    assert "def semantic_live_tail_payload" in prepared
 
     assert "SESSION_SVG_ARCHIVE_VERSION = 2" in svg
     assert "SESSION_SVG_CLASSIFIER_VERSION = 2" in svg
