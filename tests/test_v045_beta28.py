@@ -78,6 +78,13 @@ def test_beta28_keeps_legacy_task_delay_weather_recovery_fallback() -> None:
     assert "_WEATHER_AUTO_RESUME_GRACE_SECONDS = 120.0" in source
 
 
+def test_beta28_fresh_clear_releases_known_direct_weather_interruption() -> None:
+    source = _source(SCHEDULER)
+    assert "if direct_active is False:" in source
+    assert "if interrupted in _DIRECT_WEATHER_REASONS:" in source
+    assert "Do not let an older MQTT taskDelay keep Rain/Snow/etc." in source
+
+
 def test_beta28_schedule_status_reports_weather_delay() -> None:
     source = _source(STATUS)
     assert 'state = "weather_delay"' in source
