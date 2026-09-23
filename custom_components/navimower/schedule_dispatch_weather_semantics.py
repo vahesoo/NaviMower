@@ -37,7 +37,7 @@ _WEATHER_CODES = {
     "150F": "snow",
 }
 _DIRECT_WEATHER_REASONS = frozenset(
-    {"rain", "snow", "wind", "frost", "high_temperature"}
+    {"rain", "rain_delay", "snow", "wind", "frost", "high_temperature"}
 )
 _WEATHER_REASONS = frozenset(
     {*_DIRECT_WEATHER_REASONS, "vendor_weather_delay", "vendor_task_delay"}
