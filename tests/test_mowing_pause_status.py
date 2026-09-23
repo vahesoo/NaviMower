@@ -124,6 +124,69 @@ def test_known_non_battery_reasons_remain_distinct() -> None:
         assert status["automation_safe_low_battery"] is False
 
 
+def test_fresh_vendor_rain_overrides_older_manual_dock_attribution() -> None:
+    status = MODULE.classify_mowing_pause(
+        interrupted_reason="manual_dock",
+        active_task={},
+        settings={},
+        vendor_messages=[],
+        weather_status={
+            "state": "rain_delay",
+            "hold_active": True,
+            "hold_reason": "rain",
+            "hold_reasons": ["rain"],
+            "source": "private_cloud_vehicle_weather",
+            "age_s": 3.9,
+            "fresh": True,
+        },
+    )
+    assert status["state"] == "rain"
+    assert status["reason"] == "rain"
+    assert status["underlying_interrupted_reason"] == "manual_dock"
+    assert status["confidence"] == "vendor_weather_state"
+    assert status["automation_safe_weather"] is True
+    assert status["weather_state"] == "rain_delay"
+    assert status["weather_hold_reason"] == "rain"
+
+
+def test_stale_vendor_weather_never_hides_newer_transition_reason() -> None:
+    status = MODULE.classify_mowing_pause(
+        interrupted_reason="manual_dock",
+        active_task={},
+        settings={},
+        vendor_messages=[],
+        weather_status={
+            "state": "rain_delay",
+            "hold_active": True,
+            "hold_reason": "rain",
+            "hold_reasons": ["rain"],
+            "source": "private_cloud_vehicle_weather",
+            "age_s": 240.0,
+            "fresh": False,
+        },
+    )
+    assert status["state"] == "manual_dock"
+    assert status["automation_safe_weather"] is False
+
+
+def test_multiple_fresh_weather_holds_report_generic_weather_with_details() -> None:
+    status = MODULE.classify_mowing_pause(
+        interrupted_reason="unknown",
+        active_task={},
+        settings={},
+        vendor_messages=[],
+        weather_status={
+            "state": "weather_delay",
+            "hold_active": True,
+            "hold_reason": "rain",
+            "hold_reasons": ["rain", "wind"],
+            "fresh": True,
+        },
+    )
+    assert status["state"] == "weather"
+    assert status["weather_hold_reasons"] == ["rain", "wind"]
+
+
 def test_status_does_not_treat_generic_vehicle_states_as_low_battery_proof() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert "STATE_RETURNING" not in source
