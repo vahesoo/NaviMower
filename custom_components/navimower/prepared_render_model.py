@@ -18,6 +18,8 @@ from typing import Any
 from urllib.parse import quote
 
 from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
+from .session_svg import split_session_route_segments
+from .zone_state import simplify_xy_points
 
 SCHEMA_VERSION = 1
 VIEW_SIZE = 1000.0
