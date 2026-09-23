@@ -715,11 +715,13 @@ class PreparedRenderModelManager:
         self._live_pending = False
         self._static_resources: list[dict[str, Any]] = []
         self._live_resources: list[dict[str, Any]] = []
+        self._live_semantic_resources: list[dict[str, Any]] = []
         self._last_live_build_mono: float | None = None
         self._live_base_resource_id: str | None = None
         self._live_base_trail_session: Any = None
         self._live_base_segment_point_counts: dict[int, int] = {}
         self._live_base_point_count = 0
+        self._live_base_semantic_resource_id: str | None = None
         self._live_base_semantic_session_id: str | None = None
         self._live_base_semantic_point_count = 0
 
@@ -729,6 +731,7 @@ class PreparedRenderModelManager:
         self.live_unchanged_count = 0
         self.static_publication_revision = 0
         self.live_publication_revision = 0
+        self.live_semantic_publication_revision = 0
         self.coalesced_static_updates = 0
         self.coalesced_live_updates = 0
         self.failure_count = 0
@@ -744,16 +747,21 @@ class PreparedRenderModelManager:
         self.manifest_reads = 0
         self.static_resource_reads = 0
         self.live_resource_reads = 0
+        self.live_semantic_resource_reads = 0
         self.static_resource_bytes_served_total = 0
         self.live_resource_bytes_served_total = 0
+        self.live_semantic_resource_bytes_served_total = 0
         self.static_resource_not_modified_count = 0
         self.live_resource_not_modified_count = 0
+        self.live_semantic_resource_not_modified_count = 0
         self._manifest_first_read_mono: float | None = None
         self._manifest_last_read_mono: float | None = None
         self._static_first_read_mono: float | None = None
         self._static_last_read_mono: float | None = None
         self._live_first_read_mono: float | None = None
         self._live_last_read_mono: float | None = None
+        self._live_semantic_first_read_mono: float | None = None
+        self._live_semantic_last_read_mono: float | None = None
         self.live_tail_requests = 0
         self.live_tail_success_count = 0
         self.live_tail_full_fallback_count = 0
