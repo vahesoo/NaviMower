@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from homeassistant.util import dt as dt_util
 
+from .const import ACTIVITY_DOCKED
 from .navimower_schedule import NavimowerScheduleController, _utc_now
 from .schedule_logic import parse_iso
 
@@ -651,6 +652,33 @@ def _set_weather_interruption(
     return changed
 
 
+
+
+def _clear_confirmed_weather_dock_pending(
+    controller: NavimowerScheduleController,
+    data: dict[str, Any],
+) -> bool:
+    """Drop a completed dock command before weather-resume arbitration.
+
+    The composed weather layer runs before the base scheduler's normal
+    _confirm_pending path. A retained weather interruption can therefore
+    otherwise remain blocked forever by an old pending_command.kind="dock"
+    even after the mower is physically docked.
+
+    Only a confirmed docked activity is enough here. Returning is not:
+    resuming while the mower is still travelling back to the station would race
+    the dock command and can create a new vendor-side interruption.
+    """
+    pending = controller._runtime.get("pending_command")  # noqa: SLF001
+    if not isinstance(pending, dict) or pending.get("kind") != "dock":
+        return False
+    if data.get("activity") != ACTIVITY_DOCKED:
+        return False
+
+    controller._runtime["pending_command"] = None  # noqa: SLF001
+    controller.coordinator.clear_pending_activity()
+    return True
+
 def _external_override_trace(
     controller: NavimowerScheduleController,
 ) -> dict[str, Any] | None:
@@ -763,6 +791,14 @@ async def _evaluate_locked(self: NavimowerScheduleController) -> None:
     interrupted = str(runtime.get("interrupted_reason") or "")
     if runtime.get("resume_pending") and interrupted in _WEATHER_REASONS:
         data = self.coordinator.data or {}
+
+        # The weather wrapper can reach this recovery path before the base
+        # scheduler gets a chance to confirm a previously sent dock command.
+        # Once the mower is physically docked that command is complete and must
+        # not block the retained-task Resume/continue path.
+        if _clear_confirmed_weather_dock_pending(self, data):
+            await self._save()
+
         if self._vendor_mowing(data):
             runtime["weather_wait_started_at"] = None
             runtime["weather_wait_window_token"] = None
