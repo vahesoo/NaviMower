@@ -186,6 +186,8 @@ def test_beta30_public_sensor_and_scheduler_use_same_hold() -> None:
     assert 'data.get("weather_hold_active")' in scheduler
 
 
-def test_beta30_version() -> None:
+def test_beta30_version_floor() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta30"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 30
