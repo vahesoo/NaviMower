@@ -71,6 +71,36 @@ def test_snapshot_renderer_produces_png_with_map_cycle_and_pose() -> None:
     assert len(colors) > 8
 
 
+
+def test_snapshot_uses_svg_derived_mower_artwork() -> None:
+    renderer = _render_module()
+    source = {
+        "map": {
+            "zones": [
+                {
+                    "id": 1,
+                    "name": "Test",
+                    "polygon": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                }
+            ],
+            "station": {"x": 1.0, "y": 1.0},
+        },
+        "position": {"x": 5.0, "y": 5.0, "heading": 0.0},
+        "mowing_path_width_m": 0.4,
+        "show_zone_labels": False,
+    }
+
+    png = renderer.render_snapshot_png(source, size=640)
+    image = Image.open(BytesIO(png)).convert("RGB")
+    colors = image.getcolors(maxcolors=640 * 640)
+    assert colors is not None
+    palette = {color for _count, color in colors}
+
+    # #E38A51 is the orange nose/body accent from the Map Card H2 SVG source.
+    assert (227, 138, 81) in palette
+    assert len(renderer.H2_SNAPSHOT_SVG_PATHS) >= 10
+    assert len(renderer._mower_art_layers()) >= 10
+
 def test_cutting_segments_do_not_turn_return_route_into_mowed_area() -> None:
     renderer = _render_module()
     segments = renderer._session_cutting_segments(
@@ -110,4 +140,7 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert "current_physical_zone_id" in manager
     render = RENDER.read_text(encoding="utf-8")
     assert "raw vendor postureTheta in radians" in render
-    assert "math.cos(heading)" in render
+    assert "H2_SNAPSHOT_SVG_PATHS" in render
+    assert "_svg_path_polygons" in render
+    assert "angle = math.pi / 2.0 - heading" in render
+    assert "math.cos(angle)" in render

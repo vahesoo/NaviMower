@@ -55,6 +55,8 @@ def test_beta31_weather_recovery_still_refuses_reset_mow() -> None:
     assert "reset=True" not in weather
 
 
-def test_beta31_version() -> None:
+def test_beta31_version_floor() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta31"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 31

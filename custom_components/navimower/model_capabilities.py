@@ -15,6 +15,7 @@ from .model_support import is_h1_generation
 
 FAMILY_H1: Final = "h1"
 FAMILY_H2: Final = "h2"
+FAMILY_H5: Final = "h5"
 FAMILY_I1: Final = "i1"
 FAMILY_I2_AWD: Final = "i2_awd"
 FAMILY_I2_LIDAR: Final = "i2_lidar"
@@ -46,6 +47,9 @@ class ModelCapabilityProfile:
     # are intentionally separate.
     rain_detection: bool | None = None
     physical_rain_sensor: bool | None = None
+    # Positive app/field evidence for the user-facing maximum charge control.
+    # None means unknown: callers may still accept explicit vendor min/max bounds.
+    charging_limit_control: bool | None = None
 
 
 _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
@@ -66,6 +70,7 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         edge_sense=True,
         rain_detection=True,
         physical_rain_sensor=True,
+        charging_limit_control=True,
     ),
     # i1 exposes the physical 20-60 mm range in device metadata, but the user
     # adjusts the deck with the mower's manual knob.  Until a knob-position
@@ -82,6 +87,7 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_range_mm=(20, 60),
         rain_detection=False,
         physical_rain_sensor=False,
+        charging_limit_control=True,
     ),
     FAMILY_I2_AWD: ModelCapabilityProfile(
         family=FAMILY_I2_AWD,
@@ -115,6 +121,14 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_writable=True,
         rain_detection=True,
         physical_rain_sensor=True,
+        charging_limit_control=False,
+    ),
+    # H5 field evidence (H510 Pro beta hardware) confirms the Navimow app exposes
+    # a maximum charge limit even though batteryConfig may be empty. Keep height
+    # capability conservative until the H5 write path is field-tested separately.
+    FAMILY_H5: ModelCapabilityProfile(
+        family=FAMILY_H5,
+        charging_limit_control=True,
     ),
     FAMILY_X4: ModelCapabilityProfile(
         family=FAMILY_X4,
@@ -150,6 +164,8 @@ def model_family(model: str | None, vehicle_type: int | None = None) -> str:
     normalized = _normalized_model(model)
     if normalized.startswith("H2"):
         return FAMILY_H2
+    if normalized.startswith("H5"):
+        return FAMILY_H5
     if normalized.startswith("I1"):
         return FAMILY_I1
     if normalized.startswith("I2"):
@@ -177,6 +193,7 @@ def capability_profile(
 __all__ = [
     "FAMILY_H1",
     "FAMILY_H2",
+    "FAMILY_H5",
     "FAMILY_I1",
     "FAMILY_I2_AWD",
     "FAMILY_I2_LIDAR",

@@ -190,9 +190,27 @@ def _battery_limits_capability(data: dict[str, Any]) -> dict[str, Any]:
     charge_min = _as_int(config.get("chargingLimitMin"))
     charge_max = _as_int(config.get("chargingLimitMax"))
     bounds_available = None not in (return_min, return_max, charge_min, charge_max)
+    family = _family_profile(data)
+    charging_limit_writable = (
+        family.charging_limit_control
+        if family.charging_limit_control is not None
+        else bool(charge_min is not None and charge_max is not None and charge_min < charge_max)
+    )
     return {
         "reported": bool(
             "returnBatteryLevel" in settings or "chargingLimit" in settings
+        ),
+        "charging_limit_writable": bool(
+            charging_limit_writable and "chargingLimit" in settings
+        ),
+        "charging_limit_evidence": (
+            "family_field_or_app_evidence"
+            if family.charging_limit_control is True
+            else "family_app_absence"
+            if family.charging_limit_control is False
+            else "device_info.nonstandardVehicleConfig.batteryConfig"
+            if charging_limit_writable
+            else "unproven_shared_schema_field"
         ),
         "current_return_level": _as_int(settings.get("returnBatteryLevel")),
         "current_charging_limit": _as_int(settings.get("chargingLimit")),
