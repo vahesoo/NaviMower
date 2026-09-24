@@ -95,6 +95,24 @@ continue_last_ordered_run:
         device:
           integration: navimower
 
+continue_task:
+  name: Continue interrupted mowing
+  description: >-
+    Continue the currently retained mowing task using the safest backend-owned
+    strategy. When Navimower can prove that the latest ordered run is resumable,
+    only its unfinished zones are sent again in the retained order with reset=false.
+    Otherwise, when vendor-retained task evidence exists, the dedicated vendor
+    Resume command is used. The action refuses to send a command when no resumable
+    task is confirmed.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
 resume:
   name: Resume interrupted mowing
   description: >-
