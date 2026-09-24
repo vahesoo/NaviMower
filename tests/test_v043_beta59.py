@@ -46,7 +46,8 @@ def test_beta59_docs_drop_obsolete_multi_mower_beta_guide() -> None:
     guide = (ROOT / "docs" / "MULTI_MOWER.md").read_text(encoding="utf-8")
     assert "selects it automatically" in guide
     assert "Download diagnostics" in guide
-    assert "export_diagnostics" in guide  # explicitly documented as retired
+    assert "Download diagnostics" in guide
+    assert "export_diagnostics" not in guide  # later cleanup removed stale retired-service wording
 
 
 def test_beta59_architecture_guard_lists_current_semantic_layers() -> None:
