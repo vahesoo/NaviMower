@@ -380,6 +380,7 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 | Action | Purpose |
 | --- | --- |
 | `navimower.mow` | Start selected internal map zone IDs now; choose new/reset cycle or `reset=false` continuation |
+| `navimower.continue_last_ordered_run` | Continue the latest retained ordered run by sending only unfinished zones, in their original order, with `reset=false` |
 | `navimower.resume` | Resume a retained task |
 | `navimower.set_schedule` | Replace one weekday of the mower's native weekly schedule |
 | `navimower.set_schedule_queue` | Persist positional Navimower Schedule Custom order; duplicate zones are allowed |
@@ -389,6 +390,22 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 | `navimower.mark_notification_read` | Mark one merged notification row read |
 | `navimower.mark_all_notifications_read` | Mark all retained notification rows read |
 | `navimower.relearn_georeference` | Clear only learned map georeference calibration and relearn from fresh samples |
+
+### Continue the last ordered run
+
+`navimower.continue_last_ordered_run` is different from the vendor Resume command.
+Navimower remembers the latest successfully sent ordered zone list and tracks which
+of those zones later receive a confirmed 100% completion. Dock/Home does not erase
+this retained list.
+
+When the action is called, already completed zones are removed and only the
+unfinished zones are sent again in their original order with `reset=false`.
+This keeps the mower's retained per-zone progress while avoiding a second pass
+over zones that already completed during the ordered run. The tracker is stored
+with the integration state and survives Home Assistant restarts.
+
+Starting another Mow command supersedes the retained ordered run; Resume and
+Dock/Home do not.
 
 ### Important `navimower.mow` zone-ID rule
 
