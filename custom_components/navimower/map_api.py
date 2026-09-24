@@ -97,6 +97,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
         "location": underlay["location"],
         "map_underlays": underlay["map_underlays"],
         "terrain_overlay": terrain_overlay,
+        "task_resume": dict((coordinator.data or {}).get("task_resume") or {}),
         "entities": {
             "mower": entity_id("lawn_mower", "mower"),
             "map_data": entity_id("sensor", "map_data"),
@@ -104,6 +105,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
             "position_y": entity_id("sensor", "position_y"),
             "heading": entity_id("sensor", "heading"),
             "battery": entity_id("sensor", "battery"),
+            "task_progress": entity_id("sensor", "task_progress"),
             "current_physical_zone": entity_id("sensor", "current_physical_zone"),
             "notification": entity_id("sensor", "notification"),
             "native_schedule_data": entity_id("sensor", "schedule"),
