@@ -62,6 +62,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
         if terrain_manager is not None
         and hasattr(terrain_manager, "frontend_metadata")
         else {
+            "supported": False,
             "available": False,
             "reference_frame": "mower_local_xy",
             "version": None,
