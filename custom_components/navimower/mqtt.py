@@ -959,7 +959,7 @@ class NavimowerMqttBridge:
             item["key_paths"].update(summary["key_paths"])
             item["observed_type_values"].update(summary["observed_type_values"])
     def diagnostic_inventory(self) -> dict[str, Any]:
-        """Return the passive MQTT topic/key inventory as JSON-safe data."""
+        """Return the current-device MQTT topic/key inventory as JSON-safe data."""
         out: dict[str, Any] = {}
         for topic, item in deepcopy(self._message_inventory).items():
             out[topic] = {
