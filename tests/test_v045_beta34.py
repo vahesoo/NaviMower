@@ -23,6 +23,8 @@ def test_beta34_registers_continue_last_ordered_run_action() -> None:
     assert 'source="navimower.continue_last_ordered_run"' in services
     assert "partition_setup = mow_setup(reset=False, ordered=True)" in services
     assert "coordinator.remaining_last_ordered_run_zone_ids()" in services
+    assert "await coordinator.async_refresh_last_ordered_run_completion()" in services
+    assert "no mowing command was sent" in services
     assert "SERVICE_CONTINUE_LAST_ORDERED_RUN" in services
 
     assert "continue_last_ordered_run:" in yaml
@@ -37,6 +39,8 @@ def test_beta34_persists_ordered_run_across_dock_and_restart() -> None:
     assert 'cached.get("last_ordered_run")' in coordinator
     assert '"last_ordered_run": last_ordered_run_snapshot(' in coordinator
     assert "def remaining_last_ordered_run_zone_ids(" in coordinator
+    assert "async def async_refresh_last_ordered_run_completion(" in coordinator
+    assert 'self._endpoint_status.setdefault(\n            "path_info_time"' in coordinator
     assert 'source == "navimower.continue_last_ordered_run"' in coordinator
     assert "start_last_ordered_run(" in coordinator
     assert "update_last_ordered_run(" in coordinator
