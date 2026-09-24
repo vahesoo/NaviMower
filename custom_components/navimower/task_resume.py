@@ -220,6 +220,25 @@ def task_resume_decision(
             evidence=evidence,
         )
 
+    resumable_context = activity in {
+        ACTIVITY_RETURNING,
+        ACTIVITY_ERROR,
+        ACTIVITY_DOCKED,
+    } or docked
+
+    if session is not None and not session_complete and resumable_context:
+        return _base_result(
+            available=True,
+            strategy=RESUME_STRATEGY_VENDOR,
+            reason="vendor_active_session",
+            activity=activity,
+            state_code=state_code,
+            task_progress_pct=progress,
+            task_zone_ids=task_zone_ids,
+            ordered_run=ordered_run,
+            evidence=evidence,
+        )
+
     if (
         progress is not None
         and 0.0 <= progress < 100.0
