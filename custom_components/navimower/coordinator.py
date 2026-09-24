@@ -1527,9 +1527,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["last_ordered_run"] = last_ordered_run_snapshot(
             self._last_ordered_run
         )
+        retained_sessions = self.history.session_summaries(include_points=False)
         snapshot["task_resume"] = task_resume_decision(
             snapshot,
             active_session=self.history.active_session,
+            retained_session=(
+                retained_sessions[-1] if retained_sessions else None
+            ),
         )
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
@@ -3367,7 +3371,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         requested = _dedupe_zone_ids(trace.get("requested_zone_ids"))
         now = datetime.now(UTC).isoformat()
 
-        if source == "navimower.continue_last_ordered_run":
+        if source in {
+            "navimower.continue_last_ordered_run",
+            "navimower.continue_task",
+        }:
             self._last_ordered_run = record_ordered_run_continue(
                 self._last_ordered_run,
                 zone_ids=requested,
