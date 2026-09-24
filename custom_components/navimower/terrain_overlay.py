@@ -244,8 +244,8 @@ class TerrainOverlayManager:
         self._task: asyncio.Task | None = None
 
     @property
-    def supported(self) -> bool:
-        """Return whether this mower family is known to expose LiDAR terrain."""
+    def model_hint(self) -> bool:
+        """Return the model-profile LiDAR hint used only for polling cadence."""
         data = self.coordinator.data or {}
         model = data.get("model") or self.coordinator.entry.data.get("model")
         vehicle_type = data.get("vehicle_type")
@@ -255,13 +255,21 @@ class TerrainOverlayManager:
             capability_profile(model, vehicle_type).lidar_terrain_overlay
         )
 
+    @property
+    def supported(self) -> bool:
+        """Return whether a valid vendor type-2 terrain resource is proven."""
+        manifest = self._manifest
+        return bool(
+            isinstance(manifest, dict)
+            and isinstance(manifest.get("images"), dict)
+            and manifest.get("images")
+        )
+
     async def async_load(self) -> None:
         await self.hass.async_add_executor_job(self._load_cache_blocking)
 
     def start(self) -> None:
-        """Start the independent slow terrain refresh loop."""
-        if not self.supported:
-            return
+        """Start the independent slow terrain discovery/refresh loop."""
         if self._task is not None and not self._task.done():
             return
         self._task = self.hass.async_create_background_task(
@@ -278,8 +286,6 @@ class TerrainOverlayManager:
         await asyncio.gather(task, return_exceptions=True)
 
     async def async_refresh(self) -> None:
-        if not self.supported:
-            return
         await self.hass.async_add_executor_job(
             self.refresh_blocking,
             self.coordinator.data or {},
@@ -299,7 +305,7 @@ class TerrainOverlayManager:
                 )
             delay = (
                 TERRAIN_CHECK_TTL_SECONDS
-                if self._manifest is not None
+                if self._manifest is not None or self.model_hint
                 else TERRAIN_UNAVAILABLE_TTL_SECONDS
             )
             await asyncio.sleep(delay)
@@ -392,9 +398,7 @@ class TerrainOverlayManager:
         raise RuntimeError("terrain file metadata unavailable")
 
     def refresh_blocking(self, snapshot: dict[str, Any] | None = None) -> None:
-        """Check type-2 metadata at a slow cadence and download only on version change."""
-        if not self.supported:
-            return
+        """Discover/check type-2 metadata and download only on version change."""
         snapshot = snapshot or {}
         map_data = snapshot.get("map") if isinstance(snapshot.get("map"), dict) else {}
         map_version = _clean_version(
@@ -402,7 +406,11 @@ class TerrainOverlayManager:
         )
         now = time.monotonic()
         cached = self._manifest is not None
-        ttl = TERRAIN_CHECK_TTL_SECONDS if cached else TERRAIN_UNAVAILABLE_TTL_SECONDS
+        ttl = (
+            TERRAIN_CHECK_TTL_SECONDS
+            if cached or self.model_hint
+            else TERRAIN_UNAVAILABLE_TTL_SECONDS
+        )
         due = (
             self._last_attempt_mono is None
             or now - self._last_attempt_mono >= ttl
@@ -499,6 +507,8 @@ class TerrainOverlayManager:
         images = manifest.get("images") if isinstance(manifest.get("images"), dict) else {}
         return {
             "supported": self.supported,
+            "support_source": "vendor_type2_resource" if self.supported else None,
+            "model_hint": self.model_hint,
             "available": bool(images),
             "cached": bool(images),
             "vendor_file_version": manifest.get("vendor_file_version"),
