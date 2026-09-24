@@ -41,6 +41,7 @@ from .ordered_run import (
     update_last_ordered_run,
 )
 from .zone_state import build_zone_model, zone_model_signature
+from .task_resume import task_resume_decision
 from .const import (
     ACTIVE_STATES,
     ACTIVITY_DOCKED,
@@ -1525,6 +1526,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._update_last_ordered_run(snapshot)
         snapshot["last_ordered_run"] = last_ordered_run_snapshot(
             self._last_ordered_run
+        )
+        snapshot["task_resume"] = task_resume_decision(
+            snapshot,
+            active_session=self.history.active_session,
         )
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
