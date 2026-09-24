@@ -32,6 +32,14 @@ from .history import (
 )
 from .location import decode_map_work_position
 from .map_identifiers import resolve_map_identifiers
+from .ordered_run import (
+    last_ordered_run_snapshot,
+    normalize_last_ordered_run,
+    record_ordered_run_continue,
+    start_last_ordered_run,
+    supersede_last_ordered_run,
+    update_last_ordered_run,
+)
 from .zone_state import build_zone_model, zone_model_signature
 from .const import (
     ACTIVE_STATES,
@@ -1130,6 +1138,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._command_target_set_at: float | None = None
         self._command_target_source: str | None = None
         self._last_mow_command_trace: dict[str, Any] | None = None
+        self._last_ordered_run: dict[str, Any] | None = None
         self._pending_activity: str | None = None
         self._pending_activity_set_at: float | None = None
         self._last_physical_zone_id: int | None = None
@@ -1181,6 +1190,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             telemetry = cached.get("telemetry")
             if isinstance(telemetry, dict):
                 self._restored_telemetry = dict(telemetry)
+            self._last_ordered_run = normalize_last_ordered_run(
+                cached.get("last_ordered_run")
+            )
             problem = cached.get("problem")
             if isinstance(problem, dict):
                 self._problem_latched = bool(problem.get("latched"))
@@ -1356,6 +1368,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 "last_problem": deepcopy(self._last_problem),
                 "events": deepcopy(self._problem_events[-20:]),
             },
+            "last_ordered_run": last_ordered_run_snapshot(
+                self._last_ordered_run
+            ),
             "telemetry": {
                 "battery": data.get("battery"),
                 "battery_source": data.get("battery_source"),
@@ -1507,6 +1522,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["last_map_mowed_at"] = totals.get("last_map_mowed_at")
         snapshot["last_map_completed_at"] = totals.get("last_map_completed_at")
         snapshot["active_cycle_id"] = (self.history.active_session or {}).get("id")
+        self._update_last_ordered_run(snapshot)
+        snapshot["last_ordered_run"] = last_ordered_run_snapshot(
+            self._last_ordered_run
+        )
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
         """Return success only for zones confirmed inside this observed cycle."""
@@ -3265,6 +3284,116 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "state_before": self._mow_command_state_snapshot(),
         }
 
+    def _publish_last_ordered_run(self) -> None:
+        """Expose and persist the ordered-run tracker without changing task state."""
+        if self.data:
+            updated = dict(self.data)
+            updated["last_ordered_run"] = last_ordered_run_snapshot(
+                self._last_ordered_run
+            )
+            self.async_set_updated_data(updated)
+        self._schedule_state_save(self.data)
+
+    def _update_last_ordered_run(self, snapshot: dict[str, Any]) -> None:
+        """Fold confirmed per-zone completion into the retained ordered run."""
+        previous = last_ordered_run_snapshot(self._last_ordered_run)
+        updated = update_last_ordered_run(
+            self._last_ordered_run,
+            zone_states=snapshot.get("zone_states") or [],
+        )
+        self._last_ordered_run = updated
+        if updated != previous:
+            self._schedule_state_save(snapshot)
+
+    def last_ordered_run(self) -> dict[str, Any] | None:
+        """Return the retained ordered run for actions/diagnostics."""
+        return last_ordered_run_snapshot(self._last_ordered_run)
+
+    def remaining_last_ordered_run_zone_ids(self) -> list[int]:
+        """Return unfinished zones in their original user-requested order."""
+        run = self.last_ordered_run()
+        if not run or not run.get("resumable"):
+            return []
+        return _dedupe_zone_ids(run.get("remaining_zone_ids"))
+
+    async def async_refresh_last_ordered_run_completion(self) -> bool:
+        """Force fresh vendor per-zone coverage before a continue decision.
+
+        The mower may already be docked when this action is called, where the
+        normal path-info polling TTL is intentionally slower.  A continuation
+        must not re-send a zone merely because its final 100% is still cached
+        behind that idle TTL.
+        """
+        status = self._endpoint_status.setdefault(
+            "path_info_time",
+            {
+                "attempts": 0,
+                "successes": 0,
+                "failures": 0,
+                "consecutive_failures": 0,
+                "last_attempt_mono": None,
+                "last_success_mono": None,
+                "last_error": None,
+                "last_attempt_utc": None,
+                "last_success_utc": None,
+                "last_error_utc": None,
+            },
+        )
+        previous_success = _as_float(status.get("last_success_mono"))
+        status["last_attempt_mono"] = None
+        status["last_attempt_utc"] = None
+        await self.async_refresh()
+        current = self._endpoint_status.get("path_info_time") or {}
+        fresh_success = _as_float(current.get("last_success_mono"))
+        return bool(
+            fresh_success is not None
+            and (
+                previous_success is None
+                or fresh_success > previous_success
+            )
+        )
+
+    def _record_successful_mow_in_ordered_run(self) -> None:
+        """Start, continue or supersede the retained ordered-run tracker."""
+        trace = self._last_mow_command_trace
+        if not isinstance(trace, dict):
+            return
+        source = str(trace.get("source") or "")
+        requested = _dedupe_zone_ids(trace.get("requested_zone_ids"))
+        now = datetime.now(UTC).isoformat()
+
+        if source == "navimower.continue_last_ordered_run":
+            self._last_ordered_run = record_ordered_run_continue(
+                self._last_ordered_run,
+                zone_ids=requested,
+                at=now,
+            )
+            self._publish_last_ordered_run()
+            return
+
+        if bool(trace.get("ordered")) and requested:
+            self._last_ordered_run = start_last_ordered_run(
+                zone_ids=requested,
+                zone_states=(self.data or {}).get("zone_states") or [],
+                reset=bool(trace.get("reset")),
+                source=source,
+                started_at=str(trace.get("started_at_utc") or now),
+                model=str(trace.get("model") or ""),
+            )
+            self._publish_last_ordered_run()
+            return
+
+        # Any other successfully sent Mow command starts a different vendor task.
+        # Keep the previous ordered run for diagnostics, but do not offer an
+        # unsafe continuation across that newer task.
+        if self._last_ordered_run is not None:
+            self._last_ordered_run = supersede_last_ordered_run(
+                self._last_ordered_run,
+                source=source or "other_mow_command",
+                at=now,
+            )
+            self._publish_last_ordered_run()
+
     def record_mow_command_result(self, result: Any) -> None:
         """Attach the private-cloud acknowledgement to the active command trace."""
         if self._last_mow_command_trace is None:
@@ -3277,6 +3406,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._last_mow_command_trace["state_after_send"] = (
             self._mow_command_state_snapshot()
         )
+        self._record_successful_mow_in_ordered_run()
 
     def record_mow_command_error(self, error: BaseException) -> None:
         """Preserve a failed send attempt instead of losing its payload details."""

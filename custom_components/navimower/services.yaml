@@ -77,6 +77,24 @@ mow:
       selector:
         boolean:
 
+
+continue_last_ordered_run:
+  name: Continue last ordered run
+  description: >-
+    Continue the most recent successfully sent ordered mowing run without
+    re-sending zones that Navimower has already confirmed complete. The original
+    zone order is retained across Dock/Home and Home Assistant restarts.
+    Only unfinished zones are sent to the mower, using the normal Mow command with
+    reset=false so retained per-zone mowing progress can continue.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+
 resume:
   name: Resume interrupted mowing
   description: >-
