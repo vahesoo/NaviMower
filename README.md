@@ -380,8 +380,9 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 | Action | Purpose |
 | --- | --- |
 | `navimower.mow` | Start selected internal map zone IDs now; choose new/reset cycle or `reset=false` continuation |
+| `navimower.continue_task` | Continue a confirmed interrupted task using the backend-selected ordered-run or vendor Resume strategy |
 | `navimower.continue_last_ordered_run` | Continue the latest retained ordered run by sending only unfinished zones, in their original order, with `reset=false` |
-| `navimower.resume` | Resume a retained task |
+| `navimower.resume` | Send the low-level vendor Resume command for a retained task |
 | `navimower.set_schedule` | Replace one weekday of the mower's native weekly schedule |
 | `navimower.set_schedule_queue` | Persist positional Navimower Schedule Custom order; duplicate zones are allowed |
 | `navimower.reset_schedule` | Explicitly clear managed-scheduler round/runtime ownership |
@@ -390,6 +391,14 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 | `navimower.mark_notification_read` | Mark one merged notification row read |
 | `navimower.mark_all_notifications_read` | Mark all retained notification rows read |
 | `navimower.relearn_georeference` | Clear only learned map georeference calibration and relearn from fresh samples |
+
+### Smart task continuation
+
+`navimower.continue_task` is the preferred UI-facing continuation action. Navimower decides whether the current task can be resumed and which mechanism is safest. A proven unfinished ordered run uses the retained ordered-zone continuation path; otherwise a confirmed vendor-retained task uses the dedicated vendor Resume command. Returning-to-dock and resumable error states are allowed when task evidence remains, while map editing, active mowing and confirmed completed tasks are not offered as resumable.
+
+The same backend decision is exposed on **Task progress** as `resume_available`, `resume_strategy`, `resume_reason` and `resume_evidence`, and through the Map API frontend metadata. This lets dashboard cards render Resume without duplicating mower-state policy in JavaScript.
+
+The low-level `navimower.resume` and `navimower.continue_last_ordered_run` actions remain available for automations and backward compatibility.
 
 ### Continue the last ordered run
 
