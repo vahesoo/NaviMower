@@ -106,6 +106,27 @@ def task_resume_decision(
     )
     evidence: list[str] = []
 
+    session_complete = False
+    if session is not None:
+        confirmed = set(_zone_ids(session.get("task_zone_completion_confirmed")))
+        session_complete = bool(
+            session.get("completed") is True
+            or (
+                bool(session_zone_ids)
+                and set(session_zone_ids).issubset(confirmed)
+            )
+        )
+        session_kind = "active_session" if active is not None else "retained_session"
+        evidence.append(
+            f"{session_kind}_{'complete' if session_complete else 'incomplete'}"
+        )
+
+    task_context = (
+        bool(task_zone_ids)
+        or bool(snapshot.get("active_cycle_id"))
+        or isinstance(snapshot.get("last_ordered_run"), dict)
+    )
+
     if state_code in MAP_EDIT_STATES:
         return _base_result(
             available=False,
@@ -116,7 +137,7 @@ def task_resume_decision(
             task_progress_pct=progress,
             task_zone_ids=task_zone_ids,
             ordered_run=ordered_run,
-            evidence=["map_edit_state"],
+            evidence=[*evidence, "map_edit_state"],
         )
 
     if activity == ACTIVITY_MOWING:
@@ -129,7 +150,33 @@ def task_resume_decision(
             task_progress_pct=progress,
             task_zone_ids=task_zone_ids,
             ordered_run=ordered_run,
-            evidence=["activity_mowing"],
+            evidence=[*evidence, "activity_mowing"],
+        )
+
+    if session_complete:
+        return _base_result(
+            available=False,
+            strategy=None,
+            reason="task_complete",
+            activity=activity,
+            state_code=state_code,
+            task_progress_pct=progress,
+            task_zone_ids=task_zone_ids,
+            ordered_run=ordered_run,
+            evidence=evidence,
+        )
+
+    if progress is not None and progress >= 100.0 and task_context:
+        return _base_result(
+            available=False,
+            strategy=None,
+            reason="task_complete",
+            activity=activity,
+            state_code=state_code,
+            task_progress_pct=progress,
+            task_zone_ids=task_zone_ids,
+            ordered_run=ordered_run,
+            evidence=[*evidence, "task_progress_complete"],
         )
 
     ordered_resumable = bool(
@@ -139,12 +186,10 @@ def task_resume_decision(
         and not ordered_run.get("superseded_at")
     )
     ordered_zone_ids = _zone_ids((ordered_run or {}).get("zone_ids"))
-    ordered_matches_task = (
-        not task_zone_ids
-        or (
-            bool(ordered_zone_ids)
-            and set(task_zone_ids).issubset(set(ordered_zone_ids))
-        )
+    ordered_matches_task = bool(
+        task_zone_ids
+        and ordered_zone_ids
+        and set(task_zone_ids).issubset(set(ordered_zone_ids))
     )
     if ordered_resumable and ordered_matches_task:
         return _base_result(
@@ -156,10 +201,10 @@ def task_resume_decision(
             task_progress_pct=progress,
             task_zone_ids=task_zone_ids,
             ordered_run=ordered_run,
-            evidence=["last_ordered_run_resumable"],
+            evidence=[*evidence, "last_ordered_run_resumable"],
         )
     if ordered_resumable and not ordered_matches_task:
-        evidence.append("ordered_run_task_mismatch")
+        evidence.append("ordered_run_unconfirmed_for_current_task")
 
     if state_code in _RESUMABLE_VENDOR_PAUSED_STATES or activity == ACTIVITY_PAUSED:
         evidence.append("paused_retained_task")
@@ -167,56 +212,6 @@ def task_resume_decision(
             available=True,
             strategy=RESUME_STRATEGY_VENDOR,
             reason="vendor_paused_task",
-            activity=activity,
-            state_code=state_code,
-            task_progress_pct=progress,
-            task_zone_ids=task_zone_ids,
-            ordered_run=ordered_run,
-            evidence=evidence,
-        )
-
-    session_complete = False
-    if session is not None:
-        confirmed = set(_zone_ids(session.get("task_zone_completion_confirmed")))
-        session_complete = bool(
-            session.get("completed") is True
-            or (
-                bool(session_zone_ids)
-                and set(session_zone_ids).issubset(confirmed)
-            )
-        )
-        session_kind = "active_session" if active is not None else "retained_session"
-        if session_complete:
-            evidence.append(f"{session_kind}_complete")
-        else:
-            evidence.append(f"{session_kind}_incomplete")
-
-    resumable_context = activity in {
-        ACTIVITY_RETURNING,
-        ACTIVITY_ERROR,
-        ACTIVITY_DOCKED,
-    } or docked
-
-    if session is not None and not session_complete and resumable_context:
-        return _base_result(
-            available=True,
-            strategy=RESUME_STRATEGY_VENDOR,
-            reason="vendor_active_session",
-            activity=activity,
-            state_code=state_code,
-            task_progress_pct=progress,
-            task_zone_ids=task_zone_ids,
-            ordered_run=ordered_run,
-            evidence=evidence,
-        )
-
-    task_context = bool(task_zone_ids) or bool(snapshot.get("active_cycle_id"))
-    if progress is not None and progress >= 100.0 and task_context:
-        evidence.append("task_progress_complete")
-        return _base_result(
-            available=False,
-            strategy=None,
-            reason="task_complete",
             activity=activity,
             state_code=state_code,
             task_progress_pct=progress,
