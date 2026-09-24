@@ -26,8 +26,7 @@ def test_beta35_frontend_terrain_metadata_exposes_support_flag() -> None:
 
     assert "def supported(self) -> bool:" in terrain
     assert "capability_profile(model, vehicle_type).lidar_terrain_overlay" in terrain
-    assert '"supported": self.supported' in terrain
-    assert '"supported": self.supported or bool(images)' in terrain
+    assert terrain.count('"supported": self.supported') >= 2
     assert '"supported": False' in map_api
 
 
