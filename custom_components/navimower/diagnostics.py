@@ -298,6 +298,7 @@ async def async_get_config_entry_diagnostics(
         },
         "notification_center": notification_center_diagnostics,
         "last_resume_command": None,
+        "last_ordered_run": coordinator.last_ordered_run() if hasattr(coordinator, "last_ordered_run") else None,
         "private_polling": private_polling,
         "prepared_render_model": prepared_render_diagnostics,
         "prepared_history": session_archive_diagnostics,
