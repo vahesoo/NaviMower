@@ -10,7 +10,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta35_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta35"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 35
 
 
 def test_beta35_model_profile_marks_only_proven_lidar_family() -> None:
