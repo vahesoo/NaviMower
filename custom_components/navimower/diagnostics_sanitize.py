@@ -1,4 +1,4 @@
-"""Sanitization helpers for support diagnostics, never the explicit raw export.
+"""Sanitization helpers for Home Assistant support diagnostics.
 
 Use word boundaries as well as known aliases: ``editMapUid`` must be hidden,
 while ``mapping``, ``map_id`` and capability ranges must remain useful. This
