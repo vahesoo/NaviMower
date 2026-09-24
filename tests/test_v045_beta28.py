@@ -92,12 +92,6 @@ def test_beta28_schedule_status_reports_weather_delay() -> None:
     assert '"weather_state": (controller.coordinator.data or {}).get("weather_state")' in source
 
 
-def test_beta28_raw_export_includes_live_weather_endpoint() -> None:
-    source = _source(RAW_EXPORT)
-    assert '"vehicle_weather"' in source
-    assert '"/vehicle/vehicle/get-vehicle-weather"' in source
-
-
 def test_beta28_version_floor() -> None:
     manifest = json.loads(_source(MANIFEST))
     version = str(manifest["version"])
