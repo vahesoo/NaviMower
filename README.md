@@ -328,6 +328,8 @@ Unknown cutting-height encodings are not converted into invented millimetre valu
 
 Newer/less-tested mower-family controls are provisioned from positive capability evidence rather than model-name guesses or dormant shared fields. Not every reported field is remotely writable and not every related model exposes the same subset; uncertain controls remain hidden until their behavior is sufficiently established.
 
+LiDAR terrain capability is **resource-driven**. A mower is advertised to frontends as supporting the LiDAR terrain/elevation overlay after Navimower has obtained and validated the vendor `type=2` terrain package. Model-family knowledge may reduce discovery latency, but it is not the authority for whether the Map Card should expose LiDAR controls. Unknown/future mower models can therefore gain the same frontend capability automatically when they expose the same valid vendor resource.
+
 ## Navimower Schedule
 
 **Navimower Schedule** is a Home Assistant/integration-owned one-zone-at-a-time scheduler. It is separate from the mower's native weekly schedule and the two schedulers are mutually exclusive.

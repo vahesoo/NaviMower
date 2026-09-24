@@ -27,12 +27,13 @@ def test_beta35_frontend_terrain_metadata_exposes_support_flag() -> None:
     map_api = (COMPONENT / "map_api.py").read_text(encoding="utf-8")
 
     assert "def supported(self) -> bool:" in terrain
+    assert "def model_hint(self) -> bool:" in terrain
     assert "capability_profile(model, vehicle_type).lidar_terrain_overlay" in terrain
     assert terrain.count('"supported": self.supported') >= 2
     assert '"supported": False' in map_api
 
 
-def test_beta35_non_lidar_mowers_do_not_poll_terrain_endpoint() -> None:
+def test_beta35_model_hint_remains_a_polling_optimization_only() -> None:
     terrain = (COMPONENT / "terrain_overlay.py").read_text(encoding="utf-8")
-    assert 'if not self.supported:\n            return' in terrain
+    assert "if self._manifest is not None or self.model_hint" in terrain
     assert 'TERRAIN_ENDPOINT = "/mowerbot/vehicle/common/get-iot-file"' in terrain

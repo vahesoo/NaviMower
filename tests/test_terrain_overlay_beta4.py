@@ -165,27 +165,38 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
         assert "secret" not in error
         assert restored.frontend_metadata()["version"] == "1789401491"
 
-        # Non-LiDAR families advertise unsupported and never probe type-2 terrain.
+        # Capability is resource-driven, not model-driven. A future/unknown
+        # model becomes supported after a valid type-2 terrain package is seen.
         class PlainEntry:
             entry_id = "entry-plain"
             data = {"model": "H2"}
         class PlainClient:
             calls = 0
+            version = "1789401493"
             def call(self, path, request):
                 self.calls += 1
-                raise AssertionError("non-LiDAR mower must not query terrain endpoint")
+                assert path == target.TERRAIN_ENDPOINT
+                return {"version": self.version, "url": "https://vendor.invalid/terrain"}
         class PlainCoordinator:
             hass = Hass()
             entry = PlainEntry()
             sn = "PLAIN-SN"
             vehicle_type = 160000001
             client = PlainClient()
-            data = {"model": "H2", "vehicle_type": vehicle_type}
+            data = {
+                "model": "H2",
+                "vehicle_type": vehicle_type,
+                "map": {"map_version": "1789383132"},
+            }
         plain = target.TerrainOverlayManager(PlainCoordinator())
         assert plain.supported is False
         assert plain.frontend_metadata()["supported"] is False
+        target._download_signed_resource = lambda url: archive_bytes
         plain.refresh_blocking(PlainCoordinator.data)
-        assert PlainCoordinator.client.calls == 0
+        assert PlainCoordinator.client.calls >= 1
+        assert plain.supported is True
+        assert plain.frontend_metadata()["supported"] is True
+        assert plain.diagnostics()["support_source"] == "vendor_type2_resource"
         '''
     )
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
