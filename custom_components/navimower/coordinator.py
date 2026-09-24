@@ -3316,6 +3316,43 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             return []
         return _dedupe_zone_ids(run.get("remaining_zone_ids"))
 
+    async def async_refresh_last_ordered_run_completion(self) -> bool:
+        """Force fresh vendor per-zone coverage before a continue decision.
+
+        The mower may already be docked when this action is called, where the
+        normal path-info polling TTL is intentionally slower.  A continuation
+        must not re-send a zone merely because its final 100% is still cached
+        behind that idle TTL.
+        """
+        status = self._endpoint_status.setdefault(
+            "path_info_time",
+            {
+                "attempts": 0,
+                "successes": 0,
+                "failures": 0,
+                "consecutive_failures": 0,
+                "last_attempt_mono": None,
+                "last_success_mono": None,
+                "last_error": None,
+                "last_attempt_utc": None,
+                "last_success_utc": None,
+                "last_error_utc": None,
+            },
+        )
+        previous_success = _as_float(status.get("last_success_mono"))
+        status["last_attempt_mono"] = None
+        status["last_attempt_utc"] = None
+        await self.async_request_refresh()
+        current = self._endpoint_status.get("path_info_time") or {}
+        fresh_success = _as_float(current.get("last_success_mono"))
+        return bool(
+            fresh_success is not None
+            and (
+                previous_success is None
+                or fresh_success > previous_success
+            )
+        )
+
     def _record_successful_mow_in_ordered_run(self) -> None:
         """Start, continue or supersede the retained ordered-run tracker."""
         trace = self._last_mow_command_trace
