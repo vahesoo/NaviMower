@@ -31,6 +31,7 @@ install_runtime_extensions()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
+SERVICE_CONTINUE_LAST_ORDERED_RUN = "continue_last_ordered_run"
 SERVICE_RESUME = "resume"
 SERVICE_SET_SCHEDULE_QUEUE = "set_schedule_queue"
 SERVICE_SET_GATE_AREA = "set_gate_area"
@@ -101,6 +102,7 @@ DELETE_GATE_AREA_SCHEMA = vol.Schema(
 
 DEVICE_ONLY_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string})
 RESUME_SCHEMA = DEVICE_ONLY_SCHEMA
+CONTINUE_LAST_ORDERED_RUN_SCHEMA = DEVICE_ONLY_SCHEMA
 RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
 REFRESH_MAP_SNAPSHOT_SCHEMA = DEVICE_ONLY_SCHEMA
 EXPORT_RAW_DATA_SCHEMA = DEVICE_ONLY_SCHEMA
@@ -290,6 +292,70 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
+    async def _continue_last_ordered_run(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        run = coordinator.last_ordered_run()
+        if not run:
+            raise ServiceValidationError(
+                "No retained ordered mowing run is available for this mower."
+            )
+        if run.get("superseded_at"):
+            raise ServiceValidationError(
+                "The last ordered run was superseded by a newer mowing command "
+                f"({run.get('superseded_by') or 'unknown source'})."
+            )
+        zones = coordinator.remaining_last_ordered_run_zone_ids()
+        if not zones:
+            if run.get("complete"):
+                raise ServiceValidationError(
+                    "All zones in the last ordered mowing run are already complete."
+                )
+            raise ServiceValidationError(
+                "The last ordered mowing run has no unfinished zones to continue."
+            )
+
+        model = (
+            (coordinator.data or {}).get("model")
+            or coordinator.entry.data.get("model")
+        )
+        if not supports_ordered_zone_mowing(model, coordinator.vehicle_type):
+            raise ServiceValidationError(
+                "This mower does not support ordered zone mowing, so the retained "
+                "zone order cannot be continued safely."
+            )
+
+        _validate_zone_ids(coordinator, zones)
+        partition_ids = encode_partition_ids(zones)
+        partition_setup = mow_setup(reset=False, ordered=True)
+        coordinator.begin_mow_command_trace(
+            source="navimower.continue_last_ordered_run",
+            requested_zone_ids=zones,
+            resolved_zone_ids=zones,
+            reset=False,
+            ordered=True,
+            partition_ids_hex=partition_ids,
+            partition_setup=partition_setup,
+        )
+        coordinator.set_pending_activity(ACTIVITY_MOWING)
+        coordinator.set_command_target(
+            zones, source="navimower.continue_last_ordered_run"
+        )
+        try:
+            result = await coordinator.async_send(
+                coordinator.client.mow_zones,
+                coordinator.sn,
+                partition_ids,
+                partition_setup,
+            )
+            coordinator.record_mow_command_result(result)
+        except Exception as err:
+            coordinator.record_mow_command_error(err)
+            coordinator.clear_pending_activity()
+            coordinator.clear_command_target()
+            raise HomeAssistantError(
+                f"Navimow continue_last_ordered_run failed: {err}"
+            ) from err
+
     async def _set_schedule_queue(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
         controller = getattr(coordinator, "navimower_schedule", None)
@@ -434,6 +500,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
     registrations = (
         (SERVICE_SET_SCHEDULE, _set_schedule, SET_SCHEDULE_SCHEMA),
         (SERVICE_MOW, _mow, MOW_SCHEMA),
+        (
+            SERVICE_CONTINUE_LAST_ORDERED_RUN,
+            _continue_last_ordered_run,
+            CONTINUE_LAST_ORDERED_RUN_SCHEMA,
+        ),
         (SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, SET_SCHEDULE_QUEUE_SCHEMA),
         (SERVICE_SET_GATE_AREA, _set_gate_area, SET_GATE_AREA_SCHEMA),
         (SERVICE_DELETE_GATE_AREA, _delete_gate_area, DELETE_GATE_AREA_SCHEMA),
