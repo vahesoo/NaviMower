@@ -455,7 +455,7 @@ class TerrainOverlayManager:
         version = _clean_version(manifest.get("vendor_file_version"))
         base_path = f"/api/navimower/terrain/{self.entry_id}"
         return {
-            "supported": self.supported or bool(images),
+            "supported": self.supported,
             "available": bool(images),
             "reference_frame": manifest.get("reference_frame") or "mower_local_xy",
             "version": version,
@@ -498,7 +498,7 @@ class TerrainOverlayManager:
         manifest = self._manifest if isinstance(self._manifest, dict) else {}
         images = manifest.get("images") if isinstance(manifest.get("images"), dict) else {}
         return {
-            "supported": self.supported or bool(images),
+            "supported": self.supported,
             "available": bool(images),
             "cached": bool(images),
             "vendor_file_version": manifest.get("vendor_file_version"),
