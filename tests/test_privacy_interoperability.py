@@ -97,4 +97,4 @@ def test_interoperability_boundary_keeps_secrets_backend_owned() -> None:
     assert '"available": configured' in underlay
     assert '"tile_api_path_template"' in underlay
     assert "google_maps_api_key_for_entry" in underlay
-    assert "The API key and session token stay on the Home Assistant backend" in docs
+    assert "The API key and Google session token remain on the Home Assistant backend" in docs
