@@ -85,15 +85,11 @@
         "description": "Choose how long exact MQTT mowing sessions are retained in Home Assistant. Unlimited keeps every completed route and can increase Home Assistant storage and map payload size over time.",
         "data": {
           "trail_retention_days": "Trail history retention",
-          "include_return_trail": "Include the return-to-dock path",
-          "diagnostics_detail": "Diagnostics detail",
-          "passive_discovery": "Passive protocol discovery"
+          "include_return_trail": "Include the return-to-dock path"
         },
         "data_description": {
           "trail_retention_days": "Completed session routes are stored locally. Shorter retention reduces storage and map loading time.",
-          "include_return_trail": "Keep the mower route after cutting ends while it travels back to the dock.",
-          "diagnostics_detail": "Extended includes endpoint freshness and MQTT recovery context in manual exports; tokens and account identifiers remain redacted.",
-          "passive_discovery": "Temporarily subscribe to all MQTT downlink topics for this mower and retain bounded sanitized samples plus private-cloud response schemas in diagnostics. Enable only while investigating vendor notifications, camera or LiDAR features."
+          "include_return_trail": "Keep the mower route after cutting ends while it travels back to the dock."
         }
       },
       "map_underlay": {

@@ -37,7 +37,6 @@ from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
 from .osm_underlay_semantics import install_osm_underlay_semantics
 from .private_cloud_region import install_private_cloud_region
-from .raw_mqtt_semantics import install_raw_mqtt_semantics
 from .schedule_dispatch_weather_semantics import install_schedule_dispatch_weather_semantics
 from .schedule_ownership_semantics import install_schedule_ownership_semantics
 from .schedule_pause_semantics import install_schedule_pause_semantics
@@ -128,7 +127,6 @@ def install_runtime_extensions() -> None:
     # interruption attribution and the normalized vendor Device feed. Install it
     # only after the notification transport has wrapped snapshot decoration.
     install_mowing_pause_status()
-    install_raw_mqtt_semantics()
     install_schedule_pause_semantics()
     install_schedule_ownership_semantics()
     install_schedule_round_semantics()

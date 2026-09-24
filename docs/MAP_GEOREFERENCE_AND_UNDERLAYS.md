@@ -57,7 +57,7 @@ Normal Home Assistant **Download diagnostics** contains the information needed t
 
 Google diagnostics expose only configuration/session health such as configured state, session activity/expiry and generic last-error status. The API key and session token are not included.
 
-For an explicit georeference field investigation, `navimower.export_raw_data` is intentionally different: it creates a sensitive local development capture with exact vendor/map data. Do not publish raw exports.
+Public georeference troubleshooting uses Home Assistant **Download diagnostics**. The integration does not expose a raw georeference export action; any maintainer-only field capture is handled outside the public support workflow.
 
 ## Relearning a map transform
 

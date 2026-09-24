@@ -118,7 +118,7 @@ async def async_get_config_entry_diagnostics(
 
     Credential, account, network and geographic identifiers are redacted. Local
     X/Y geometry and operational state remain available for troubleshooting.
-    The explicit unredacted development export is separate and unchanged.
+    Home Assistant Download diagnostics is the only shipped support-export path.
     """
     coordinator = (hass.data.get(DOMAIN) or {}).get(entry.entry_id)
     if coordinator is None:
@@ -156,10 +156,6 @@ async def async_get_config_entry_diagnostics(
     mqtt_inventory = (
         mqtt_bridge.diagnostic_inventory()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory") else None
-    )
-    mqtt_discovery = (
-        mqtt_bridge.diagnostic_discovery()
-        if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_discovery") else None
     )
     private_polling = coordinator.polling_diagnostics() if hasattr(coordinator, "polling_diagnostics") else None
     prepared_render = getattr(coordinator, "prepared_render_model", None)
@@ -234,7 +230,6 @@ async def async_get_config_entry_diagnostics(
         )),
         "mqtt_navigation": _mqtt_navigation_diagnostics(coordinator, data),
         "mqtt_inventory": mqtt_inventory,
-        "mqtt_discovery": mqtt_discovery,
         "telemetry": _selected(data, (
             "battery", "battery_source", "battery_source_age", "battery_mqtt",
             "battery_mqtt_age", "battery_private_cloud", "mowing_progress",
@@ -314,7 +309,7 @@ async def async_get_config_entry_diagnostics(
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "Local X/Y geometry, names and activity times remain useful support data: review them before sharing.",
-            "The explicit navimower.export_raw_data development export is separate and remains unredacted.",
+            "Public support uses Home Assistant Download diagnostics; development captures are not exposed as integration actions.",
         ],
     }
     return sanitize(

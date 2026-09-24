@@ -55,19 +55,19 @@ def test_structure_summary_keeps_schema_not_ordinary_values():
     assert "secret" not in repr(summary)
 
 
-def test_beta5_option_service_and_diagnostics_are_wired():
+def test_beta5_development_wiring_is_historical_only() -> None:
+    """Keep the old beta documented without reintroducing its dev surfaces."""
     const = (COMPONENT / "const.py").read_text()
     flow = (COMPONENT / "config_flow.py").read_text()
     mqtt = (COMPONENT / "mqtt.py").read_text()
     services = (COMPONENT / "services.py").read_text()
-    diagnostics = (COMPONENT / "diagnostics_export.py").read_text()
-    client = (COMPONENT / "api" / "client.py").read_text()
-    assert 'OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"' in const
-    assert "DEFAULT_PASSIVE_DISCOVERY: Final = False" in const
-    assert "OPT_PASSIVE_DISCOVERY" in flow
-    assert "mqtt_discovery_topics(device_id)" in mqtt
-    assert "diagnostic_discovery" in mqtt
-    assert "mark_discovery_event" in services
-    assert '"mqtt_discovery"' in diagnostics
-    assert '"cloud_request_inventory"' in diagnostics
-    assert "discovery_inventory" in client
+    diagnostics = (COMPONENT / "diagnostics.py").read_text()
+
+    assert "OPT_PASSIVE_DISCOVERY" not in const
+    assert "DEFAULT_PASSIVE_DISCOVERY" not in const
+    assert "OPT_PASSIVE_DISCOVERY" not in flow
+    assert "mqtt_discovery_topics(device_id)" not in mqtt
+    assert "diagnostic_discovery" not in mqtt
+    assert "mark_discovery_event" not in services
+    assert '"mqtt_discovery"' not in diagnostics
+    assert not (COMPONENT / "diagnostics_export.py").exists()

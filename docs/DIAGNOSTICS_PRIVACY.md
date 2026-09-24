@@ -42,11 +42,11 @@ Redaction tests cannot prove that every future service payload is safe. When in 
 
 ## Development captures
 
-Maintainers may use separate local-only development captures while investigating a specific compatibility problem. Those captures are intentionally outside the normal Home Assistant Download diagnostics support path and can contain exact map/location values and identifiers.
+The shipped integration does not expose raw-data export or arbitrary endpoint-probe actions. Home Assistant **Download diagnostics** is the supported public troubleshooting path.
 
-Do not attach development captures to a public GitHub issue or forum post. Use normal **Download diagnostics** for public support unless a maintainer has explicitly arranged a private transfer.
+Maintainers may still arrange a separate private field-capture workflow for a specific compatibility investigation. Such captures are outside the integration UI/actions, may contain exact map/location values or identifiers, and must not be attached to a public GitHub issue or forum post.
 
-Only synthetic test fixtures belong in the public test suite. Private field captures used during development are not committed or published by the tests.
+Only synthetic fixtures belong in the public test suite. Private field captures used during development are not committed or published by the tests.
 
 ## Previously shared files
 

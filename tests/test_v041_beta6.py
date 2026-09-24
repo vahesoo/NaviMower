@@ -15,19 +15,21 @@ def test_beta6_notes() -> None:
     assert "startup" in notes.lower()
 
 
-def test_mqtt_bridge_imports_passive_discovery_option() -> None:
+def test_beta6_startup_hotfix_remains_historical_only() -> None:
+    """The beta6 fix stays documented; the retired option stays out of runtime."""
     source = (COMPONENT / "mqtt.py").read_text()
     tree = ast.parse(source)
     imported_from_const: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "const":
             imported_from_const.update(alias.name for alias in node.names)
-    assert "DEFAULT_PASSIVE_DISCOVERY" in imported_from_const
-    assert "OPT_PASSIVE_DISCOVERY" in imported_from_const
-    assert "entry.options.get(OPT_PASSIVE_DISCOVERY, DEFAULT_PASSIVE_DISCOVERY)" in source
+
+    assert "DEFAULT_PASSIVE_DISCOVERY" not in imported_from_const
+    assert "OPT_PASSIVE_DISCOVERY" not in imported_from_const
+    assert "entry.options.get(OPT_PASSIVE_DISCOVERY" not in source
 
 
-def test_passive_discovery_option_exists_in_const() -> None:
+def test_passive_discovery_option_is_retired_from_current_constants() -> None:
     source = (COMPONENT / "const.py").read_text()
-    assert 'OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"' in source
-    assert "DEFAULT_PASSIVE_DISCOVERY: Final = False" in source
+    assert 'OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"' not in source
+    assert "DEFAULT_PASSIVE_DISCOVERY" not in source

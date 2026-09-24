@@ -8,10 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_beta38_release_metadata() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.4-beta38"
-
+def test_beta38_historical_release_metadata() -> None:
     notes = ROOT / ".github" / "release-notes" / "0.4.4-beta38.md"
     text = notes.read_text(encoding="utf-8")
     assert text.startswith("title: Navimower 0.4.4-beta38\n")

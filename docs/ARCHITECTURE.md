@@ -66,11 +66,9 @@ Scheduler behavior is split by responsibility so ownership and reset safety rema
 
 Once a Custom queue slot has been confirmed started, ownership loss must never cause a fresh `reset=true` restart of that same slot in the active round.
 
-### Raw MQTT/development support
+### Diagnostics and privacy boundary
 
-- `raw_mqtt_semantics.py` — bounded passive protocol evidence used for diagnostics/development without changing normal mower control semantics.
-
-Normal Home Assistant Download diagnostics remains cached-only and sanitized. Explicit `navimower.export_raw_data` is a separate sensitive development action.
+Normal Home Assistant **Download diagnostics** is the supported troubleshooting path. It is cached-only and sanitized. Runtime MQTT diagnostics retain bounded schema/health summaries rather than exact payload copies, and the integration does not expose development raw-export or endpoint-probe actions.
 
 ## Capability policy
 

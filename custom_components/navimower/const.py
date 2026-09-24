@@ -36,8 +36,6 @@ OPT_CHANNELS: Final = "channels"  # list[dict] of local X/Y rectangles
 OPT_GATES: Final = "gates"  # list[dict] of zone-pair gates
 OPT_TRAIL_RETENTION_DAYS: Final = "trail_retention_days"
 OPT_INCLUDE_RETURN_TRAIL: Final = "include_return_trail"
-OPT_DIAGNOSTICS_DETAIL: Final = "diagnostics_detail"
-OPT_PASSIVE_DISCOVERY: Final = "passive_discovery"
 OPT_GOOGLE_MAPS_API_KEY: Final = "google_maps_api_key"
 OPT_SCHEDULE_ENABLED: Final = "navimower_schedule_enabled"
 OPT_SCHEDULE_START: Final = "navimower_schedule_start"
@@ -61,8 +59,6 @@ DEFAULT_TRAIL_RETENTION_DAYS: Final = 7
 TRAIL_RETENTION_OPTIONS: Final[tuple[int, ...]] = (3, 7, 14, 30, 0)  # 0 = unlimited
 GATE_CLOSE_DELAY_OPTIONS: Final[tuple[int, ...]] = (0, 10, 20, 30)
 DEFAULT_INCLUDE_RETURN_TRAIL: Final = True
-DEFAULT_DIAGNOSTICS_DETAIL: Final = "standard"
-DEFAULT_PASSIVE_DISCOVERY: Final = False
 
 DEFAULT_LANGUAGE: Final = "en"
 
