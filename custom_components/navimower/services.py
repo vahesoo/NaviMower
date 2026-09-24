@@ -25,12 +25,18 @@ from .notification_actions import (
     async_mark_notification_read,
 )
 from .resume import async_resume_task
+from .task_resume import (
+    RESUME_STRATEGY_ORDERED_RUN,
+    RESUME_STRATEGY_VENDOR,
+    task_resume_decision,
+)
 
 install_runtime_extensions()
 
 SERVICE_SET_SCHEDULE = "set_schedule"
 SERVICE_MOW = "mow"
 SERVICE_CONTINUE_LAST_ORDERED_RUN = "continue_last_ordered_run"
+SERVICE_CONTINUE_TASK = "continue_task"
 SERVICE_RESUME = "resume"
 SERVICE_SET_SCHEDULE_QUEUE = "set_schedule_queue"
 SERVICE_SET_GATE_AREA = "set_gate_area"
@@ -101,6 +107,7 @@ DELETE_GATE_AREA_SCHEMA = vol.Schema(
 DEVICE_ONLY_SCHEMA = vol.Schema({vol.Optional("device_id"): cv.string})
 RESUME_SCHEMA = DEVICE_ONLY_SCHEMA
 CONTINUE_LAST_ORDERED_RUN_SCHEMA = DEVICE_ONLY_SCHEMA
+CONTINUE_TASK_SCHEMA = DEVICE_ONLY_SCHEMA
 RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
 REFRESH_MAP_SNAPSHOT_SCHEMA = DEVICE_ONLY_SCHEMA
 
@@ -289,8 +296,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.clear_command_target()
             raise HomeAssistantError(f"Navimow mow failed: {err}") from err
 
-    async def _continue_last_ordered_run(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(call)
+    async def _continue_last_ordered_run_for(
+        coordinator,
+        *,
+        source: str,
+    ) -> None:
         run = coordinator.last_ordered_run()
         if not run:
             raise ServiceValidationError(
@@ -342,7 +352,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         partition_ids = encode_partition_ids(zones)
         partition_setup = mow_setup(reset=False, ordered=True)
         coordinator.begin_mow_command_trace(
-            source="navimower.continue_last_ordered_run",
+            source=source,
             requested_zone_ids=zones,
             resolved_zone_ids=zones,
             reset=False,
@@ -351,9 +361,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             partition_setup=partition_setup,
         )
         coordinator.set_pending_activity(ACTIVITY_MOWING)
-        coordinator.set_command_target(
-            zones, source="navimower.continue_last_ordered_run"
-        )
+        coordinator.set_command_target(zones, source=source)
         try:
             result = await coordinator.async_send(
                 coordinator.client.mow_zones,
@@ -369,6 +377,52 @@ def async_setup_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(
                 f"Navimow continue_last_ordered_run failed: {err}"
             ) from err
+
+    async def _continue_last_ordered_run(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        await _continue_last_ordered_run_for(
+            coordinator,
+            source="navimower.continue_last_ordered_run",
+        )
+
+    async def _continue_task(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        retained_sessions = coordinator.history.session_summaries(include_points=False)
+        decision = task_resume_decision(
+            coordinator.data,
+            active_session=coordinator.history.active_session,
+            retained_session=(
+                retained_sessions[-1] if retained_sessions else None
+            ),
+        )
+        if not decision.get("available"):
+            raise ServiceValidationError(
+                "No resumable mowing task is currently confirmed "
+                f"({decision.get('reason') or 'unknown reason'})."
+            )
+
+        strategy = decision.get("strategy")
+        if strategy == RESUME_STRATEGY_ORDERED_RUN:
+            await _continue_last_ordered_run_for(
+                coordinator,
+                source="navimower.continue_task",
+            )
+            return
+        if strategy == RESUME_STRATEGY_VENDOR:
+            try:
+                await async_resume_task(
+                    coordinator,
+                    source="navimower.continue_task",
+                )
+            except Exception as err:
+                raise HomeAssistantError(
+                    f"Navimow continue_task vendor resume failed: {err}"
+                ) from err
+            return
+
+        raise ServiceValidationError(
+            "The confirmed resumable task has no supported continuation strategy."
+        )
 
     async def _set_schedule_queue(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
@@ -499,6 +553,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             _continue_last_ordered_run,
             CONTINUE_LAST_ORDERED_RUN_SCHEMA,
         ),
+        (SERVICE_CONTINUE_TASK, _continue_task, CONTINUE_TASK_SCHEMA),
         (SERVICE_SET_SCHEDULE_QUEUE, _set_schedule_queue, SET_SCHEDULE_QUEUE_SCHEMA),
         (SERVICE_SET_GATE_AREA, _set_gate_area, SET_GATE_AREA_SCHEMA),
         (SERVICE_DELETE_GATE_AREA, _delete_gate_area, DELETE_GATE_AREA_SCHEMA),

@@ -41,7 +41,7 @@ def test_beta34_persists_ordered_run_across_dock_and_restart() -> None:
     assert "def remaining_last_ordered_run_zone_ids(" in coordinator
     assert "async def async_refresh_last_ordered_run_completion(" in coordinator
     assert 'self._endpoint_status.setdefault(\n            "path_info_time"' in coordinator
-    assert 'source == "navimower.continue_last_ordered_run"' in coordinator
+    assert '"navimower.continue_last_ordered_run",' in coordinator
     assert "start_last_ordered_run(" in coordinator
     assert "update_last_ordered_run(" in coordinator
 
