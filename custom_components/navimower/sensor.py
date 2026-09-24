@@ -179,6 +179,11 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
                 "task_zone_progress_weighted_pct"
             ),
             "meaning": "vendor_overall_selected_task_progress_raw_first",
+            "last_ordered_run": d.get("last_ordered_run"),
+            "last_ordered_zone_ids": (d.get("last_ordered_run") or {}).get("zone_ids"),
+            "last_ordered_completed_zone_ids": (d.get("last_ordered_run") or {}).get("completed_zone_ids"),
+            "last_ordered_remaining_zone_ids": (d.get("last_ordered_run") or {}).get("remaining_zone_ids"),
+            "last_ordered_run_resumable": (d.get("last_ordered_run") or {}).get("resumable"),
         },
     ),
     NavimowSensorDescription(
