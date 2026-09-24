@@ -387,9 +387,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _continue_task(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
+        retained_sessions = coordinator.history.session_summaries(include_points=False)
         decision = task_resume_decision(
             coordinator.data,
             active_session=coordinator.history.active_session,
+            retained_session=(
+                retained_sessions[-1] if retained_sessions else None
+            ),
         )
         if not decision.get("available"):
             raise ServiceValidationError(
