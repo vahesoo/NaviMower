@@ -184,6 +184,10 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "last_ordered_completed_zone_ids": (d.get("last_ordered_run") or {}).get("completed_zone_ids"),
             "last_ordered_remaining_zone_ids": (d.get("last_ordered_run") or {}).get("remaining_zone_ids"),
             "last_ordered_run_resumable": (d.get("last_ordered_run") or {}).get("resumable"),
+            "resume_available": (d.get("task_resume") or {}).get("available"),
+            "resume_strategy": (d.get("task_resume") or {}).get("strategy"),
+            "resume_reason": (d.get("task_resume") or {}).get("reason"),
+            "resume_evidence": (d.get("task_resume") or {}).get("evidence"),
         },
     ),
     NavimowSensorDescription(
