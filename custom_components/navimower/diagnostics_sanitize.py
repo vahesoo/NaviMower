@@ -202,7 +202,7 @@ def sanitize(
     ``sensitive_values`` supplies additional local context (for example entry
     tokens) for values already removed from individual report sections. The
     optional exclusions are used only by Download diagnostics to omit retired
-    research blocks; the explicit raw-data export does not call this function.
+    research blocks that may still exist in an upgraded runtime cache.
     """
     literals = tuple(sorted(
         _sensitive_literals(value) | _sensitive_literals(sensitive_values),
