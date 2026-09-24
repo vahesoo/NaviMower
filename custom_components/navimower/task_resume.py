@@ -73,6 +73,7 @@ def task_resume_decision(
     data: dict[str, Any] | None,
     *,
     active_session: dict[str, Any] | None = None,
+    retained_session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return whether and how an interrupted task can safely be continued.
 
@@ -88,7 +89,9 @@ def task_resume_decision(
 
     totals = snapshot.get("totals") or {}
     total_task_zone_ids = _zone_ids(totals.get("task_zone_ids"))
-    session = active_session if isinstance(active_session, dict) else None
+    active = active_session if isinstance(active_session, dict) else None
+    retained = retained_session if isinstance(retained_session, dict) else None
+    session = active or retained
     session_zone_ids = _zone_ids((session or {}).get("zone_ids"))
     task_zone_ids = session_zone_ids or total_task_zone_ids
 
@@ -175,13 +178,18 @@ def task_resume_decision(
     session_complete = False
     if session is not None:
         confirmed = set(_zone_ids(session.get("task_zone_completion_confirmed")))
-        session_complete = bool(session_zone_ids) and set(session_zone_ids).issubset(
-            confirmed
+        session_complete = bool(
+            session.get("completed") is True
+            or (
+                bool(session_zone_ids)
+                and set(session_zone_ids).issubset(confirmed)
+            )
         )
+        session_kind = "active_session" if active is not None else "retained_session"
         if session_complete:
-            evidence.append("active_session_complete")
+            evidence.append(f"{session_kind}_complete")
         else:
-            evidence.append("active_session_incomplete")
+            evidence.append(f"{session_kind}_incomplete")
 
     resumable_context = activity in {
         ACTIVITY_RETURNING,
