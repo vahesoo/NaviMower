@@ -314,7 +314,7 @@ async def async_get_config_entry_diagnostics(
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "Local X/Y geometry, names and activity times remain useful support data: review them before sharing.",
-            "The explicit navimower.export_raw_data development export is separate and remains unredacted.",
+            "Public support uses Home Assistant Download diagnostics; development captures are not exposed as integration actions.",
         ],
     }
     return sanitize(
