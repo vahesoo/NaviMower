@@ -3342,7 +3342,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         previous_success = _as_float(status.get("last_success_mono"))
         status["last_attempt_mono"] = None
         status["last_attempt_utc"] = None
-        await self.async_request_refresh()
+        await self.async_refresh()
         current = self._endpoint_status.get("path_info_time") or {}
         fresh_success = _as_float(current.get("last_success_mono"))
         return bool(
