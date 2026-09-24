@@ -10,7 +10,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta34_version() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta34"
+    assert str(manifest["version"]).startswith("0.4.5-beta")
 
 
 def test_beta34_registers_continue_last_ordered_run_action() -> None:

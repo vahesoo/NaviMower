@@ -98,6 +98,7 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
             config = Config()
         class Entry:
             entry_id = "entry-test"
+            data = {"model": "i2 LiDAR"}
         class Client:
             version = "1789401490"
             def call(self, path, request):
@@ -109,7 +110,12 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
             entry = Entry()
             sn = "TEST-SN"
             client = Client()
-            data = {"map": {"map_version": "1789383132"}}
+            vehicle_type = 160000001
+            data = {
+                "model": "i2 LiDAR",
+                "vehicle_type": vehicle_type,
+                "map": {"map_version": "1789383132"},
+            }
 
         manager = target.TerrainOverlayManager(Coordinator())
         manager._write_cache_blocking(manifest, images)
@@ -121,6 +127,7 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
         restored = target.TerrainOverlayManager(Coordinator())
         restored._load_cache_blocking()
         frontend = restored.frontend_metadata()
+        assert frontend["supported"] is True
         assert frontend["available"] is True
         assert frontend["version"] == "1789401490"
         assert frontend["terrain"]["api_path"].endswith("/entry-test/terrain")
@@ -139,6 +146,7 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
         restored._last_attempt_mono = None
         target._download_signed_resource = lambda url: archive_bytes
         restored.refresh_blocking(Coordinator.data)
+        assert restored.frontend_metadata()["supported"] is True
         assert restored.frontend_metadata()["version"] == "1789401491"
         assert restored.image_resource("terrain")[0].name == "terrain-1789401491.webp"
         assert not (restored.cache_dir / "terrain-1789401490.webp").exists()
@@ -156,6 +164,28 @@ def test_terrain_overlay_archive_cache_and_runtime_contract() -> None:
         assert error == "DownloadFailure"
         assert "secret" not in error
         assert restored.frontend_metadata()["version"] == "1789401491"
+
+        # Non-LiDAR families advertise unsupported and never probe type-2 terrain.
+        class PlainEntry:
+            entry_id = "entry-plain"
+            data = {"model": "H2"}
+        class PlainClient:
+            calls = 0
+            def call(self, path, request):
+                self.calls += 1
+                raise AssertionError("non-LiDAR mower must not query terrain endpoint")
+        class PlainCoordinator:
+            hass = Hass()
+            entry = PlainEntry()
+            sn = "PLAIN-SN"
+            vehicle_type = 160000001
+            client = PlainClient()
+            data = {"model": "H2", "vehicle_type": vehicle_type}
+        plain = target.TerrainOverlayManager(PlainCoordinator())
+        assert plain.supported is False
+        assert plain.frontend_metadata()["supported"] is False
+        plain.refresh_blocking(PlainCoordinator.data)
+        assert PlainCoordinator.client.calls == 0
         '''
     )
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)

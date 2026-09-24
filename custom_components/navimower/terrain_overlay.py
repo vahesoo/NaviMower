@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 import zipfile
 
 from .api import NavimowAuthError
+from .model_capabilities import capability_profile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -242,11 +243,25 @@ class TerrainOverlayManager:
         self._last_error: str | None = None
         self._task: asyncio.Task | None = None
 
+    @property
+    def supported(self) -> bool:
+        """Return whether this mower family is known to expose LiDAR terrain."""
+        data = self.coordinator.data or {}
+        model = data.get("model") or self.coordinator.entry.data.get("model")
+        vehicle_type = data.get("vehicle_type")
+        if vehicle_type is None:
+            vehicle_type = getattr(self.coordinator, "vehicle_type", None)
+        return bool(
+            capability_profile(model, vehicle_type).lidar_terrain_overlay
+        )
+
     async def async_load(self) -> None:
         await self.hass.async_add_executor_job(self._load_cache_blocking)
 
     def start(self) -> None:
         """Start the independent slow terrain refresh loop."""
+        if not self.supported:
+            return
         if self._task is not None and not self._task.done():
             return
         self._task = self.hass.async_create_background_task(
@@ -263,6 +278,8 @@ class TerrainOverlayManager:
         await asyncio.gather(task, return_exceptions=True)
 
     async def async_refresh(self) -> None:
+        if not self.supported:
+            return
         await self.hass.async_add_executor_job(
             self.refresh_blocking,
             self.coordinator.data or {},
@@ -376,6 +393,8 @@ class TerrainOverlayManager:
 
     def refresh_blocking(self, snapshot: dict[str, Any] | None = None) -> None:
         """Check type-2 metadata at a slow cadence and download only on version change."""
+        if not self.supported:
+            return
         snapshot = snapshot or {}
         map_data = snapshot.get("map") if isinstance(snapshot.get("map"), dict) else {}
         map_version = _clean_version(
@@ -424,6 +443,7 @@ class TerrainOverlayManager:
         manifest = self._manifest
         if not isinstance(manifest, dict):
             return {
+                "supported": self.supported,
                 "available": False,
                 "reference_frame": "mower_local_xy",
                 "version": None,
@@ -435,6 +455,7 @@ class TerrainOverlayManager:
         version = _clean_version(manifest.get("vendor_file_version"))
         base_path = f"/api/navimower/terrain/{self.entry_id}"
         return {
+            "supported": self.supported,
             "available": bool(images),
             "reference_frame": manifest.get("reference_frame") or "mower_local_xy",
             "version": version,
@@ -477,6 +498,7 @@ class TerrainOverlayManager:
         manifest = self._manifest if isinstance(self._manifest, dict) else {}
         images = manifest.get("images") if isinstance(manifest.get("images"), dict) else {}
         return {
+            "supported": self.supported,
             "available": bool(images),
             "cached": bool(images),
             "vendor_file_version": manifest.get("vendor_file_version"),

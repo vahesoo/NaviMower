@@ -39,6 +39,7 @@ class ModelCapabilityProfile:
     terrain_adapt: bool = False
     edge_sense: bool = False
     grass_pattern_enhancement: bool = False
+    lidar_terrain_overlay: bool = False
     # ``rain_detection`` is the master rain-behavior switch used on mower
     # families with separate physical-sensor and forecast toggles.  ``None``
     # means the family has not been proven either way and legacy field-presence
@@ -109,6 +110,7 @@ _PROFILES: Final[dict[str, ModelCapabilityProfile]] = {
         cutting_height_readable=True,
         cutting_height_writable=True,
         edge_sense=True,
+        lidar_terrain_overlay=True,
         rain_detection=False,
         physical_rain_sensor=False,
     ),
