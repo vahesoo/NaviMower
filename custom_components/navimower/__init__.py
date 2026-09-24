@@ -39,7 +39,6 @@ from .mqtt import NavimowerMqttBridge
 from .notification_center import NavimowerNotificationCenter
 from .navimower_schedule import NavimowerScheduleController
 from .oauth import async_register_oauth_implementation
-from .private_api_probe import async_setup_private_api_probe
 from .services import async_setup_services
 from .session_archive import SessionArchiveManager
 from .terrain_overlay import TerrainOverlayManager
@@ -62,14 +61,10 @@ PLATFORMS: list[Platform] = [
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-# Development-only options used during the 0.4.1 beta investigation. Stable
-# releases use only Home Assistant's native Download diagnostics path.
+# Development-only options from the early beta diagnostics experiments.
+# Keep the names only as migration cleanup so existing entries lose them
+# automatically on upgrade.
 _DEPRECATED_DIAGNOSTICS_OPTIONS = {"diagnostics_detail", "passive_discovery"}
-
-# beta43 temporarily re-enables only passive discovery for the controlled gate
-# transition field test. Keep the historical deprecated set unchanged so stable
-# cleanup semantics remain explicit and the switch is easy to retire again.
-_BETA43_REENABLED_DIAGNOSTICS_OPTIONS = {"passive_discovery"}
 
 # The standalone map card, Mow Now dialog and schedule editor are distributed
 # from the separate navimower-map-card HACS dashboard repository.
@@ -135,7 +130,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_register_oauth_implementation(hass)
     async_register_map_api(hass)
     async_setup_services(hass)
-    async_setup_private_api_probe(hass)
     return True
 
 
@@ -195,15 +189,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Restore local data, then start private cloud and OAuth/MQTT in parallel."""
     async_register_oauth_implementation(hass)
 
-    # Remove retired broad diagnostics options even when the user upgrades
-    # without opening the options flow. beta43 deliberately keeps only the
-    # bounded passive-discovery switch while the gate transition is field-tested.
+    # Remove retired development diagnostics options even when the user upgrades
+    # without opening the options flow.
     cleaned_options = dict(entry.options)
     removed = [
-        key
-        for key in _DEPRECATED_DIAGNOSTICS_OPTIONS
-        if key in cleaned_options
-        and key not in _BETA43_REENABLED_DIAGNOSTICS_OPTIONS
+        key for key in _DEPRECATED_DIAGNOSTICS_OPTIONS if key in cleaned_options
     ]
     for key in removed:
         cleaned_options.pop(key, None)
