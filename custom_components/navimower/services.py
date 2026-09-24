@@ -304,6 +304,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 "The last ordered run was superseded by a newer mowing command "
                 f"({run.get('superseded_by') or 'unknown source'})."
             )
+        if run.get("complete"):
+            raise ServiceValidationError(
+                "All zones in the last ordered mowing run are already complete."
+            )
 
         try:
             fresh_completion = await coordinator.async_refresh_last_ordered_run_completion()
