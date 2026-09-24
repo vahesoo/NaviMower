@@ -304,6 +304,19 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 "The last ordered run was superseded by a newer mowing command "
                 f"({run.get('superseded_by') or 'unknown source'})."
             )
+
+        try:
+            fresh_completion = await coordinator.async_refresh_last_ordered_run_completion()
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Could not refresh per-zone completion before continuation: {err}"
+            ) from err
+        if not fresh_completion:
+            raise HomeAssistantError(
+                "Could not confirm fresh per-zone completion; no mowing command was sent."
+            )
+
+        run = coordinator.last_ordered_run() or run
         zones = coordinator.remaining_last_ordered_run_zone_ids()
         if not zones:
             if run.get("complete"):
