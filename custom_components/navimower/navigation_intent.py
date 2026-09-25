@@ -706,7 +706,11 @@ def install_navigation_intent() -> None:
             # explicit planned-zone fields for that meaning.
             current["planned_zone_ids"] = planned_ids
             current["planned_zones_source"] = planned_source
-            current["planned_zones"] = _target_state(snapshot, planned_ids)
+            current["planned_zones"] = (
+                _target_state(snapshot, planned_ids)
+                if planned_ids
+                else "No planned zones"
+            )
             current["planned_zones_task_active"] = task_active
             current["target_zone_ids"] = planned_ids
 
