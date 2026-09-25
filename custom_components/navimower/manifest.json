@@ -16,7 +16,9 @@
   "requirements": [
     "navimow-sdk>=0.1.2",
     "zstandard>=0.23.0",
-    "Pillow>=12.0.0"
+    "Pillow>=12.0.0",
+    "fontpkg==0.2.2",
+    "fontpkg-noto-sans==2.15"
   ],
-  "version": "0.4.5-beta39"
+  "version": "0.4.5-beta40"
 }
