@@ -152,7 +152,7 @@ def test_navigation_target_precedence_contract() -> None:
     ) == ([36], "mqtt_partition_ids")
 
 
-def test_public_target_is_task_only_and_never_revives_retained_route_intent() -> None:
+def test_planned_zone_resolver_is_task_only_and_never_revives_route_intent() -> None:
     namespace = load_functions(
         NAVIGATION,
         {
@@ -193,8 +193,8 @@ def test_public_target_is_task_only_and_never_revives_retained_route_intent() ->
         "none",
     )
 
-    # Return routing stays available internally to gate logic but public Target
-    # zone is empty even if a route/work target still exists.
+    # Return routing stays available internally to Gate logic but Planned zones
+    # is empty even if a route/work target still exists.
     assert resolve(
         **{
             **common,
@@ -206,7 +206,7 @@ def test_public_target_is_task_only_and_never_revives_retained_route_intent() ->
         }
     ) == ([], "returning_to_dock")
 
-    # Fresh selected task zones are the strongest vendor-owned public target.
+    # Fresh selected task zones are the strongest vendor-owned Planned zones.
     assert resolve(
         **{
             **common,
