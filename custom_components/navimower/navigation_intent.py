@@ -317,6 +317,8 @@ def _resolve_immediate_target(
     mqtt_work_target: Any,
     mqtt_work_target_fresh: bool,
     mqtt_work_target_after_command: bool,
+    physical_zone_id: Any,
+    physical_zone_fresh: bool,
     cloud_work_target: Any,
 ) -> tuple[list[int], str]:
     """Resolve one automation-safe immediate mowing target.
@@ -352,6 +354,15 @@ def _resolve_immediate_target(
     if mqtt_work_target_fresh and mqtt_work is not None and mqtt_work > 0:
         if not planned_ids or mqtt_work in planned_ids:
             return [mqtt_work], "mqtt_work_target"
+
+    physical = _as_int(physical_zone_id)
+    if (
+        physical_zone_fresh
+        and physical is not None
+        and physical > 0
+        and (not planned_ids or physical in planned_ids)
+    ):
+        return [physical], "current_physical_zone"
 
     cloud_work = _as_int(cloud_work_target)
     if (
@@ -679,6 +690,14 @@ def install_navigation_intent() -> None:
                 mqtt_work_target=sanitized.get("work_target_zone"),
                 mqtt_work_target_fresh=bool(freshness["work_target_fresh"]),
                 mqtt_work_target_after_command=work_target_after_command,
+                physical_zone_id=current.get("current_physical_zone_id"),
+                physical_zone_fresh=bool(
+                    _as_int(current.get("current_physical_zone_id")) is not None
+                    and _physical_zone_is_fresh(
+                        current,
+                        _as_int(current.get("current_physical_zone_id")),
+                    )
+                ),
                 cloud_work_target=snapshot.get("work_target_zone"),
             )
 
