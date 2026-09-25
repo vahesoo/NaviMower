@@ -1,6 +1,7 @@
 """Services for Navimower."""
 from __future__ import annotations
 
+import asyncio
 import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -18,7 +19,7 @@ from .const import (
 )
 from .gate_area_editor import delete_gate_area, upsert_gate_area
 from .georeference_tools import async_relearn_georeference
-from .map_snapshot import get_map_snapshot_manager
+from .map_snapshot import active_map_snapshot_managers
 from .model_support import supports_ordered_zone_mowing
 from .notification_actions import (
     async_mark_all_notifications_read,
@@ -533,12 +534,21 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _refresh_map_snapshot(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
-        manager = get_map_snapshot_manager(coordinator)
+        managers = active_map_snapshot_managers(coordinator)
+        if not managers:
+            raise ServiceValidationError(
+                "No enabled Navimower map snapshot image entity is available."
+            )
         try:
-            await manager.async_refresh(
-                reason="manual",
-                force=True,
-                require_fresh=True,
+            await asyncio.gather(
+                *(
+                    manager.async_refresh(
+                        reason="manual",
+                        force=True,
+                        require_fresh=True,
+                    )
+                    for manager in managers
+                )
             )
         except Exception as err:
             raise HomeAssistantError(
