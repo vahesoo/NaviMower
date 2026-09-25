@@ -972,6 +972,10 @@ class NavimowerScheduleController:
         # scheduler tick and the actual command path, especially after a grace wait.
         if not self._window_open_now():
             return
+        self._note_activity_command(
+            source,
+            "Navimower Schedule requested the unfinished mowing task to resume.",
+        )
         try:
             await async_resume_task(self.coordinator, source=source)
         except Exception as err:
@@ -991,6 +995,15 @@ class NavimowerScheduleController:
         self._runtime["last_command_at"] = _utc_now()
         await self._save()
 
+    def _note_activity_command(self, source: str, message: str) -> None:
+        manager = getattr(self.coordinator, "activity_context_manager", None)
+        if manager is not None:
+            manager.note_command(
+                source=source,
+                message=message,
+                context=None,
+            )
+
     async def _async_send_mow(self, zone_id: int, *, reset: bool, source: str, queue_slot: int | None = None) -> None:
         row = self._zone(zone_id) or {}
         partition_ids = encode_partition_ids([zone_id])
@@ -1005,6 +1018,11 @@ class NavimowerScheduleController:
             ordered=False,
             partition_ids_hex=partition_ids,
             partition_setup=partition_setup,
+        )
+        zone_name = str(row.get("name") or f"Zone {zone_id}")
+        self._note_activity_command(
+            source,
+            f"Navimower Schedule requested mowing {zone_name}.",
         )
         self.coordinator.set_pending_activity(ACTIVITY_MOWING)
         self.coordinator.set_command_target([zone_id], source=source)
@@ -1050,10 +1068,14 @@ class NavimowerScheduleController:
 
     async def _async_send_dock(self, source: str) -> None:
         self.coordinator.clear_command_target()
-        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
+        self._note_activity_command(
+            source,
+            "Navimower Schedule sent the mower to the dock.",
+        )
         center = getattr(self.coordinator, "notification_center", None)
         if center is not None:
             center.note_dock_command(source)
+        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
         sent_at = _utc_now()
         try:
             await self.coordinator.async_send(self.coordinator.client.dock, self.coordinator.sn)
