@@ -1788,11 +1788,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 )
             else:
                 _LOGGER.debug(
-                    "Navimower private endpoint %s for mower %s transient failure %s; "
-                    "keeping last-good data: %s",
+                    "Navimower private endpoint %s transient failure %s; keeping last-good "
+                    "data for mower %s: %s",
                     key,
-                    _masked_serial(self.sn),
                     consecutive,
+                    _masked_serial(self.sn),
                     err,
                 )
             return False
