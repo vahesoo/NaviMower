@@ -5,6 +5,7 @@ coordinator's parsed snapshot.
 """
 from __future__ import annotations
 
+from homeassistant.core import Context, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -43,9 +44,21 @@ class NavimowEntity(CoordinatorEntity[NavimowCoordinator]):
     def __init__(self, coordinator: NavimowCoordinator, key: str) -> None:
         super().__init__(coordinator)
         self._sn = coordinator.sn
+        self._navimower_key = str(key)
         self._attr_unique_id = f"{self._sn}_{key}"
         if name := ENTITY_NAME_OVERRIDES.get(key):
             self._attr_name = name
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Write coordinator state with a one-update Activity cause context."""
+        manager = getattr(self.coordinator, "activity_context_manager", None)
+        if manager is not None and manager.manages(self._navimower_key):
+            context = manager.context_for(self._navimower_key)
+            # Explicitly clear a recent previous cause for the managed entity so
+            # it cannot leak through Home Assistant's context grace window.
+            self.async_set_context(context if context is not None else Context())
+        self.async_write_ha_state()
 
     @property
     def data(self) -> dict:

@@ -71,6 +71,15 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             else LawnMowerActivity.PAUSED
         )
 
+    def _note_activity_command(self, source: str, message: str) -> None:
+        manager = getattr(self.coordinator, "activity_context_manager", None)
+        if manager is not None:
+            manager.note_command(
+                source=source,
+                message=message,
+                context=getattr(self, "_context", None),
+            )
+
     @property
     def activity(self) -> LawnMowerActivity:
         state_code = str(self.data.get("state_code") or "")
@@ -91,6 +100,10 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         sn = self._sn
         state_code = str(self.data.get("state_code") or "")
         if state_code in _RESUMABLE_PAUSED_STATES:
+            self._note_activity_command(
+                "lawn_mower.start_mowing_paused",
+                "Home Assistant requested the paused mowing task to resume.",
+            )
             await async_resume_task(
                 self.coordinator,
                 source="lawn_mower.start_mowing_paused",
@@ -126,6 +139,16 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             partition_ids_hex=partition_ids,
             partition_setup=partition_setup,
         )
+        names = {
+            int(row["id"]): str(row.get("name") or f"Zone {row['id']}")
+            for row in zones
+            if isinstance(row, dict) and row.get("id") is not None
+        }
+        target = ", ".join(names.get(value, f"Zone {value}") for value in region_ids)
+        self._note_activity_command(
+            "lawn_mower.start_mowing",
+            f"Home Assistant requested mowing {target or 'all zones'}.",
+        )
         self.coordinator.set_pending_activity(ACTIVITY_MOWING)
         self.coordinator.set_command_target(
             sel if requested_ordered else [], source="lawn_mower.start_mowing"
@@ -149,6 +172,10 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             raise
 
     async def async_pause(self) -> None:
+        self._note_activity_command(
+            "lawn_mower.pause",
+            "Home Assistant requested mowing to pause.",
+        )
         self.coordinator.set_pending_activity(ACTIVITY_PAUSED)
         try:
             await self.coordinator.async_send(self.coordinator.client.pause, self._sn)
@@ -158,10 +185,14 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
 
     async def async_dock(self) -> None:
         self.coordinator.clear_command_target()
-        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
+        self._note_activity_command(
+            "lawn_mower.dock",
+            "Home Assistant sent the mower to the dock.",
+        )
         center = getattr(self.coordinator, "notification_center", None)
         if center is not None:
             center.note_dock_command("lawn_mower.dock")
+        self.coordinator.set_pending_activity(ACTIVITY_RETURNING)
         try:
             await self.coordinator.async_send(self.coordinator.client.dock, self._sn)
         except Exception:

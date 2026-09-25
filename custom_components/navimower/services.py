@@ -187,6 +187,21 @@ def async_setup_services(hass: HomeAssistant) -> None:
         raise ServiceValidationError(
             "Multiple Navimow mowers configured: pass device_id to choose one"
         )
+    def _note_activity(
+        coordinator,
+        *,
+        source: str,
+        message: str,
+        context=None,
+    ) -> None:
+        manager = getattr(coordinator, "activity_context_manager", None)
+        if manager is not None:
+            manager.note_command(
+                source=source,
+                message=message,
+                context=context,
+            )
+
 
     async def _set_schedule(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
@@ -273,6 +288,19 @@ def async_setup_services(hass: HomeAssistant) -> None:
             ordered=ordered,
             partition_ids_hex=partition_ids,
             partition_setup=partition_setup,
+        )
+        zone_names = {
+            int(row["id"]): str(row.get("name") or f"Zone {row['id']}")
+            for row in (coordinator.data or {}).get("zones") or []
+            if isinstance(row, dict) and row.get("id") is not None
+        }
+        requested_names = [zone_names.get(value, f"Zone {value}") for value in zones]
+        target_text = ", ".join(requested_names) if requested_names else "all zones"
+        _note_activity(
+            coordinator,
+            source="navimower.mow",
+            message=f"Navimower Mow action requested mowing {target_text}.",
+            context=call.context,
         )
         coordinator.set_pending_activity(ACTIVITY_MOWING)
         coordinator.set_command_target(
@@ -381,6 +409,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _continue_last_ordered_run(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
+        _note_activity(
+            coordinator,
+            source="navimower.continue_last_ordered_run",
+            message="Navimower requested continuation of the unfinished ordered mowing task.",
+            context=call.context,
+        )
         await _continue_last_ordered_run_for(
             coordinator,
             source="navimower.continue_last_ordered_run",
@@ -403,6 +437,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
 
         strategy = decision.get("strategy")
+        _note_activity(
+            coordinator,
+            source="navimower.continue_task",
+            message="Navimower requested continuation of the confirmed unfinished mowing task.",
+            context=call.context,
+        )
         if strategy == RESUME_STRATEGY_ORDERED_RUN:
             await _continue_last_ordered_run_for(
                 coordinator,
@@ -485,6 +525,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _resume(call: ServiceCall) -> None:
         coordinator = _resolve_coordinator(call)
+        _note_activity(
+            coordinator,
+            source="navimower.resume",
+            message="Navimower Resume action requested the vendor-retained mowing task to continue.",
+            context=call.context,
+        )
         try:
             await async_resume_task(coordinator, source="navimower.resume")
         except Exception as err:
