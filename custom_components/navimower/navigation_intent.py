@@ -272,7 +272,7 @@ def _resolve_public_task_target(
     mqtt_work_target_fresh: bool,
     cloud_work_target: Any,
 ) -> tuple[list[int], str]:
-    """Resolve only user-facing mowing-task intent, never gate route retention."""
+    """Resolve the public Planned zones task selection, never gate routing."""
     if is_docked:
         return [], "docked"
     if is_returning:
@@ -378,7 +378,7 @@ def _resolve_immediate_target(
     return [], "none"
 
 def _target_state(snapshot: dict[str, Any], zone_ids: Any) -> str:
-    """Render public task targets using current map names."""
+    """Render zone IDs using current map names."""
     ids = _zone_ids(zone_ids)
     map_data = snapshot.get("map") or {}
     zones = map_data.get("zones") or snapshot.get("zones") or []
@@ -617,9 +617,9 @@ def install_navigation_intent() -> None:
         result["mqtt_navigation_target_stale_fields"] = stale_fields
 
         def _publish_task_target(current: dict[str, Any]) -> dict[str, Any]:
-            # Preserve the gate/navigation owner separately. The public Target
-            # zone below is intentionally task-only and must never feed back into
-            # gate arbitration.
+            # Preserve the Gate/navigation owner separately. Planned zones and
+            # the public immediate Target zone below are presentation contracts
+            # and must never feed back into Gate arbitration.
             navigation_ids = _zone_ids(
                 current.get("navigation_target_zone_ids")
                 if "navigation_target_zone_ids" in current
