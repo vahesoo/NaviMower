@@ -74,7 +74,7 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     def entity_id(domain: str, key: str) -> str | None:
         return entity_registry.async_get_entity_id(domain, DOMAIN, f"{sn}_{key}")
 
-    device = device_registry.async_get_device(identifiers={(DOMAIN, sn)})
+    device = device_registry.async_get_device_by_identifier((DOMAIN, sn))
     return {
         "entry_id": entry_id,
         "device_id": device.id if device is not None else None,
