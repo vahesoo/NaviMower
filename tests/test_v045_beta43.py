@@ -53,20 +53,24 @@ def test_beta43_target_sensor_and_planned_sensor_contract() -> None:
     assert 'key="target_zone"' in sensor
     assert '"zone_id": d.get("target_zone_id")' in sensor
     assert '"planned_zone_ids": d.get("planned_zone_ids")' in sensor
+    assert '"source": d.get("target_zone_immediate_source")' in sensor
 
     assert 'key="planned_zones"' in sensor
     assert 'translation_key="planned_zones"' in sensor
     assert '"zone_ids": d.get("planned_zone_ids")' in sensor
 
     assert 'current["planned_zone_ids"] = planned_ids' in navigation
-    assert 'current["planned_zones"] = _target_state(snapshot, planned_ids)' in navigation
+    assert '"No planned zones"' in navigation
     assert 'current["target_zone_ids"] = planned_ids' in navigation
+    assert 'current["target_zone_source"] = planned_source' in navigation
     assert 'current["target_zone_id"] = (' in navigation
     assert 'current["target_zone"] = _target_state(snapshot, immediate_ids)' in navigation
+    assert 'current["target_zone_immediate_source"] = immediate_source' in navigation
 
     assert '"planned_zones": data.get("planned_zones")' in mower
     assert '"planned_zone_ids": data.get("planned_zone_ids")' in mower
     assert '"target_zone_id": data.get("target_zone_id")' in diagnostics
+    assert '"target_zone_immediate_source": data.get("target_zone_immediate_source")' in diagnostics
     assert '"planned_zone_ids": deepcopy(data.get("planned_zone_ids") or [])' in diagnostics
 
 
