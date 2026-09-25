@@ -28,7 +28,9 @@ def _load_navigation_functions(names: set[str]) -> dict[str, Any]:
 
 def test_beta43_release_metadata() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta43"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 43
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.5-beta43.md").read_text(
         encoding="utf-8"
