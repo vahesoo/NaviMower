@@ -333,15 +333,34 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         icon="mdi:map-marker-path",
         value_fn=lambda d: d.get("target_zone"),
         attrs_fn=lambda d: {
-            "zone_ids": d.get("target_zone_ids"),
-            "dock_zone_id": d.get("dock_zone_id"),
+            "zone_id": d.get("target_zone_id"),
+            "zone_ids": (
+                [d.get("target_zone_id")]
+                if d.get("target_zone_id") is not None
+                else []
+            ),
             "source": d.get("target_zone_source"),
             "task_active": d.get("target_zone_task_active"),
+            "planned_zone_ids": d.get("planned_zone_ids"),
+            "planned_zones_source": d.get("planned_zones_source"),
             "command_source": d.get("target_zone_command_source"),
             "target_age_seconds": d.get("target_zone_age_seconds"),
             "command_target_active": d.get("command_target_active"),
             "navigation_zone_ids": d.get("navigation_target_zone_ids"),
             "navigation_source": d.get("navigation_target_zone_source"),
+        },
+    ),
+    NavimowSensorDescription(
+        key="planned_zones",
+        translation_key="planned_zones",
+        icon="mdi:map-marker-multiple",
+        value_fn=lambda d: d.get("planned_zones"),
+        attrs_fn=lambda d: {
+            "zone_ids": d.get("planned_zone_ids"),
+            "source": d.get("planned_zones_source"),
+            "task_active": d.get("planned_zones_task_active"),
+            "target_zone": d.get("target_zone"),
+            "target_zone_id": d.get("target_zone_id"),
         },
     ),
     NavimowSensorDescription(
