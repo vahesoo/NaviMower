@@ -201,7 +201,7 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             "current_physical_zone": data.get("current_physical_zone"),
             "target_zone": data.get("target_zone"),
             "target_zone_id": data.get("target_zone_id"),
-            "target_zone_source": data.get("target_zone_source"),
+            "target_zone_source": data.get("target_zone_immediate_source"),
             "planned_zones": data.get("planned_zones"),
             "planned_zone_ids": data.get("planned_zone_ids"),
             "planned_zones_source": data.get("planned_zones_source"),
