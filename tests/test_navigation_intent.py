@@ -152,7 +152,7 @@ def test_navigation_target_precedence_contract() -> None:
     ) == ([36], "mqtt_partition_ids")
 
 
-def test_public_target_is_task_only_and_never_revives_retained_route_intent() -> None:
+def test_planned_zone_resolver_is_task_only_and_never_revives_route_intent() -> None:
     namespace = load_functions(
         NAVIGATION,
         {
@@ -193,8 +193,8 @@ def test_public_target_is_task_only_and_never_revives_retained_route_intent() ->
         "none",
     )
 
-    # Return routing stays available internally to gate logic but public Target
-    # zone is empty even if a route/work target still exists.
+    # Return routing stays available internally to Gate logic but Planned zones
+    # is empty even if a route/work target still exists.
     assert resolve(
         **{
             **common,
@@ -206,7 +206,7 @@ def test_public_target_is_task_only_and_never_revives_retained_route_intent() ->
         }
     ) == ([], "returning_to_dock")
 
-    # Fresh selected task zones are the strongest vendor-owned public target.
+    # Fresh selected task zones are the strongest vendor-owned Planned zones.
     assert resolve(
         **{
             **common,
@@ -251,6 +251,80 @@ def test_public_target_is_task_only_and_never_revives_retained_route_intent() ->
         }
     ) == ([42], "ha_command")
 
+
+def test_immediate_target_is_single_and_does_not_guess_multi_zone_order() -> None:
+    namespace = load_functions(
+        NAVIGATION,
+        {"_as_int", "_zone_ids", "_resolve_immediate_target"},
+        {"Any": Any},
+    )
+    resolve = namespace["_resolve_immediate_target"]
+
+    common = dict(
+        is_docked=False,
+        is_returning=False,
+        task_active=True,
+        command_target_ids=[],
+        command_target_fresh=False,
+        planned_zone_ids=[10, 20, 30],
+        mqtt_work_target=None,
+        mqtt_work_target_fresh=False,
+        mqtt_work_target_after_command=False,
+        physical_zone_id=None,
+        physical_zone_fresh=False,
+        cloud_work_target=None,
+    )
+
+    # Multi-zone selection alone is not enough to claim which zone is next.
+    assert resolve(**common) == ([], "none")
+
+    # A fresh local command owns dispatch until a vendor work target observed
+    # after that command confirms the immediate target.
+    assert resolve(
+        **{
+            **common,
+            "command_target_ids": [10, 20, 30],
+            "command_target_fresh": True,
+            "mqtt_work_target": 20,
+            "mqtt_work_target_fresh": True,
+            "mqtt_work_target_after_command": False,
+        }
+    ) == ([10], "ha_command")
+    assert resolve(
+        **{
+            **common,
+            "command_target_ids": [10, 20, 30],
+            "command_target_fresh": True,
+            "mqtt_work_target": 20,
+            "mqtt_work_target_fresh": True,
+            "mqtt_work_target_after_command": True,
+        }
+    ) == ([20], "mqtt_work_target")
+
+    # While actually mowing a selected zone, fresh physical-zone evidence
+    # keeps Target zone useful even if the work-target field is momentarily absent.
+    assert resolve(
+        **{
+            **common,
+            "physical_zone_id": 20,
+            "physical_zone_fresh": True,
+        }
+    ) == ([20], "current_physical_zone")
+
+    # One-zone tasks are safe to expose even without a separate work target.
+    assert resolve(
+        **{
+            **common,
+            "planned_zone_ids": [30],
+        }
+    ) == ([30], "planned_single_zone")
+
+    # Returning/docked states never keep a mowing target alive.
+    assert resolve(**{**common, "is_returning": True}) == (
+        [],
+        "returning_to_dock",
+    )
+    assert resolve(**{**common, "is_docked": True}) == ([], "docked")
 
 def test_docked_target_is_stable_across_pose_heartbeats() -> None:
     namespace = load_functions(
@@ -500,7 +574,10 @@ def test_runtime_wiring_and_performance_contracts() -> None:
     assert "_navigation_intent_resolving" in navigation
     assert "current_physical_zone_stale" in navigation
     assert "_resolve_public_task_target" in navigation
+    assert "_resolve_immediate_target" in navigation
     assert "navigation_target_zone_ids" in navigation
+    assert "planned_zone_ids" in navigation
+    assert "planned_zones" in navigation
     assert "target_zone_task_active" in navigation
 
     assert "Do not deepcopy the full session cache" in history

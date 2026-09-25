@@ -328,6 +328,9 @@
       "target_zone": {
         "name": "Target zone"
       },
+      "planned_zones": {
+        "name": "Planned zones"
+      },
       "current_channel": {
         "name": "Current channel"
       },

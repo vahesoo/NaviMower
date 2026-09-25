@@ -272,7 +272,7 @@ def _resolve_public_task_target(
     mqtt_work_target_fresh: bool,
     cloud_work_target: Any,
 ) -> tuple[list[int], str]:
-    """Resolve only user-facing mowing-task intent, never gate route retention."""
+    """Resolve the public Planned zones task selection, never gate routing."""
     if is_docked:
         return [], "docked"
     if is_returning:
@@ -306,8 +306,79 @@ def _resolve_public_task_target(
     return [], "none"
 
 
+def _resolve_immediate_target(
+    *,
+    is_docked: bool,
+    is_returning: bool,
+    task_active: bool,
+    command_target_ids: Any,
+    command_target_fresh: bool,
+    planned_zone_ids: Any,
+    mqtt_work_target: Any,
+    mqtt_work_target_fresh: bool,
+    mqtt_work_target_after_command: bool,
+    physical_zone_id: Any,
+    physical_zone_fresh: bool,
+    cloud_work_target: Any,
+) -> tuple[list[int], str]:
+    """Resolve one automation-safe immediate mowing target.
+
+    Multi-zone task selection is deliberately not treated as an immediate
+    target. A fresh vendor work target may take over from a fresh HA command
+    only after it was observed at or after that command, preventing a retained
+    target from the previous task from winning during dispatch.
+    """
+    if is_docked:
+        return [], "docked"
+    if is_returning:
+        return [], "returning_to_dock"
+    if not task_active:
+        return [], "none"
+
+    command_ids = _zone_ids(command_target_ids)
+    planned_ids = _zone_ids(planned_zone_ids)
+    mqtt_work = _as_int(mqtt_work_target)
+
+    if (
+        mqtt_work_target_fresh
+        and mqtt_work is not None
+        and mqtt_work > 0
+        and (not command_target_fresh or mqtt_work_target_after_command)
+        and (not planned_ids or mqtt_work in planned_ids)
+    ):
+        return [mqtt_work], "mqtt_work_target"
+
+    if command_target_fresh and command_ids:
+        return [command_ids[0]], "ha_command"
+
+    if mqtt_work_target_fresh and mqtt_work is not None and mqtt_work > 0:
+        if not planned_ids or mqtt_work in planned_ids:
+            return [mqtt_work], "mqtt_work_target"
+
+    physical = _as_int(physical_zone_id)
+    if (
+        physical_zone_fresh
+        and physical is not None
+        and physical > 0
+        and (not planned_ids or physical in planned_ids)
+    ):
+        return [physical], "current_physical_zone"
+
+    cloud_work = _as_int(cloud_work_target)
+    if (
+        cloud_work is not None
+        and cloud_work > 0
+        and (not planned_ids or cloud_work in planned_ids)
+    ):
+        return [cloud_work], "private_work_target"
+
+    if len(planned_ids) == 1:
+        return planned_ids, "planned_single_zone"
+
+    return [], "none"
+
 def _target_state(snapshot: dict[str, Any], zone_ids: Any) -> str:
-    """Render public task targets using current map names."""
+    """Render zone IDs using current map names."""
     ids = _zone_ids(zone_ids)
     map_data = snapshot.get("map") or {}
     zones = map_data.get("zones") or snapshot.get("zones") or []
@@ -546,9 +617,9 @@ def install_navigation_intent() -> None:
         result["mqtt_navigation_target_stale_fields"] = stale_fields
 
         def _publish_task_target(current: dict[str, Any]) -> dict[str, Any]:
-            # Preserve the gate/navigation owner separately. The public Target
-            # zone below is intentionally task-only and must never feed back into
-            # gate arbitration.
+            # Preserve the Gate/navigation owner separately. Planned zones and
+            # the public immediate Target zone below are presentation contracts
+            # and must never feed back into Gate arbitration.
             navigation_ids = _zone_ids(
                 current.get("navigation_target_zone_ids")
                 if "navigation_target_zone_ids" in current
@@ -581,7 +652,7 @@ def install_navigation_intent() -> None:
                 or navigation_source == "returning_to_dock"
             )
             task_active = _task_target_active(snapshot)
-            public_ids, public_source = _resolve_public_task_target(
+            planned_ids, planned_source = _resolve_public_task_target(
                 is_docked=is_docked,
                 is_returning=is_returning,
                 task_active=task_active,
@@ -594,9 +665,77 @@ def install_navigation_intent() -> None:
                 mqtt_work_target_fresh=bool(freshness["work_target_fresh"]),
                 cloud_work_target=snapshot.get("work_target_zone"),
             )
-            current["target_zone_ids"] = public_ids
-            current["target_zone_source"] = public_source
-            current["target_zone"] = _target_state(snapshot, public_ids)
+
+            command_set_at = getattr(self, "_command_target_set_at", None)
+            work_target_set_at = getattr(
+                self,
+                "_mqtt_work_target_last_update",
+                None,
+            )
+            work_target_after_command = bool(
+                command_set_at is None
+                or (
+                    isinstance(work_target_set_at, (int, float))
+                    and isinstance(command_set_at, (int, float))
+                    and work_target_set_at >= command_set_at
+                )
+            )
+            immediate_ids, immediate_source = _resolve_immediate_target(
+                is_docked=is_docked,
+                is_returning=is_returning,
+                task_active=task_active,
+                command_target_ids=command_target_ids,
+                command_target_fresh=bool(current.get("command_target_active")),
+                planned_zone_ids=planned_ids,
+                mqtt_work_target=sanitized.get("work_target_zone"),
+                mqtt_work_target_fresh=bool(freshness["work_target_fresh"]),
+                mqtt_work_target_after_command=work_target_after_command,
+                physical_zone_id=current.get("current_physical_zone_id"),
+                physical_zone_fresh=bool(
+                    _as_int(current.get("current_physical_zone_id")) is not None
+                    and _physical_zone_is_fresh(
+                        current,
+                        _as_int(current.get("current_physical_zone_id")),
+                    )
+                ),
+                cloud_work_target=snapshot.get("work_target_zone"),
+            )
+
+            # target_zone_ids remains the task-selection compatibility key
+            # used by History/Zone Ledger/Scheduler. New code should use the
+            # explicit planned-zone fields for that meaning.
+            current["planned_zone_ids"] = planned_ids
+            current["planned_zones_source"] = planned_source
+            current["planned_zones"] = (
+                _target_state(snapshot, planned_ids)
+                if planned_ids
+                else "No planned zones"
+            )
+            current["planned_zones_task_active"] = task_active
+            current["target_zone_ids"] = planned_ids
+
+            current["target_zone_id"] = (
+                immediate_ids[0] if len(immediate_ids) == 1 else None
+            )
+            current["target_zone"] = _target_state(snapshot, immediate_ids)
+            current["target_zone_immediate_source"] = immediate_source
+            if immediate_source == "mqtt_work_target":
+                current["target_zone_immediate_age_seconds"] = freshness[
+                    "work_target_age"
+                ]
+            elif immediate_source == "ha_command":
+                current["target_zone_immediate_age_seconds"] = current.get(
+                    "target_zone_age_seconds"
+                )
+            elif immediate_source == "current_physical_zone":
+                current["target_zone_immediate_age_seconds"] = current.get(
+                    "current_physical_zone_source_age"
+                )
+            else:
+                current["target_zone_immediate_age_seconds"] = None
+            # Keep the historical task-selection source paired with
+            # target_zone_ids for scheduler/backend compatibility.
+            current["target_zone_source"] = planned_source
             current["target_zone_task_active"] = task_active
             return current
 

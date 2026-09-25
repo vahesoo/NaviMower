@@ -304,6 +304,15 @@ Actions:
 - `navimower.mark_notification_read`
 - `navimower.mark_all_notifications_read`
 
+## Target and planned zones
+
+Navimower separates the mower's **immediate target** from the full selected task:
+
+- **Target zone** is one automation-safe zone: the fresh vendor work target, or the first freshly commanded zone while the vendor target is still catching up. Multi-zone selection alone is not guessed into a target.
+- **Planned zones** is the full active mowing-task selection reported by the command/vendor task state.
+
+This makes state triggers such as `sensor.<mower>_target_zone -> Yard` fire when Yard is actually the immediate target, rather than as soon as Yard merely appears later in a multi-zone task. The richer internal navigation target used by Gate arbitration remains separate.
+
 ## Mower settings and controls
 
 Available controls depend on mower model, firmware and reported capability. Navimower prefers hiding a control over guessing an unsupported command.
