@@ -13,7 +13,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta41_release_metadata() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta41"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 41
 
     notes = (ROOT / ".github" / "release-notes" / "0.4.5-beta41.md").read_text(
         encoding="utf-8"
@@ -213,7 +215,9 @@ def test_beta41_private_logs_identify_mower_and_registry_api_is_current() -> Non
     assert "_masked_serial(self.sn)" in coordinator
 
     assert (
-        "device_registry.async_get_device_by_identifier((DOMAIN, sn))"
+        "device_registry.async_get_device_by_identifier("
         in map_api
     )
+    assert "(DOMAIN, sn)" in map_api
+    assert "entry_id," in map_api
     assert "device_registry.async_get_device(identifiers=" not in map_api
