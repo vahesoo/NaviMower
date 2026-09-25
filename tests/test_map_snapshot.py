@@ -248,3 +248,38 @@ def test_dark_snapshot_entity_is_disabled_by_default_and_refresh_is_enabled_only
     assert "await asyncio.gather(" in services
     assert "No enabled Navimower map snapshot image entity is available." in services
     assert "map_snapshot_dark_manager" in setup
+
+
+
+def test_snapshot_uses_packaged_noto_sans_for_international_labels() -> None:
+    renderer = _render_module()
+    path = renderer._packaged_snapshot_font_path()
+    assert path is not None
+    assert "noto" in path.lower()
+
+    font = renderer._snapshot_font(24)
+    family, _style = font.getname()
+    assert "Noto Sans" in family
+
+    replacement = bytes(font.getmask("\ufffd"))
+    question = bytes(font.getmask("?"))
+    for character in ("ä", "ö", "ü", "õ", "Ø", "ı", "ş", "Ł", "ą"):
+        mask = bytes(font.getmask(character))
+        assert mask
+        assert mask != replacement
+        assert mask != question
+
+    source = {
+        "map": {
+            "zones": [
+                {
+                    "id": 1,
+                    "name": "Mägi õue · Üsküdar · Øst · Łąka",
+                    "polygon": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                }
+            ]
+        },
+        "show_zone_labels": True,
+    }
+    png = renderer.render_snapshot_png(source, size=640, theme="dark")
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
