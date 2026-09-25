@@ -187,11 +187,12 @@ async def _async_snapshot_source(coordinator: Any) -> dict[str, Any]:
 
 
 class MapSnapshotManager:
-    """Maintain one latest PNG snapshot per mower with bounded refresh work."""
+    """Maintain one latest PNG snapshot variant per mower with bounded refresh work."""
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: Any, *, theme: str = "light") -> None:
         self.coordinator = coordinator
         self.hass = coordinator.hass
+        self.theme = "dark" if str(theme).lower() == "dark" else "light"
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._listeners: set[Callable[[], None]] = set()
@@ -208,6 +209,11 @@ class MapSnapshotManager:
     @property
     def image(self) -> bytes | None:
         return self._image
+
+    @property
+    def active(self) -> bool:
+        """Return whether an enabled image entity is consuming this variant."""
+        return bool(self._listeners)
 
     @property
     def last_rendered_at(self) -> datetime | None:
@@ -259,6 +265,8 @@ class MapSnapshotManager:
                 image = await self.hass.async_add_executor_job(
                     render_snapshot_png,
                     source,
+                    1024,
+                    self.theme,
                 )
                 if not image:
                     raise RuntimeError("snapshot renderer returned no image")
@@ -314,7 +322,9 @@ class MapSnapshotManager:
         )
 
     def consider_auto_refresh(self, snapshot: dict[str, Any] | None = None) -> None:
-        """Refresh immediately on major state changes, otherwise at most once/min."""
+        """Refresh enabled variants on state changes, otherwise at most once/min."""
+        if not self.active:
+            return
         data = snapshot or self.coordinator.data or {}
         signature = _state_signature(data)
         activity = str(data.get("activity") or "").strip().lower()
@@ -347,9 +357,31 @@ class MapSnapshotManager:
         self._listeners.clear()
 
 
-def get_map_snapshot_manager(coordinator: Any) -> MapSnapshotManager:
-    manager = getattr(coordinator, "map_snapshot_manager", None)
+def get_map_snapshot_manager(
+    coordinator: Any,
+    theme: str = "light",
+) -> MapSnapshotManager:
+    """Return the cached snapshot manager for one visual theme."""
+    normalized = "dark" if str(theme).lower() == "dark" else "light"
+    attribute = (
+        "map_snapshot_dark_manager"
+        if normalized == "dark"
+        else "map_snapshot_manager"
+    )
+    manager = getattr(coordinator, attribute, None)
     if not isinstance(manager, MapSnapshotManager):
-        manager = MapSnapshotManager(coordinator)
-        coordinator.map_snapshot_manager = manager
+        manager = MapSnapshotManager(coordinator, theme=normalized)
+        setattr(coordinator, attribute, manager)
     return manager
+
+
+def active_map_snapshot_managers(coordinator: Any) -> list[MapSnapshotManager]:
+    """Return only variants whose image entities are enabled in Home Assistant."""
+    return [
+        manager
+        for manager in (
+            get_map_snapshot_manager(coordinator, "light"),
+            get_map_snapshot_manager(coordinator, "dark"),
+        )
+        if manager.active
+    ]
