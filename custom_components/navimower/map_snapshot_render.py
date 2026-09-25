@@ -11,6 +11,11 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    import fontpkg
+except ImportError:  # pragma: no cover - manifest requirement is authoritative.
+    fontpkg = None
+
 # Map Card H2 SVG snapshot subset: preserve the recognisable body/deck/nose layers.
 MOWER_ART_WIDTH = 120.0
 MOWER_ART_HEIGHT = 159.0
@@ -119,14 +124,31 @@ _FONT_CANDIDATES = (
 )
 
 
+@lru_cache(maxsize=1)
+def _packaged_snapshot_font_path() -> str | None:
+    """Return the integration-installed Noto Sans path, independent of the host."""
+    if fontpkg is None:
+        return None
+    try:
+        return str(fontpkg.path("Noto Sans"))
+    except Exception:  # noqa: BLE001 - keep system/default font fallback defensive.
+        return None
+
+
 def _snapshot_palette(theme: str | None) -> dict[str, tuple[int, int, int, int]]:
     return _DARK_PALETTE if str(theme or "").strip().lower() == "dark" else _LIGHT_PALETTE
 
 
 @lru_cache(maxsize=16)
 def _snapshot_font(size: int):
-    """Load a Unicode-capable UI font without adding a bundled font asset."""
+    """Load packaged Noto Sans first, then defensive host/default fallbacks."""
     size = max(10, min(64, int(size)))
+    packaged = _packaged_snapshot_font_path()
+    if packaged:
+        try:
+            return ImageFont.truetype(packaged, size=size)
+        except (OSError, ValueError):
+            pass
     for candidate in _FONT_CANDIDATES:
         try:
             return ImageFont.truetype(candidate, size=size)
