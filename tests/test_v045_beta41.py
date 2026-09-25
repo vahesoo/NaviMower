@@ -220,5 +220,4 @@ def test_beta41_private_logs_identify_mower_and_registry_api_is_current() -> Non
     )
     assert "(DOMAIN, sn)" in map_api
     assert "entry_id," in map_api
-    )
     assert "device_registry.async_get_device(identifiers=" not in map_api
