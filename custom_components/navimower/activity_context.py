@@ -11,6 +11,15 @@ from .const import DOMAIN
 
 EVENT_NAVIMOWER_ACTIVITY = "navimower_activity"
 _COMMAND_TTL_SECONDS = 180.0
+_MANAGED_ENTITY_KEYS = {
+    "mower",
+    "status",
+    "mowing_pause_reason",
+    "current_zone",
+    "current_physical_zone",
+    "target_zone",
+    "planned_zones",
+}
 
 
 def _text(value: Any) -> str:
@@ -66,6 +75,11 @@ class NavimowerActivityContextManager:
             self._unsub = None
         self._contexts = {}
         self._pending_command = None
+
+    @staticmethod
+    def manages(key: str) -> bool:
+        """Return whether beta44 owns Activity context for this entity key."""
+        return str(key) in _MANAGED_ENTITY_KEYS
 
     def context_for(self, key: str) -> Context | None:
         """Return the cause context for this entity in the current update."""
