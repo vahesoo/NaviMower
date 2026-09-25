@@ -42,9 +42,18 @@ AUTH_ERROR_CODES = {
     401900,  # token empty
     401901,
     401902,
+    401903,  # token expired
     401905,  # incorrect user information
     1005,  # logged in from another device
 }
+
+
+def _is_auth_error_code(code: Any) -> bool:
+    """Return whether a vendor business code represents an auth/session error."""
+    try:
+        return int(str(code).strip()) in AUTH_ERROR_CODES
+    except (TypeError, ValueError):
+        return False
 
 
 class NavimowError(Exception):
@@ -308,7 +317,7 @@ class NavimowCloudClient:
                 self._record_discovery(path, data, code)
                 return data
 
-            if retry_auth and auth and code in AUTH_ERROR_CODES:
+            if retry_auth and auth and _is_auth_error_code(code):
                 _LOGGER.debug("auth code %s on %s -> re-auth + retry", code, path)
                 self._reauth()
                 body = self._auth_body(extra)
@@ -319,7 +328,7 @@ class NavimowCloudClient:
                     return data
 
             desc = str(result.get("desc", "")) if isinstance(result, dict) else str(result)
-            if code in AUTH_ERROR_CODES:
+            if _is_auth_error_code(code):
                 raise NavimowAuthError(code, desc)
             raise NavimowError(code, desc)
 
