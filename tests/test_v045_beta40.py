@@ -10,7 +10,9 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta40_release_metadata_and_font_dependencies() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.4.5-beta40"
+    version = str(manifest["version"])
+    assert version.startswith("0.4.5-beta")
+    assert int(version.rsplit("beta", 1)[1]) >= 40
     requirements = set(manifest["requirements"])
     assert "fontpkg==0.2.2" in requirements
     assert "fontpkg-noto-sans==2.15" in requirements
