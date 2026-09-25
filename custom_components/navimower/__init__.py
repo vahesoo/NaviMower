@@ -13,6 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .account import shared_private_device_id
+from .activity_context import NavimowerActivityContextManager
 from .channel import parse_channels
 from .const import (
     API_BASE_URL,
@@ -307,6 +308,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.navimower_schedule = navimower_schedule
     await navimower_schedule.async_start()
 
+    activity_context_manager = NavimowerActivityContextManager(
+        hass,
+        entry.entry_id,
+        coordinator,
+    )
+    coordinator.activity_context_manager = activity_context_manager
+    activity_context_manager.start()
+
     coordinator.private_poll_guard_task = hass.async_create_background_task(
         _async_private_poll_guard(coordinator),
         f"Navimower private poll guard {entry.entry_id}",
@@ -347,6 +356,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     navimower_schedule = (
         getattr(coordinator, "navimower_schedule", None) if coordinator else None
     )
+    activity_context_manager = (
+        getattr(coordinator, "activity_context_manager", None)
+        if coordinator
+        else None
+    )
     private_poll_guard = (
         getattr(coordinator, "private_poll_guard_task", None) if coordinator else None
     )
@@ -378,6 +392,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if navimower_schedule is not None:
         await navimower_schedule.async_stop()
+    if activity_context_manager is not None:
+        await activity_context_manager.async_stop()
+        coordinator.activity_context_manager = None
     if notification_center is not None:
         await notification_center.async_stop()
     if session_archive is not None:
