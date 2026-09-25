@@ -6,6 +6,7 @@ from functools import lru_cache
 from io import BytesIO
 import math
 import re
+import unicodedata
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
@@ -43,17 +44,98 @@ MOWER_RASTER_ART = {
 SNAPSHOT_SIZE = 1024
 CUTTING_ACTIONS = {5, 8}
 
-_BACKGROUND = (246, 248, 246, 255)
-_ZONE_FILL = (129, 199, 132, 54)
-_ZONE_STROKE = (67, 160, 71, 220)
-_MOWED = (46, 125, 50, 138)
-_ROUTE = (27, 94, 32, 220)
-_OFF_LIMIT = (255, 90, 0, 145)
-_VF_OFF = (54, 112, 210, 110)
-_CHANNEL = (97, 97, 97, 175)
-_GATE = (123, 67, 151, 110)
-_DOCK = (55, 71, 79, 255)
-_TEXT = (55, 71, 79, 255)
+_LIGHT_PALETTE = {
+    "background": (246, 248, 246, 255),
+    "zone_fill": (129, 199, 132, 54),
+    "zone_stroke": (67, 160, 71, 220),
+    "mowed": (46, 125, 50, 138),
+    "route": (27, 94, 32, 220),
+    "off_limit": (255, 90, 0, 145),
+    "off_limit_outline": (216, 67, 21, 220),
+    "vf_off": (54, 112, 210, 110),
+    "vf_off_outline": (41, 98, 180, 220),
+    "channel": (97, 97, 97, 175),
+    "gate": (123, 67, 151, 110),
+    "gate_outline": (94, 53, 177, 230),
+    "dock": (55, 71, 79, 255),
+    "dock_outline": (255, 255, 255, 255),
+    "dock_accent": (105, 240, 174, 255),
+    "text": (55, 71, 79, 255),
+    "label_background": (245, 247, 248, 225),
+    "label_outline": (176, 190, 197, 220),
+    "placeholder": (100, 110, 105, 255),
+    "mower_outline": (255, 255, 255, 235),
+}
+
+# Keep the Map Card's established semantic colors, but tune contrast/opacity for
+# a dark dashboard background instead of simply inverting the light snapshot.
+_DARK_PALETTE = {
+    "background": (20, 24, 29, 255),
+    "zone_fill": (129, 199, 132, 76),
+    "zone_stroke": (102, 187, 106, 235),
+    "mowed": (67, 160, 71, 190),
+    "route": (129, 199, 132, 235),
+    "off_limit": (255, 90, 0, 180),
+    "off_limit_outline": (255, 112, 40, 240),
+    "vf_off": (47, 128, 237, 150),
+    "vf_off_outline": (91, 155, 255, 235),
+    "channel": (176, 190, 197, 215),
+    "gate": (171, 71, 188, 150),
+    "gate_outline": (206, 147, 216, 235),
+    "dock": (84, 110, 122, 255),
+    "dock_outline": (207, 216, 220, 255),
+    "dock_accent": (105, 240, 174, 255),
+    "text": (238, 242, 244, 255),
+    "label_background": (31, 37, 43, 235),
+    "label_outline": (93, 108, 117, 230),
+    "placeholder": (176, 190, 197, 255),
+    "mower_outline": (238, 242, 244, 235),
+}
+
+# Backward-compatible light aliases retained for tests/helpers outside the main
+# renderer. New rendering code selects a complete palette per snapshot variant.
+_BACKGROUND = _LIGHT_PALETTE["background"]
+_ZONE_FILL = _LIGHT_PALETTE["zone_fill"]
+_ZONE_STROKE = _LIGHT_PALETTE["zone_stroke"]
+_MOWED = _LIGHT_PALETTE["mowed"]
+_ROUTE = _LIGHT_PALETTE["route"]
+_OFF_LIMIT = _LIGHT_PALETTE["off_limit"]
+_VF_OFF = _LIGHT_PALETTE["vf_off"]
+_CHANNEL = _LIGHT_PALETTE["channel"]
+_GATE = _LIGHT_PALETTE["gate"]
+_DOCK = _LIGHT_PALETTE["dock"]
+_TEXT = _LIGHT_PALETTE["text"]
+
+_FONT_CANDIDATES = (
+    "DejaVuSans.ttf",
+    "NotoSans-Regular.ttf",
+    "LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+)
+
+
+def _snapshot_palette(theme: str | None) -> dict[str, tuple[int, int, int, int]]:
+    return _DARK_PALETTE if str(theme or "").strip().lower() == "dark" else _LIGHT_PALETTE
+
+
+@lru_cache(maxsize=16)
+def _snapshot_font(size: int):
+    """Load a Unicode-capable UI font without adding a bundled font asset."""
+    size = max(10, min(64, int(size)))
+    for candidate in _FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except (OSError, ValueError):
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 
@@ -461,17 +543,15 @@ def _draw_zone_labels(
     project,
     *,
     size: int,
+    palette: dict[str, tuple[int, int, int, int]],
 ) -> None:
     draw = ImageDraw.Draw(image)
-    try:
-        font = ImageFont.load_default(size=max(12, round(size / 64)))
-    except TypeError:
-        font = ImageFont.load_default()
+    font = _snapshot_font(max(12, round(size / 64)))
     for zone in zones or []:
         if not isinstance(zone, dict):
             continue
         points = _xy_points(zone)
-        name = str(zone.get("name") or "").strip()
+        name = unicodedata.normalize("NFC", str(zone.get("name") or "")).strip()
         if len(points) < 3 or not name:
             continue
         cx = sum(point[0] for point in points) / len(points)
@@ -484,14 +564,25 @@ def _draw_zone_labels(
         draw.rounded_rectangle(
             (x - w / 2 - pad_x, y - h / 2 - pad_y, x + w / 2 + pad_x, y + h / 2 + pad_y),
             radius=6,
-            fill=(245, 247, 248, 225),
-            outline=(176, 190, 197, 220),
+            fill=palette["label_background"],
+            outline=palette["label_outline"],
             width=1,
         )
-        draw.text((x - w / 2, y - h / 2 - bbox[1]), name, font=font, fill=_TEXT)
+        draw.text(
+            (x - w / 2, y - h / 2 - bbox[1]),
+            name,
+            font=font,
+            fill=palette["text"],
+        )
 
 
-def _draw_station(image: Image.Image, station: Any, project, scale: float) -> None:
+def _draw_station(
+    image: Image.Image,
+    station: Any,
+    project,
+    scale: float,
+    palette: dict[str, tuple[int, int, int, int]],
+) -> None:
     if not isinstance(station, dict):
         return
     x = _as_float(station.get("x"))
@@ -504,18 +595,24 @@ def _draw_station(image: Image.Image, station: Any, project, scale: float) -> No
     draw.rounded_rectangle(
         (px - radius, py - radius * 0.8, px + radius, py + radius * 0.8),
         radius=max(3, radius * 0.25),
-        fill=_DOCK,
-        outline=(255, 255, 255, 255),
+        fill=palette["dock"],
+        outline=palette["dock_outline"],
         width=2,
     )
     draw.line(
         [(px + 1, py - radius * 0.45), (px - 3, py), (px + 1, py), (px - 1, py + radius * 0.45)],
-        fill=(105, 240, 174, 255),
+        fill=palette["dock_accent"],
         width=max(2, round(radius / 4)),
     )
 
 
-def _draw_mower(image: Image.Image, source: dict[str, Any], project, scale: float) -> None:
+def _draw_mower(
+    image: Image.Image,
+    source: dict[str, Any],
+    project,
+    scale: float,
+    palette: dict[str, tuple[int, int, int, int]],
+) -> None:
     """Draw model-aware Map Card mower artwork at the live local-map pose."""
     position = source.get("position") or {}
     if not isinstance(position, dict):
@@ -571,28 +668,34 @@ def _draw_mower(image: Image.Image, source: dict[str, Any], project, scale: floa
         draw.polygon(
             transformed,
             fill=fill,
-            outline=(255, 255, 255, 235) if layer_index == 0 else None,
+            outline=palette["mower_outline"] if layer_index == 0 else None,
             width=max(1, round(image.width / 512)) if layer_index == 0 else 1,
         )
     image.alpha_composite(layer)
 
 
-def _draw_placeholder(image: Image.Image, text: str) -> None:
+def _draw_placeholder(
+    image: Image.Image,
+    text: str,
+    palette: dict[str, tuple[int, int, int, int]],
+) -> None:
     draw = ImageDraw.Draw(image)
-    try:
-        font = ImageFont.load_default(size=20)
-    except TypeError:
-        font = ImageFont.load_default()
+    font = _snapshot_font(20)
     bbox = draw.textbbox((0, 0), text, font=font)
     x = (image.width - (bbox[2] - bbox[0])) / 2
     y = (image.height - (bbox[3] - bbox[1])) / 2
-    draw.text((x, y), text, font=font, fill=(100, 110, 105, 255))
+    draw.text((x, y), text, font=font, fill=palette["placeholder"])
 
 
-def render_snapshot_png(source: dict[str, Any], size: int = SNAPSHOT_SIZE) -> bytes:
+def render_snapshot_png(
+    source: dict[str, Any],
+    size: int = SNAPSHOT_SIZE,
+    theme: str = "light",
+) -> bytes:
     """Render one backend-owned latest-map snapshot as PNG bytes."""
     size = max(320, min(1600, int(size)))
-    image = Image.new("RGBA", (size, size), _BACKGROUND)
+    palette = _snapshot_palette(theme)
+    image = Image.new("RGBA", (size, size), palette["background"])
     map_data = source.get("map") or {}
     static = _static_points(source)
     position = source.get("position") or {}
@@ -608,30 +711,30 @@ def render_snapshot_png(source: dict[str, Any], size: int = SNAPSHOT_SIZE) -> by
         image,
         zones,
         project,
-        fill=_ZONE_FILL,
-        outline=_ZONE_STROKE,
+        fill=palette["zone_fill"],
+        outline=palette["zone_stroke"],
         outline_width=max(1, round(size / 512)),
     )
     _draw_polygon_layer(
         image,
         map_data.get("off_limit_areas") or [],
         project,
-        fill=_OFF_LIMIT,
-        outline=(216, 67, 21, 220),
+        fill=palette["off_limit"],
+        outline=palette["off_limit_outline"],
     )
     _draw_polygon_layer(
         image,
         map_data.get("vf_off_areas") or [],
         project,
-        fill=_VF_OFF,
-        outline=(41, 98, 180, 220),
+        fill=palette["vf_off"],
+        outline=palette["vf_off_outline"],
     )
     _draw_polygon_layer(
         image,
         source.get("gate_areas") or [],
         project,
-        fill=_GATE,
-        outline=(94, 53, 177, 230),
+        fill=palette["gate"],
+        outline=palette["gate_outline"],
     )
 
     channel_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
@@ -644,7 +747,7 @@ def render_snapshot_png(source: dict[str, Any], size: int = SNAPSHOT_SIZE) -> by
         _draw_round_line(
             channel_draw,
             projected,
-            fill=_CHANNEL,
+            fill=palette["channel"],
             width=max(2, round(size / 256)),
         )
     image.alpha_composite(channel_layer)
@@ -667,7 +770,7 @@ def render_snapshot_png(source: dict[str, Any], size: int = SNAPSHOT_SIZE) -> by
         _draw_round_line(
             mowed_draw,
             [project(point) for point in segment],
-            fill=_MOWED,
+            fill=palette["mowed"],
             width=stroke_px,
         )
     image.alpha_composite(mowed_layer)
@@ -681,18 +784,18 @@ def render_snapshot_png(source: dict[str, Any], size: int = SNAPSHOT_SIZE) -> by
         _draw_round_line(
             route_draw,
             [project(point) for point in clean],
-            fill=_ROUTE,
+            fill=palette["route"],
             width=max(2, round(size / 384)),
         )
     image.alpha_composite(route_layer)
 
-    _draw_station(image, map_data.get("station"), project, scale)
-    _draw_mower(image, source, project, scale)
+    _draw_station(image, map_data.get("station"), project, scale, palette)
+    _draw_mower(image, source, project, scale, palette)
     if source.get("show_zone_labels", True):
-        _draw_zone_labels(image, zones, project, size=size)
+        _draw_zone_labels(image, zones, project, size=size, palette=palette)
 
     if not zones and not static:
-        _draw_placeholder(image, "Navimower map unavailable")
+        _draw_placeholder(image, "Navimower map unavailable", palette)
 
     output = BytesIO()
     image.convert("RGB").save(output, format="PNG", compress_level=6)
