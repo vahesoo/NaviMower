@@ -713,8 +713,25 @@ def install_navigation_intent() -> None:
             current["target_zone_id"] = (
                 immediate_ids[0] if len(immediate_ids) == 1 else None
             )
-            current["target_zone_source"] = immediate_source
             current["target_zone"] = _target_state(snapshot, immediate_ids)
+            current["target_zone_immediate_source"] = immediate_source
+            if immediate_source == "mqtt_work_target":
+                current["target_zone_immediate_age_seconds"] = freshness[
+                    "work_target_age"
+                ]
+            elif immediate_source == "ha_command":
+                current["target_zone_immediate_age_seconds"] = current.get(
+                    "target_zone_age_seconds"
+                )
+            elif immediate_source == "current_physical_zone":
+                current["target_zone_immediate_age_seconds"] = current.get(
+                    "current_physical_zone_source_age"
+                )
+            else:
+                current["target_zone_immediate_age_seconds"] = None
+            # Keep the historical task-selection source paired with
+            # target_zone_ids for scheduler/backend compatibility.
+            current["target_zone_source"] = planned_source
             current["target_zone_task_active"] = task_active
             return current
 
