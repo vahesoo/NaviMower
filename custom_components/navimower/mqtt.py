@@ -50,6 +50,14 @@ from .location import extract_mqtt_battery, location_topic, parse_location_paylo
 _LOGGER = logging.getLogger(__name__)
 
 
+def _load_mower_sdk_types() -> tuple[Any, Any]:
+    """Import mower_sdk classes off the Home Assistant event loop."""
+    from mower_sdk.api import MowerAPI
+    from mower_sdk.sdk import NavimowSDK
+
+    return MowerAPI, NavimowSDK
+
+
 class NavimowerMqttBridge:
     """Connect one private-cloud mower coordinator to official MQTT pose data."""
 
@@ -150,7 +158,9 @@ class NavimowerMqttBridge:
         self._reauth_started = False
         self.coordinator.set_oauth_connected(True)
 
-        from mower_sdk.api import MowerAPI
+        MowerAPI, NavimowSDK = await self.hass.async_add_executor_job(
+            _load_mower_sdk_types
+        )
 
         self.api = MowerAPI(
             session=async_get_clientsession(self.hass),
@@ -202,7 +212,6 @@ class NavimowerMqttBridge:
             ) from err
 
         connection = self._connection_details(mqtt_info, access_token)
-        from mower_sdk.sdk import NavimowSDK
 
         def _create_sdk() -> Any:
             sdk = NavimowSDK(
