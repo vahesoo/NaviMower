@@ -17,7 +17,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml zstandard aiohttp pillow
+        run: python -m pip install --upgrade pytest voluptuous cryptography pyyaml zstandard aiohttp pillow fontpkg==0.2.2 fontpkg-noto-sans==2.15
 
       - name: Compile integration
         run: python -m compileall -q custom_components/navimower
