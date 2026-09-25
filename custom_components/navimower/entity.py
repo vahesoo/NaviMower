@@ -53,14 +53,11 @@ class NavimowEntity(CoordinatorEntity[NavimowCoordinator]):
     def _handle_coordinator_update(self) -> None:
         """Write coordinator state with a one-update Activity cause context."""
         manager = getattr(self.coordinator, "activity_context_manager", None)
-        context = (
-            manager.context_for(self._navimower_key)
-            if manager is not None
-            else None
-        )
-        # Explicitly clear a recent previous cause so a later unrelated state
-        # change cannot inherit it during Home Assistant's context grace window.
-        self.async_set_context(context if context is not None else Context())
+        if manager is not None and manager.manages(self._navimower_key):
+            context = manager.context_for(self._navimower_key)
+            # Explicitly clear a recent previous cause for the managed entity so
+            # it cannot leak through Home Assistant's context grace window.
+            self.async_set_context(context if context is not None else Context())
         self.async_write_ha_state()
 
     @property
