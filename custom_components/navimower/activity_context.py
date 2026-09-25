@@ -205,7 +205,7 @@ class NavimowerActivityContextManager:
             new = _zone_phrase(current["planned_zones"])
             source = _text(data.get("planned_zones_source")) or "task resolver"
             if new == "No planned zones":
-                message = f"Active mowing task zones were cleared from {old}."
+                message = f"Active mowing task planned zones were cleared from {old}."
             elif old == "No planned zones" or old == "unknown":
                 message = f"Active mowing task planned zones became {new}."
             else:
