@@ -18,7 +18,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([NavimowMapSnapshotImage(coordinator)])
+    async_add_entities(
+        [
+            NavimowMapSnapshotImage(coordinator),
+            NavimowMapSnapshotDarkImage(coordinator),
+        ]
+    )
 
 
 class NavimowMapSnapshotImage(NavimowEntity, ImageEntity):
@@ -31,7 +36,7 @@ class NavimowMapSnapshotImage(NavimowEntity, ImageEntity):
     def __init__(self, coordinator: NavimowCoordinator) -> None:
         NavimowEntity.__init__(self, coordinator, "map_snapshot")
         ImageEntity.__init__(self, coordinator.hass)
-        self._manager = get_map_snapshot_manager(coordinator)
+        self._manager = get_map_snapshot_manager(coordinator, "light")
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -82,3 +87,15 @@ class NavimowMapSnapshotImage(NavimowEntity, ImageEntity):
     @property
     def available(self) -> bool:
         return self._manager.image is not None or super().available
+
+
+class NavimowMapSnapshotDarkImage(NavimowMapSnapshotImage):
+    """Dark-background snapshot variant for dashboards/notifications."""
+
+    _attr_name = "Map snapshot dark"
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: NavimowCoordinator) -> None:
+        NavimowEntity.__init__(self, coordinator, "map_snapshot_dark")
+        ImageEntity.__init__(self, coordinator.hass)
+        self._manager = get_map_snapshot_manager(coordinator, "dark")
