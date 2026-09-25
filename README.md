@@ -541,3 +541,8 @@ Navimower is an independent interoperability project and includes/adapts MIT-lic
 See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE).
 
 Navimower is distributed under the MIT License.
+
+
+## Backend map snapshot images
+
+Each mower exposes **Map snapshot** plus an optional disabled-by-default **Map snapshot dark** image. Only enabled variants are rendered. Zone labels use a Unicode-capable TrueType font for international names.

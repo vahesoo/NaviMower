@@ -339,6 +339,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     map_snapshot_manager = (
         getattr(coordinator, "map_snapshot_manager", None) if coordinator else None
     )
+    map_snapshot_dark_manager = (
+        getattr(coordinator, "map_snapshot_dark_manager", None)
+        if coordinator
+        else None
+    )
     navimower_schedule = (
         getattr(coordinator, "navimower_schedule", None) if coordinator else None
     )
@@ -381,6 +386,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await terrain_overlay.async_stop()
     if map_snapshot_manager is not None:
         await map_snapshot_manager.async_shutdown()
+    if map_snapshot_dark_manager is not None:
+        await map_snapshot_dark_manager.async_shutdown()
     if coordinator is not None:
         if bridge is not None:
             await bridge.async_stop()
