@@ -545,4 +545,4 @@ Navimower is distributed under the MIT License.
 
 ## Backend map snapshot images
 
-Each mower exposes **Map snapshot** plus an optional disabled-by-default **Map snapshot dark** image. Only enabled variants are rendered. Zone labels use a Unicode-capable TrueType font for international names.
+Each mower exposes **Map snapshot** plus an optional disabled-by-default **Map snapshot dark** image. Only enabled variants are rendered. Zone labels use the integration-installed **Noto Sans** font, so international names render independently of fonts available in the Home Assistant host/container.
