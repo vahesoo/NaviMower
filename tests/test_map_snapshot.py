@@ -189,3 +189,62 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert "_svg_path_polygons" in render
     assert "angle = math.pi / 2.0 - heading" in render
     assert "math.cos(angle)" in render
+
+
+
+def test_dark_snapshot_has_distinct_palette_and_unicode_zone_labels() -> None:
+    renderer = _render_module()
+    name = "Mägi õue · Üsküdar · Øst · Łąka"
+    source = {
+        "map": {
+            "zones": [
+                {
+                    "id": 1,
+                    "name": name,
+                    "polygon": [[0, 0], [12, 0], [12, 8], [0, 8]],
+                }
+            ],
+            "station": {"x": 1.0, "y": 1.0},
+        },
+        "position": {"x": 6.0, "y": 4.0, "heading": 0.0},
+        "mowing_path_width_m": 0.4,
+        "show_zone_labels": True,
+    }
+
+    light = renderer.render_snapshot_png(source, size=640, theme="light")
+    dark = renderer.render_snapshot_png(source, size=640, theme="dark")
+    assert light != dark
+
+    light_image = Image.open(BytesIO(light)).convert("RGB")
+    dark_image = Image.open(BytesIO(dark)).convert("RGB")
+    assert light_image.getpixel((0, 0)) == renderer._LIGHT_PALETTE["background"][:3]
+    assert dark_image.getpixel((0, 0)) == renderer._DARK_PALETTE["background"][:3]
+
+    font = renderer._snapshot_font(20)
+    for value in ("Mägi", "õue", "Üsküdar", "Øst", "Łąka"):
+        bbox = font.getbbox(value)
+        assert bbox[2] > bbox[0]
+        assert bbox[3] > bbox[1]
+
+
+def test_dark_snapshot_entity_is_disabled_by_default_and_refresh_is_enabled_only() -> None:
+    image = IMAGE_PLATFORM.read_text(encoding="utf-8")
+    manager = MANAGER.read_text(encoding="utf-8")
+    services = SERVICES.read_text(encoding="utf-8")
+    setup = SETUP.read_text(encoding="utf-8")
+
+    assert "class NavimowMapSnapshotDarkImage" in image
+    assert '_attr_name = "Map snapshot dark"' in image
+    assert "_attr_entity_registry_enabled_default = False" in image
+    assert 'get_map_snapshot_manager(coordinator, "dark")' in image
+
+    assert "def active(self) -> bool:" in manager
+    assert "if not self.active:" in manager
+    assert 'attribute = (' in manager
+    assert '"map_snapshot_dark_manager"' in manager
+    assert "def active_map_snapshot_managers" in manager
+
+    assert "active_map_snapshot_managers(coordinator)" in services
+    assert "await asyncio.gather(" in services
+    assert "No enabled Navimower map snapshot image entity is available." in services
+    assert "map_snapshot_dark_manager" in setup
