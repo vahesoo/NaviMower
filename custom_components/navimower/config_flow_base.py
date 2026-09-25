@@ -80,6 +80,15 @@ from .oauth import async_register_oauth_implementation
 from .schedule_logic import format_hhmm, parse_hhmm
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _load_mower_api_type() -> Any:
+    """Import the Smart Home API class off the Home Assistant event loop."""
+    from mower_sdk.api import MowerAPI
+
+    return MowerAPI
+
+
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_EMAIL): TextSelector(
@@ -345,7 +354,7 @@ class NavimowConfigFlow(
         access_token = token.get("access_token")
         if not access_token:
             return None
-        from mower_sdk.api import MowerAPI
+        MowerAPI = await self.hass.async_add_executor_job(_load_mower_api_type)
 
         api = MowerAPI(
             session=async_get_clientsession(self.hass),

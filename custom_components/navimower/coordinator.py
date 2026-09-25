@@ -107,6 +107,15 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _masked_serial(value: Any) -> str:
+    """Return a log-safe mower identifier that still distinguishes entries."""
+    text = str(value or "")
+    if len(text) < 8:
+        return "***"
+    return f"{text[:3]}***{text[-4:]}"
+
+
 # Persist the latest decoded map so MQTT/history remain useful during a
 # temporary private-cloud outage.  Trail sessions use separate Store files.
 _STATE_STORE_VERSION = 1
@@ -1770,17 +1779,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             status["last_error_utc"] = datetime.now(UTC).isoformat()
             if consecutive in {3, 10, 25}:
                 _LOGGER.warning(
-                    "Navimower private endpoint %s failed repeatedly; keeping last-good "
-                    "data (consecutive failure %s): %s",
+                    "Navimower private endpoint %s for mower %s failed repeatedly; "
+                    "keeping last-good data (consecutive failure %s): %s",
                     key,
+                    _masked_serial(self.sn),
                     consecutive,
                     err,
                 )
             else:
                 _LOGGER.debug(
-                    "Navimower private endpoint %s transient failure %s; keeping last-good data: %s",
+                    "Navimower private endpoint %s transient failure %s; keeping last-good data "
+                    "for mower %s: %s",
                     key,
                     consecutive,
+                    _masked_serial(self.sn),
                     err,
                 )
             return False
@@ -1795,9 +1807,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         status["consecutive_failures"] = 0
         status["last_result_type"] = type(value).__name__
         if consecutive_failures >= 3:
-            _LOGGER.info("Navimower private endpoint %s recovered", key)
+            _LOGGER.info(
+                "Navimower private endpoint %s for mower %s recovered",
+                key,
+                _masked_serial(self.sn),
+            )
         elif consecutive_failures:
-            _LOGGER.debug("Navimower private endpoint %s recovered after a transient failure", key)
+            _LOGGER.debug(
+                "Navimower private endpoint %s for mower %s recovered after a "
+                "transient failure",
+                key,
+                _masked_serial(self.sn),
+            )
         return True
 
     def private_poll_age(self) -> float | None:
