@@ -1328,7 +1328,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "zone_states": [],
             "zone_states_revision": 0,
             "totals": {},
-            "trail": self.history.active_points_xy(),
+            "trail_point_count": self.history.active_point_count(),
             "sessions": self.history.session_summaries(include_points=False),
             "trail_active": self.history.active_session is not None,
             "gate_areas": [channel.as_dict() for channel in self.channels],
@@ -1430,7 +1430,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot.get("zone_details") or []
         )
         self._refresh_zone_model(snapshot)
-        snapshot["trail"] = self.history.active_points_xy()
+        snapshot.pop("trail", None)
+        snapshot["trail_point_count"] = self.history.active_point_count()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
         snapshot["sessions"] = self.history.session_summaries(include_points=False)
@@ -4109,7 +4110,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot.get("zone_details") or []
         )
         self._refresh_zone_model(snapshot)
-        snapshot["trail"] = self.history.active_points_xy()
+        snapshot.pop("trail", None)
+        snapshot["trail_point_count"] = self.history.active_point_count()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
         snapshot["sessions"] = self.history.session_summaries(include_points=False)
@@ -4309,7 +4311,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot.get("zone_details") or []
         )
         self._refresh_zone_model(snapshot)
-        snapshot["trail"] = self.history.active_points_xy()
+        snapshot.pop("trail", None)
+        snapshot["trail_point_count"] = self.history.active_point_count()
         snapshot["trail_session"] = self.history.active_session_no
         snapshot["trail_started_at"] = self.history.active_started_at()
         snapshot["sessions"] = self.history.session_summaries(include_points=False)
