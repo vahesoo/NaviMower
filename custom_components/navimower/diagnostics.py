@@ -100,7 +100,7 @@ def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict
 
 
 def _polygon_diagnostics(polygons: Any) -> list[dict[str, Any]]:
-    """Return stable local-map geometry summaries for off-limit experiments."""
+    """Return privacy-safe local-map geometry summaries without coordinates."""
     result: list[dict[str, Any]] = []
     for index, polygon in enumerate(polygons or []):
         if not isinstance(polygon, list):
@@ -134,8 +134,6 @@ def _polygon_diagnostics(polygons: Any) -> list[dict[str, Any]]:
             "index": index,
             "point_count": len(points),
             "area_m2": round(area, 4),
-            "centroid": [round(centroid[0], 4), round(centroid[1], 4)],
-            "polygon": points,
         })
     return result
 
@@ -256,7 +254,7 @@ async def async_get_config_entry_diagnostics(
         "private_cloud_region": private_cloud_region_diagnostics(coordinator),
         "capabilities": capabilities,
         "positioning": _selected(data, (
-            "x", "y", "heading", "pose_source", "mqtt_pose_age",
+            "heading", "pose_source", "mqtt_pose_age",
             "current_physical_zone_id", "current_physical_zone_source",
             "current_physical_zone_source_age", "current_physical_zone_stale",
             "current_channel_id", "current_channel_source",
@@ -275,7 +273,13 @@ async def async_get_config_entry_diagnostics(
             "session_area", "session_area_source", "total_area", "total_area_source",
             "coverage", "coverage_source", "zone_states", "totals",
         )),
-        "settings": settings,
+        "settings_summary": {
+            "rain_behavior": settings.get("rain_behavior"),
+            "rain_delay_wire": settings.get("rain_delay_wire"),
+            "night_mow": settings.get("night_mow"),
+            "schedule_enabled": settings.get("schedule_enabled"),
+            "cutting_height_mm": settings.get("cutting_height_mm"),
+        },
         "navimower_schedule": navimower_schedule_diagnostics,
         "georeference": data.get("georeference"),
         "map_underlay": map_underlay_diagnostics(coordinator),
@@ -301,8 +305,11 @@ async def async_get_config_entry_diagnostics(
             "doodle_count": len(map_data.get("doodles") or []),
         },
         "history": {
-            "retained_session_count": len(sessions), "sessions": sessions, "cycle": cycle,
-            "trail_active": data.get("trail_active"), "trail_point_count": len(data.get("trail") or []),
+            "retained_session_count": len(sessions),
+            "active_session": bool(history_index.get("active_session_id")),
+            "cycle": cycle,
+            "trail_active": data.get("trail_active"),
+            "trail_point_count": len(data.get("trail") or []),
         },
         "problem_history": problem_history,
         "error_investigation": {
@@ -360,7 +367,7 @@ async def async_get_config_entry_diagnostics(
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "Vendor raw payload bodies and raw notification/error bodies are not included; only curated evidence and cache shape/counts remain.",
             "User-authored names/message text are omitted from stable Download diagnostics.",
-            "Local X/Y geometry and activity times remain useful support data; exact geographic coordinates are redacted.",
+            "Exact mower X/Y, local polygon coordinates, user labels, full schedules/settings and retained session timestamps are omitted from stable Download diagnostics.",
             "Public support uses Home Assistant Download diagnostics; development captures are not exposed as integration actions.",
         ],
     }
