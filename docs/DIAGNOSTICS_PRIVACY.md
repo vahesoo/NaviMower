@@ -22,10 +22,10 @@ Map/georeference support needs enough information to diagnose alignment without 
 
 Normal Download diagnostics may therefore retain:
 
-- mower-local X/Y coordinates and local map polygons;
-- georeference source/status and fit-quality metadata;
+- geometry summaries such as polygon point counts and areas, but not polygon coordinates;
+- georeference source/status and fit-quality metadata, but not full transform/control-point objects;
 - sample/refinement counts, baseline/spatial-score information and validation error distances;
-- local-frame comparisons expressed as relative metre offsets;
+- bounded validation/error metrics and provider-frame status;
 - provider-frame availability/source and relative frame offsets;
 - country-level underlay capability such as `EE`;
 - Google Map Tiles configuration/session health such as configured state, session-active state, expiry and generic last-error status.
@@ -36,7 +36,7 @@ See [MAP_GEOREFERENCE_AND_UNDERLAYS.md](MAP_GEOREFERENCE_AND_UNDERLAYS.md) for t
 
 ## Data that deliberately remains
 
-Local map X/Y coordinates, local polygons, stable map/zone/task IDs and activity times remain available because they are needed for map, gate and schedule support. User-authored mower/zone/Gate-area names and notification text are omitted from the stable Download report because they can contain addresses, family names or other personal context. This is **not a promise of complete anonymity**; review a report before posting it publicly.
+Stable map/zone/task IDs, counts, progress values, source/freshness metadata and selected operational timestamps remain available because they are needed for support. Exact mower-local X/Y and polygon coordinates, full schedules/settings, user-authored mower/zone/Gate-area names and notification text are omitted from the stable Download report because they can expose property layout, routines, addresses, family names or other personal context. This is **not a promise of complete anonymity**; review a report before posting it publicly.
 
 Redaction tests cannot prove that every future service payload is safe. When in doubt, review the downloaded JSON before sharing it publicly.
 
