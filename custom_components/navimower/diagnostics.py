@@ -21,10 +21,36 @@ _RETIRED_RESEARCH_KEYS = frozenset({
     "maintenance_h5_discovery", "error_h5_discovery", "command_discovery",
 })
 
+# Human-authored labels/messages can contain addresses, family names or other
+# private context even when they are not credentials. Stable Download
+# diagnostics intentionally omits them; IDs/state/source metadata remain.
+_PRIVATE_TEXT_KEYS = frozenset({
+    "name", "title", "content", "variable", "recent",
+    "zone_name", "zone_names", "from_zone_name", "to_zone_name",
+    "map_name", "gate_name",
+})
+
 
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     """Return a compact copy of selected coordinator fields."""
     return {key: deepcopy(data.get(key)) for key in keys if key in data}
+
+
+def _raw_cache_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return endpoint/cache shape without exporting vendor payload values."""
+    summary: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in _RETIRED_RESEARCH_KEYS or key == "maintenance":
+            continue
+        if isinstance(value, dict):
+            summary[str(key)] = {"kind": "mapping", "field_count": len(value)}
+        elif isinstance(value, (list, tuple)):
+            summary[str(key)] = {"kind": "sequence", "item_count": len(value)}
+        elif value is None:
+            summary[str(key)] = {"kind": "none"}
+        else:
+            summary[str(key)] = {"kind": type(value).__name__}
+    return summary
 
 
 def _diagnostic_options(entry: ConfigEntry) -> dict[str, Any]:
@@ -58,17 +84,14 @@ def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict
         "action_age_s": data.get("mqtt_action_age"),
         "vehicle_state": data.get("mqtt_vehicle_state"),
         "physical_zone_id": data.get("current_physical_zone_id"),
-        "physical_zone": data.get("current_physical_zone"),
         "physical_zone_source": data.get("current_physical_zone_source"),
         "physical_zone_source_age_s": data.get("current_physical_zone_source_age"),
         "target_zone_id": data.get("target_zone_id"),
-        "target_zone": data.get("target_zone"),
         "target_zone_ids": deepcopy(data.get("target_zone_ids") or []),
         "target_zone_source": data.get("target_zone_source"),
         "target_zone_immediate_source": data.get("target_zone_immediate_source"),
         "target_zone_immediate_age_s": data.get("target_zone_immediate_age_seconds"),
         "planned_zone_ids": deepcopy(data.get("planned_zone_ids") or []),
-        "planned_zones": data.get("planned_zones"),
         "planned_zones_source": data.get("planned_zones_source"),
         "zone_transition": data.get("zone_transition"),
         "gate_states": deepcopy(data.get("gate_states") or {}),
@@ -148,8 +171,6 @@ async def async_get_config_entry_diagnostics(
     raw_index2 = raw.get("index2") if isinstance(raw.get("index2"), dict) else {}
     raw_auth = raw.get("auth_item") if isinstance(raw.get("auth_item"), dict) else {}
     raw_location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
-    raw_for_diagnostics = deepcopy(raw)
-    raw_for_diagnostics.pop("maintenance", None)
 
     capabilities = data.get("capabilities")
     if not isinstance(capabilities, dict):
@@ -208,17 +229,23 @@ async def async_get_config_entry_diagnostics(
         "diagnostics_source": "home_assistant_download",
         "cached_only": True,
         "entry": {"data": dict(entry.data), "options": _diagnostic_options(entry)},
+        "privacy": {
+            "profile": "curated_public_support",
+            "raw_payloads_included": False,
+            "human_labels_included": False,
+            "geographic_coordinates_included": False,
+        },
         "mower": _selected(data, (
-            "name", "model", "vehicle_type", "state", "display_state", "state_code", "activity",
+            "model", "vehicle_type", "state", "display_state", "state_code", "activity",
             "weather_state", "weather_hold_active", "weather_hold_reason",
             "weather_hold_reasons", "weather_state_source", "weather_state_age",
             "weather_state_fresh", "weather_vendor_fresh",
             "rain_delay_enabled", "rain_delay_configured_minutes", "rain_delay_active",
             "rain_delay_started_at", "rain_delay_until",
             "rain_delay_remaining_seconds", "rain_delay_remaining_minutes",
+            "rain_last_fresh_state", "rain_last_fresh_state_at",
             "docked", "docked_source", "error", "error_text",
-            "error_code", "error_title", "error_content", "error_kind", "problem_source",
-            "last_problem",
+            "error_code", "error_kind", "problem_source",
         )),
         "connectivity": _selected(data, (
             "private_cloud_connected", "private_cloud_error", "oauth_configured",
@@ -229,13 +256,13 @@ async def async_get_config_entry_diagnostics(
         "private_cloud_region": private_cloud_region_diagnostics(coordinator),
         "capabilities": capabilities,
         "positioning": _selected(data, (
-            "x", "y", "heading", "pose_source", "mqtt_pose_age", "current_physical_zone",
+            "x", "y", "heading", "pose_source", "mqtt_pose_age",
             "current_physical_zone_id", "current_physical_zone_source",
             "current_physical_zone_source_age", "current_physical_zone_stale",
-            "current_channel", "current_channel_id", "current_channel_source",
-            "current_channel_pose_age", "current_channel_stale", "target_zone_id", "target_zone", "target_zone_ids", "target_zone_source",
+            "current_channel_id", "current_channel_source",
+            "current_channel_pose_age", "current_channel_stale", "target_zone_id", "target_zone_ids", "target_zone_source",
             "target_zone_immediate_source", "target_zone_immediate_age_seconds",
-            "planned_zone_ids", "planned_zones", "planned_zones_source",
+            "planned_zone_ids", "planned_zones_source",
         )),
         "mqtt_navigation": _mqtt_navigation_diagnostics(coordinator, data),
         "mqtt_inventory": mqtt_inventory,
@@ -264,7 +291,7 @@ async def async_get_config_entry_diagnostics(
             "id": map_data.get("id"), "map_id": map_data.get("map_id"),
             "map_base_id": map_data.get("map_base_id"), "edit_time": map_data.get("edit_time"),
             "revision": map_data.get("revision"), "map_version": map_version,
-            "name": map_data.get("name"), "version": map_data.get("version"),
+            "version": map_data.get("version"),
             "modified_count": map_data.get("modified_count"), "area": map_data.get("area"),
             "zone_count": len(map_data.get("zones") or []),
             "off_limit_count": len(map_data.get("off_limit_areas") or []),
@@ -272,7 +299,6 @@ async def async_get_config_entry_diagnostics(
             "vf_off_count": len(map_data.get("vf_off_areas") or []),
             "channel_count": len(map_data.get("channels") or []),
             "doodle_count": len(map_data.get("doodles") or []),
-            "zone_details": deepcopy(data.get("zone_details") or []),
         },
         "history": {
             "retained_session_count": len(sessions), "sessions": sessions, "cycle": cycle,
@@ -282,23 +308,37 @@ async def async_get_config_entry_diagnostics(
         "error_investigation": {
             "policy": "private_cloud_canonical_mqtt_transition_trigger",
             "transition": error_transition_diagnostics(coordinator),
-            "raw_index2_vehicle_state": raw_index2.get("vehicle_state"),
-            "raw_auth_vehicle_state": raw_auth.get("vehicle_state"),
-            "raw_index2_error_data": deepcopy(raw_index2.get("error_data") or []),
-            "vendor_notification_raw_cache": deepcopy(getattr(coordinator, "_notification_raw_cache", None)),
-            "vendor_notification_normalized_cache": deepcopy(getattr(coordinator, "_notification_cache", None)),
+            "index2_vehicle_state": raw_index2.get("vehicle_state"),
+            "auth_vehicle_state": raw_auth.get("vehicle_state"),
+            "index2_error_count": len(raw_index2.get("error_data") or [])
+            if isinstance(raw_index2.get("error_data"), list)
+            else int(bool(raw_index2.get("error_data"))),
+            "vendor_notification_raw_cached": bool(
+                getattr(coordinator, "_notification_raw_cache", None)
+            ),
+            "vendor_notification_normalized_count": len(
+                getattr(coordinator, "_notification_cache", None) or []
+            )
+            if isinstance(getattr(coordinator, "_notification_cache", None), list)
+            else int(bool(getattr(coordinator, "_notification_cache", None))),
         },
         "latest_notification": {
-            "title": data.get("notification_title"), "content": data.get("notification_content"),
-            "created_at": data.get("notification_created_at"), "read": data.get("notification_read"),
-            "level": data.get("notification_level"), "type": data.get("notification_type"),
-            "style": data.get("notification_style"), "variable": deepcopy(data.get("notification_variable")),
-            "notification_code": data.get("notification_code"), "origin": data.get("notification_origin"),
-            "kind": data.get("notification_kind"), "confidence": data.get("notification_confidence"),
-            "count": data.get("notification_count"), "vendor_count": data.get("notification_vendor_count"),
-            "local_count": data.get("notification_local_count"), "source": data.get("notification_source"),
-            "source_age": data.get("notification_source_age"), "vendor_source_age": data.get("notification_vendor_source_age"),
-            "last_error": data.get("notification_error"), "recent": deepcopy(data.get("notification_history") or []),
+            "created_at": data.get("notification_created_at"),
+            "read": data.get("notification_read"),
+            "level": data.get("notification_level"),
+            "type": data.get("notification_type"),
+            "style": data.get("notification_style"),
+            "notification_code": data.get("notification_code"),
+            "origin": data.get("notification_origin"),
+            "kind": data.get("notification_kind"),
+            "confidence": data.get("notification_confidence"),
+            "count": data.get("notification_count"),
+            "vendor_count": data.get("notification_vendor_count"),
+            "local_count": data.get("notification_local_count"),
+            "source": data.get("notification_source"),
+            "source_age": data.get("notification_source_age"),
+            "vendor_source_age": data.get("notification_vendor_source_age"),
+            "last_error": data.get("notification_error"),
         },
         "notification_center": notification_center_diagnostics,
         "last_resume_command": None,
@@ -309,7 +349,7 @@ async def async_get_config_entry_diagnostics(
         "prepared_history": session_archive_diagnostics,
         "session_render_archive": session_archive_diagnostics,
         "mqtt_health": mqtt_health,
-        "raw": raw_for_diagnostics,
+        "raw_cache_summary": _raw_cache_summary(raw),
         "notes": [
             "Download diagnostics is cached-only: no extra vendor requests, commands or research crawls.",
             "Credential and identifying field names are matched across snake_case, camelCase and acronym variants.",
@@ -318,12 +358,14 @@ async def async_get_config_entry_diagnostics(
             "Map underlay diagnostics retain availability/session status, not Google keys or session tokens.",
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
-            "Local X/Y geometry, names and activity times remain useful support data: review them before sharing.",
+            "Vendor raw payload bodies and raw notification/error bodies are not included; only curated evidence and cache shape/counts remain.",
+            "User-authored names/message text are omitted from stable Download diagnostics.",
+            "Local X/Y geometry and activity times remain useful support data; exact geographic coordinates are redacted.",
             "Public support uses Home Assistant Download diagnostics; development captures are not exposed as integration actions.",
         ],
     }
     return sanitize(
         report,
         sensitive_values=(entry.data, entry.options, data, {"vehicle_sn": getattr(coordinator, "sn", None)}),
-        exclude_keys=_RETIRED_RESEARCH_KEYS,
+        exclude_keys=_RETIRED_RESEARCH_KEYS | _PRIVATE_TEXT_KEYS,
     )
