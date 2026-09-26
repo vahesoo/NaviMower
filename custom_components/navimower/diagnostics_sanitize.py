@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 REDACTED = "<redacted>"
-REDACTION_VERSION = 4
+REDACTION_VERSION = 5
 _MAX_DEPTH = 32
 _MAX_STRING = 16_384
 
