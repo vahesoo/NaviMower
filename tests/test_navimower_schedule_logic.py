@@ -7,6 +7,7 @@ spec = importlib.util.spec_from_file_location("navimower_schedule_logic", MODULE
 assert spec and spec.loader
 logic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(logic)
+classify_schedule_mow_start = logic.classify_schedule_mow_start
 completion_advanced = logic.completion_advanced
 filter_schedule_zones = logic.filter_schedule_zones
 select_oldest_zone = logic.select_oldest_zone
@@ -51,3 +52,56 @@ def test_completion_must_be_newer_than_baseline_and_dispatch():
     assert not completion_advanced(baseline, baseline, dispatch)
     assert not completion_advanced("2026-08-15T09:59:59+00:00", baseline, dispatch)
     assert completion_advanced("2026-08-15T10:30:00+00:00", baseline, dispatch)
+
+
+def test_scheduler_start_rejects_fresh_wrong_zone_mqtt_evidence():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=False,
+        data={
+            "active_zone_progress_zone_id": 36,
+            "active_zone_progress_source_age": 2.0,
+            "mqtt_action_age": 2.0,
+        },
+        mqtt_location={
+            "work_target_zone": 36,
+            "mow_boundary": 36,
+            "pose_time": 1790411130079,
+        },
+        sent_at="2026-09-26T08:24:47+00:00",
+    )
+    assert result["state"] == "zone_mismatch"
+    assert result["strong_mismatch_zone_ids"] == [36]
+
+
+def test_scheduler_start_confirms_matching_fresh_zone():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=False,
+        data={
+            "active_zone_progress_zone_id": 37,
+            "active_zone_progress_source_age": 2.0,
+            "mqtt_action_age": 2.0,
+        },
+        mqtt_location={
+            "work_target_zone": 37,
+            "mow_boundary": 37,
+            "pose_time": 1790411130079,
+        },
+        sent_at="2026-09-26T08:24:47+00:00",
+    )
+    assert result["state"] == "confirmed"
+
+
+def test_scheduler_start_keeps_legacy_transition_fallback_without_zone_evidence():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=False,
+        data={},
+        mqtt_location={},
+        sent_at="2026-09-26T08:24:47+00:00",
+    )
+    assert result["state"] == "confirmed"
