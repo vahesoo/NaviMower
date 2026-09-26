@@ -31,7 +31,7 @@ def test_scheduler_new_zone_start_stays_pending_until_vendor_confirmation():
     assert 'if not reset:' in send
 
     assert 'if kind == "mow":' in confirm
-    assert "self._pending_mow_confirmed(pending, data)" in confirm
+    assert "evidence = self._pending_mow_evidence(pending, data)" in confirm
     assert "self.coordinator.start_new_mowing_cycle([zone_id], source=source)" in confirm
     assert 'self._runtime["active_zone_id"] = zone_id' in confirm
 
@@ -44,9 +44,13 @@ def test_scheduler_uses_raw_vendor_state_not_optimistic_activity_for_new_start()
     assert 'data.get("mqtt_vehicle_state")' in source
     assert 'data.get("state_code")' in source
 
-    confirmed_start = source[source.index("    def _pending_mow_confirmed"):source.index("    def _sync_active_cycle_id")]
+    confirmed_start = source[source.index("    def _pending_mow_evidence"):source.index("    def _sync_active_cycle_id")]
     assert "ACTIVITY_MOWING" not in confirmed_start
-    assert 'data.get("active_zone_progress_zone_id")' in confirmed_start
+    logic = (COMPONENT / "schedule_logic.py").read_text(encoding="utf-8")
+    classifier = logic[logic.index("def classify_schedule_mow_start"):logic.index("def later_iso")]
+    assert 'data.get("active_zone_progress_zone_id")' in classifier
+    assert '"work_target_zone"' in classifier
+    assert '"mow_boundary"' in classifier
 
 
 def test_scheduler_does_not_dispatch_a_new_zone_while_vendor_reports_charging():
