@@ -217,6 +217,11 @@ def test_loaded_download_is_cached_only_and_omits_retired_research(diagnostics):
         assert retired not in encoded
     assert report["map_edit"]["edit_session_active"] is True
     assert report["map_edit"]["edit_map_info"]["editMapUid"] == sanitizer.REDACTED
+    assert report["privacy"]["raw_payloads_included"] is False
+    assert report["privacy"]["human_labels_included"] is False
+    assert "raw" not in report
+    assert report["raw_cache_summary"]["index2"]["kind"] == "mapping"
+    assert report["raw_cache_summary"]["device_info"]["field_count"] == 2
     assert report["map"]["map_id"] == "test-map"
     assert report["positioning"]["x"] == 2.0
     assert report["map"]["off_limit_areas"][0]["point_count"] == 3
