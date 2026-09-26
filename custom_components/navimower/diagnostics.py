@@ -331,7 +331,8 @@ async def async_get_config_entry_diagnostics(
             "active_session": bool(history_index.get("active_session_id")),
             "cycle": cycle,
             "trail_active": data.get("trail_active"),
-            "trail_point_count": len(data.get("trail") or []),
+            "trail_point_count": data.get("trail_point_count", coordinator.history.active_point_count()),
+            "card_materialization": coordinator.history.card_materialization_diagnostics(),
         },
         "problem_history": problem_history,
         "error_investigation": {
