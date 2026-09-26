@@ -17,6 +17,7 @@ VENDOR_WEATHER_PATH = "/vehicle/vehicle/get-vehicle-weather"
 WEATHER_POLL_ACTIVE_SECONDS = 15
 WEATHER_POLL_IDLE_SECONDS = 30
 WEATHER_FRESH_SECONDS = 120.0
+RAIN_EVIDENCE_MAX_AGE_SECONDS = 86_400.0
 _WEATHER_RUNTIME_STORE_KEY = "weather_runtime"
 
 # These fields are vendor *current decision* state, not configuration switches.
@@ -491,7 +492,11 @@ def install_weather_state_semantics() -> None:
             except (TypeError, ValueError):
                 until, started, minutes = 0.0, 0.0, 0
                 last_state, last_state_at = None, 0.0
-            if last_state in (True, False) and last_state_at > 0:
+            if (
+                last_state in (True, False)
+                and last_state_at > 0
+                and 0 <= now - last_state_at <= RAIN_EVIDENCE_MAX_AGE_SECONDS
+            ):
                 runtime["last_rain_state"] = last_state
                 runtime["last_rain_state_at"] = last_state_at
             if until > now and started > 0 and minutes > 0:
