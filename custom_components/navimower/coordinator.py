@@ -41,7 +41,7 @@ from .ordered_run import (
     update_last_ordered_run,
 )
 from .zone_state import build_zone_model, zone_model_signature
-from .task_resume import task_resume_decision
+from .task_resume import guard_managed_schedule_resume, task_resume_decision
 from .const import (
     ACTIVE_STATES,
     ACTIVITY_DOCKED,
@@ -1537,12 +1537,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._last_ordered_run
         )
         retained_sessions = self.history.session_summaries(include_points=False)
-        snapshot["task_resume"] = task_resume_decision(
+        resume_decision = task_resume_decision(
             snapshot,
             active_session=self.history.active_session,
             retained_session=(
                 retained_sessions[-1] if retained_sessions else None
             ),
+        )
+        schedule = getattr(self, "navimower_schedule", None)
+        schedule_state = {"enabled": schedule.enabled} if schedule is not None else None
+        snapshot["task_resume"] = guard_managed_schedule_resume(
+            resume_decision,
+            schedule_state,
         )
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:

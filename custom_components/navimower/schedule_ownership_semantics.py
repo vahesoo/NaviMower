@@ -30,7 +30,11 @@ _ORIGINAL_EVALUATE_LOCKED = NavimowerScheduleController._evaluate_locked
 _ORIGINAL_ADOPT_RETAINED_TASK = pause_semantics._adopt_retained_task
 
 _GENERIC_OBSERVED_TRIGGER = "observed_without_local_command"
-_MANUAL_RESUME_TRIGGER = "navimower.resume"
+_MANUAL_RESUME_TRIGGERS = {
+    "navimower.resume",
+    "navimower.continue_task",
+    "lawn_mower.start_mowing_paused",
+}
 _RETAINED_MATCH_SECONDS = 180.0
 _RECOVERABLE_SUSPENSION = "mow_start_not_confirmed"
 
@@ -111,7 +115,7 @@ def _retained_task_matches_owned_dispatch(
         return False
 
     trigger = str(task.get("trigger") or "")
-    if trigger not in {_GENERIC_OBSERVED_TRIGGER, _MANUAL_RESUME_TRIGGER}:
+    if trigger != _GENERIC_OBSERVED_TRIGGER and trigger not in _MANUAL_RESUME_TRIGGERS:
         return False
     if str(task.get("origin") or "") not in {"", "observed", "retained"}:
         return False
@@ -365,7 +369,7 @@ async def _recover_manual_resume_then_night_pause(
     task = _notification_task(controller)
     if task is None:
         return None
-    if str(task.get("trigger") or "") != _MANUAL_RESUME_TRIGGER:
+    if str(task.get("trigger") or "") not in _MANUAL_RESUME_TRIGGERS:
         return None
     if str(task.get("origin") or "") not in {"", "observed", "retained"}:
         return None

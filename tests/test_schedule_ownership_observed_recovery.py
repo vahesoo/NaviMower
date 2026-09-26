@@ -29,7 +29,7 @@ def test_same_retained_task_can_survive_neutral_observation_or_manual_resume() -
     assert 'runtime.get("ownership_source")' in helper
     assert 'startswith("navimower_schedule")' in helper
     assert '_GENERIC_OBSERVED_TRIGGER' in helper
-    assert '_MANUAL_RESUME_TRIGGER' in helper
+    assert '_MANUAL_RESUME_TRIGGERS' in helper
     assert '_dedupe_ids(task.get("zone_ids")) != [zone_id]' in helper
     assert 'runtime.get("owned_dispatch_started_at")' in helper
     assert 'task.get("started_at")' in helper
@@ -44,7 +44,7 @@ def test_same_retained_task_can_survive_neutral_observation_or_manual_resume() -
 
 def test_later_or_explicit_external_task_still_fails_closed() -> None:
     helper = _function_source("_retained_task_matches_owned_dispatch")
-    assert 'trigger not in {_GENERIC_OBSERVED_TRIGGER, _MANUAL_RESUME_TRIGGER}' in helper
+    assert 'trigger != _GENERIC_OBSERVED_TRIGGER and trigger not in _MANUAL_RESUME_TRIGGERS' in helper
     assert 'str(task.get("origin") or "") not in {"", "observed", "retained"}' in helper
     assert '_RETAINED_MATCH_SECONDS = 180.0' in SOURCE
 
@@ -112,7 +112,7 @@ def test_manual_resume_then_night_pause_recovery_is_closed_window_only_and_same_
     assert 'controller._vendor_mowing(data)' in recovery
     assert 'data.get("docked") is not True' in recovery
     assert 'getattr(center, "interrupted_reason", None) != "night"' in recovery
-    assert 'str(task.get("trigger") or "") != _MANUAL_RESUME_TRIGGER' in recovery
+    assert 'str(task.get("trigger") or "") not in _MANUAL_RESUME_TRIGGERS' in recovery
     assert '_dedupe_ids(task.get("zone_ids")) != [zone_id]' in recovery
     assert 'task.get("charging_paused_at")' in recovery
     assert 'task.get("night_paused_at")' in recovery

@@ -29,6 +29,7 @@ from .resume import async_resume_task
 from .task_resume import (
     RESUME_STRATEGY_ORDERED_RUN,
     RESUME_STRATEGY_VENDOR,
+    guard_managed_schedule_resume,
     task_resume_decision,
 )
 
@@ -430,6 +431,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 retained_sessions[-1] if retained_sessions else None
             ),
         )
+        controller = getattr(coordinator, "navimower_schedule", None)
+        schedule_state = {"enabled": controller.enabled} if controller is not None else None
+        decision = guard_managed_schedule_resume(decision, schedule_state)
         if not decision.get("available"):
             raise ServiceValidationError(
                 "No resumable mowing task is currently confirmed "
