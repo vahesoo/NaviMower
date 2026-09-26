@@ -69,6 +69,32 @@ def _base_result(
     }
 
 
+def guard_managed_schedule_resume(
+    decision: dict[str, Any],
+    schedule: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prevent a generic Resume action from bypassing the managed scheduler.
+
+    When Navimower Schedule is enabled it is the owner of task continuation.
+    The user can disable Schedule first when an explicit vendor Resume override
+    is desired.
+    """
+    if not isinstance(schedule, dict) or schedule.get("enabled") is not True:
+        return decision
+    if decision.get("available") is not True:
+        return decision
+
+    guarded = dict(decision)
+    guarded["available"] = False
+    guarded["strategy"] = None
+    guarded["reason"] = "managed_schedule_active"
+    evidence = list(guarded.get("evidence") or [])
+    if "managed_schedule_controls_resume" not in evidence:
+        evidence.append("managed_schedule_controls_resume")
+    guarded["evidence"] = evidence
+    return guarded
+
+
 def task_resume_decision(
     data: dict[str, Any] | None,
     *,
@@ -274,5 +300,6 @@ def task_resume_decision(
 __all__ = [
     "RESUME_STRATEGY_ORDERED_RUN",
     "RESUME_STRATEGY_VENDOR",
+    "guard_managed_schedule_resume",
     "task_resume_decision",
 ]
