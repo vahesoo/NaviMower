@@ -29,13 +29,13 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
         "entry", "mower", "connectivity", "private_cloud_region", "capabilities",
         "positioning", "telemetry", "settings", "map", "history", "problem_history",
         "latest_notification", "notification_center", "last_resume_command",
-        "private_polling", "mqtt_health", "raw",
+        "private_polling", "mqtt_health", "raw_cache_summary",
     ):
         assert f'"{section}"' in diagnostics
 
-    assert 'raw_for_diagnostics = deepcopy(raw)' in diagnostics
-    assert 'raw_for_diagnostics.pop("maintenance", None)' in diagnostics
-    assert '"raw": raw_for_diagnostics' in diagnostics
+    assert '"raw_cache_summary": _raw_cache_summary(raw)' in diagnostics
+    assert '"raw_payloads_included": False' in diagnostics
+    assert '"human_labels_included": False' in diagnostics
     assert "private_cloud_region_diagnostics(coordinator)" in diagnostics
     assert "build_capability_profile(data)" in diagnostics
     assert_cached_diagnostics_only(diagnostics)
