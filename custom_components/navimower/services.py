@@ -432,7 +432,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             ),
         )
         controller = getattr(coordinator, "navimower_schedule", None)
-        schedule_state = controller.diagnostics() if controller is not None else None
+        schedule_state = {"enabled": controller.enabled} if controller is not None else None
         decision = guard_managed_schedule_resume(decision, schedule_state)
         if not decision.get("available"):
             raise ServiceValidationError(
