@@ -96,9 +96,9 @@ def test_beta12_report_sensor_group_is_consistent_and_disabled_by_default() -> N
     assert 'if description.key == "weekly_mowed_area":' in source
 
 
-def test_beta12_runtime_remains_installed_on_later_0_4_5_betas() -> None:
+def test_beta12_runtime_remains_installed_on_later_release_lines() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     assert "from .mowing_report_semantics import install_mowing_report_semantics" in runtime
     assert "install_mowing_report_semantics()" in runtime
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert str(manifest["version"]).startswith("0.4.5")
+    assert str(manifest["version"]).startswith(("0.4.5", "0.4.6"))
