@@ -1890,16 +1890,18 @@ class NavimowerHistory:
         )
 
     def session_summaries(self, *, include_points: bool = False) -> list[dict[str, Any]]:
-        """Return retained session metadata, and cached points when requested."""
+        """Return retained session metadata, copying route points only on demand."""
         with self._lock:
             metadata = deepcopy(self._sessions)
+            if not include_points:
+                return [_card_session(meta, include_points=False) for meta in metadata]
             cache = deepcopy(self._cache)
         result: list[dict[str, Any]] = []
         for meta in metadata:
             session_id = str(meta.get("id") or "")
             full = cache.get(session_id)
             result.append(
-                _card_session(full or meta, include_points=include_points and full is not None)
+                _card_session(full or meta, include_points=full is not None)
             )
         return result
 
