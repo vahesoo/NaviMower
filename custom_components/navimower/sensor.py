@@ -772,7 +772,7 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "task_progress_pct": (self.data.get("totals") or {}).get("task_progress_pct"),
             "trail_session": self.coordinator.trail_session,
             "trail_started_at": self.coordinator.history.active_started_at(),
-            "trail_points": len(self.data.get("trail") or []),
+            "trail_points": self.data.get("trail_point_count", self.coordinator.history.active_point_count()),
             "trail_active": bool(self.data.get("trail_active")),
             "active_session_id": session_index.get("active_session_id"),
             "retained_session_count": len(session_index.get("sessions") or []),
