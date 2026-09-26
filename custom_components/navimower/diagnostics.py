@@ -53,6 +53,20 @@ def _raw_cache_summary(raw: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _georeference_summary(value: Any) -> dict[str, Any] | None:
+    """Return privacy-safe georeference quality/status metadata only."""
+    if not isinstance(value, dict):
+        return None
+    keys = (
+        "schema_version", "source", "status", "valid", "validated",
+        "sample_count", "refinement_count", "mismatch_count",
+        "baseline_m", "spatial_score", "fit_error_m", "rms_error_m",
+        "max_error_m", "validation_error_m", "country_code",
+        "cartographic_frame", "provider_frame_source",
+    )
+    return {key: deepcopy(value.get(key)) for key in keys if key in value}
+
+
 def _diagnostic_options(entry: ConfigEntry) -> dict[str, Any]:
     """Return stored options without exporting secret API-key placeholders."""
     options = deepcopy(dict(entry.options))
@@ -281,15 +295,15 @@ async def async_get_config_entry_diagnostics(
             "cutting_height_mm": settings.get("cutting_height_mm"),
         },
         "navimower_schedule": navimower_schedule_diagnostics,
-        "georeference": data.get("georeference"),
+        "georeference": _georeference_summary(data.get("georeference")),
         "map_underlay": map_underlay_diagnostics(coordinator),
         "map_edit": {
             "state_code": data.get("state_code"),
             "mqtt_vehicle_state": data.get("mqtt_vehicle_state"),
             "map_version": map_version,
             "location_map_edit_time": raw_location.get("map_edit_time"),
-            "edit_map_info": edit_map_info,
             "edit_session_active": bool(str(edit_map_info.get("editMapUid") or "")),
+            "edit_channel": edit_map_info.get("editMapChannel"),
         },
         "map": {
             "id": map_data.get("id"), "map_id": map_data.get("map_id"),
