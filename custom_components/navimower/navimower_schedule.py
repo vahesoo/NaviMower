@@ -44,6 +44,7 @@ from .const import (
 )
 from .resume import async_resume_task
 from .schedule_logic import (
+    classify_schedule_mow_start,
     completion_advanced,
     filter_schedule_zones,
     format_hhmm,
@@ -618,17 +619,24 @@ class NavimowerScheduleController:
             continue_source="navimower_schedule_charge_limit_continue_fallback",
         )
 
+    def _pending_mow_evidence(
+        self,
+        pending: dict[str, Any],
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Classify a pending scheduler start from fresh vendor zone evidence."""
+        return classify_schedule_mow_start(
+            pending.get("zone_id"),
+            vendor_mowing_now=self._vendor_mowing(data),
+            vendor_mowing_at_send=pending.get("vendor_mowing_at_send"),
+            data=data,
+            mqtt_location=getattr(self.coordinator, "_mqtt_location", None),
+            sent_at=pending.get("sent_at"),
+        )
+
     def _pending_mow_confirmed(self, pending: dict[str, Any], data: dict[str, Any]) -> bool:
-        """Confirm a scheduler start from vendor state and the commanded target."""
-        if not self._vendor_mowing(data):
-            return False
-        zone_id = _as_int(pending.get("zone_id"))
-        if zone_id is None:
-            return False
-        observed_zone = _as_int(data.get("active_zone_progress_zone_id"))
-        if observed_zone == zone_id:
-            return True
-        return pending.get("vendor_mowing_at_send") is False
+        """Return true only when the requested scheduler zone is confirmed."""
+        return self._pending_mow_evidence(pending, data).get("state") == "confirmed"
 
     def _sync_active_cycle_id(self) -> bool:
         """Attach the newly-created history cycle once cutting actually starts."""
@@ -872,10 +880,29 @@ class NavimowerScheduleController:
             return
         kind = str(pending.get("kind") or "")
         if kind == "mow":
-            if not self._pending_mow_confirmed(pending, data):
-                return
+            evidence = self._pending_mow_evidence(pending, data)
             zone_id = _as_int(pending.get("zone_id"))
             if zone_id is None:
+                return
+            if evidence.get("state") == "zone_mismatch":
+                observed = [
+                    int(value)
+                    for value in evidence.get("strong_mismatch_zone_ids") or []
+                    if _as_int(value) is not None
+                ]
+                self.coordinator.clear_pending_activity()
+                self.coordinator.clear_command_target()
+                self._runtime["pending_command"] = None
+                self._runtime["suspended_reason"] = "mow_start_zone_mismatch"
+                self._runtime["last_error"] = (
+                    f"Scheduler requested zone {zone_id}, but fresh mower evidence "
+                    f"shows zone(s) {observed}; the requested queue slot was not started"
+                )
+                self._runtime["last_command"] = f"mow_start_zone_mismatch:{zone_id}"
+                self._runtime["last_command_at"] = _utc_now()
+                await self._save()
+                return
+            if evidence.get("state") != "confirmed":
                 return
             baseline = pending.get("baseline_completed_at")
             sent_at = str(pending.get("sent_at") or _utc_now())
