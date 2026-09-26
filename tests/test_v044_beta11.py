@@ -77,7 +77,8 @@ def test_beta11_development_capture_surfaces_are_now_retired() -> None:
 def test_download_diagnostics_remain_sanitized() -> None:
     diagnostics = _source("diagnostics.py")
     assert '"diagnostics_source": "home_assistant_download"' in diagnostics
-    assert '"raw": sanitize(raw_for_diagnostics)' in diagnostics
+    assert '"raw_cache_summary": _raw_cache_summary(raw)' in diagnostics
+    assert '"raw_payloads_included": False' in diagnostics
     assert "export_raw_data" not in diagnostics
 
 
