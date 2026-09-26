@@ -27,7 +27,7 @@ def test_v042_support_diagnostics_remain_information_rich_and_sanitized() -> Non
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
     for section in (
         "entry", "mower", "connectivity", "private_cloud_region", "capabilities",
-        "positioning", "telemetry", "settings", "map", "history", "problem_history",
+        "positioning", "telemetry", "settings_summary", "map", "history", "problem_history",
         "latest_notification", "notification_center", "last_resume_command",
         "private_polling", "mqtt_health", "raw_cache_summary",
     ):
