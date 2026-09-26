@@ -201,6 +201,20 @@ async def async_get_config_entry_diagnostics(
         mqtt_bridge.diagnostic_health()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_health") else None
     )
+    if isinstance(mqtt_health, dict):
+        mqtt_health = {
+            **mqtt_health,
+            "coordinator_ingest_count": int(
+                getattr(coordinator, "_mqtt_ingest_count", 0) or 0
+            ),
+            "coordinator_ingest_last_ms": getattr(
+                coordinator, "_mqtt_ingest_last_ms", None
+            ),
+            "coordinator_ingest_max_ms": round(
+                float(getattr(coordinator, "_mqtt_ingest_max_ms", 0.0) or 0.0),
+                2,
+            ),
+        }
     mqtt_inventory = (
         mqtt_bridge.diagnostic_inventory()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory") else None
