@@ -362,8 +362,15 @@ class NavimowerNotificationCenter:
         if resume_trace is not None:
             key = str(resume_trace.get("requested_at") or "")
             self._consumed_resume_trace = key or self._consumed_resume_trace
+            observed_ids = self._observed_task_zone_ids(snapshot)
             names = self._task_zone_names(snapshot)
-            if self._active_task is not None:
+            if observed_ids:
+                zone_names = _zone_names(snapshot)
+                names = [zone_names.get(value, f"Zone {value}") for value in observed_ids]
+                if self._active_task is not None:
+                    self._active_task["zone_ids"] = list(observed_ids)
+                    self._active_task["zone_names"] = list(names)
+            elif self._active_task is not None:
                 names = list(self._active_task.get("zone_names") or names)
             content = "Resumed the vendor-retained interrupted mowing task"
             if names:
