@@ -82,5 +82,4 @@ def test_beta10_or_newer_version_keeps_dispatch_weather_semantics() -> None:
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     version = str(manifest["version"])
-    assert version.startswith("0.4.5-beta")
-    assert int(version.rsplit("beta", 1)[1]) >= 10
+    assert version == "0.4.5" or (version.startswith("0.4.5-beta") and int(version.rsplit("beta", 1)[1]) >= 10)

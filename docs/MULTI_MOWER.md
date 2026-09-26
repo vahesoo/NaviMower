@@ -104,7 +104,7 @@ data:
 
 The same `device_id` scoping applies to integration-owned actions such as `navimower.resume`, `navimower.set_schedule_queue`, `navimower.reset_schedule`, `navimower.set_gate_area`, `navimower.delete_gate_area`, `navimower.relearn_georeference` and the notification actions.
 
-Use Home Assistant's native **Download diagnostics** action on each Navimower config entry when reporting a problem. The integration no longer exposes development export/probe actions; public support uses the cached-only sanitized diagnostics path.
+Use Home Assistant's native **Download diagnostics** action on each Navimower config entry when reporting a problem. The integration no longer exposes development export/probe actions; public support uses the curated privacy-safe cached diagnostics path.
 
 ## What to verify
 

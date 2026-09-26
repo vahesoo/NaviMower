@@ -101,4 +101,4 @@ def test_beta12_runtime_remains_installed_on_later_0_4_5_betas() -> None:
     assert "from .mowing_report_semantics import install_mowing_report_semantics" in runtime
     assert "install_mowing_report_semantics()" in runtime
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"].startswith("0.4.5-beta")
+    assert str(manifest["version"]).startswith("0.4.5")

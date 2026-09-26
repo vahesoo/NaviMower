@@ -1,8 +1,8 @@
 # Prepared backend render model
 
-Navimower 0.4.5-beta21 adds an additive backend contract intended for a future
-Navimower Map Card runtime. Existing Map API responses remain supported and the
-current Map Card does not need to opt in.
+Navimower 0.4.5 provides an additive prepared-render backend contract used by
+Navimower Map Card 0.3.7. Existing Map API responses remain supported through
+compatibility fallbacks while the card progressively consumes prepared resources.
 
 The goal is to move deterministic, style-independent work out of every browser
 instance while keeping presentation and interaction in the frontend.
@@ -54,10 +54,10 @@ collision policy, zoom, pan, mower artwork, selection or dialogs.
 
 The legacy prepared live resource reuses the integration's existing authoritative
 `trail_segments` semantics and converts the current all-movement route to
-compact SVG paths. This contract remains unchanged for Map Card beta15 and older
+compact SVG paths. This legacy all-movement contract remains available for older
 prepared-live consumers.
 
-Beta27 additionally prepares a separate content-addressed
+Navimower 0.4.5 also prepares a separate content-addressed
 `live_semantic_route` resource from the exact timestamped active History
 session. It classifies route edges with the same backend rules used by
 current-cycle and completed History rendering:
@@ -71,9 +71,8 @@ current-cycle and completed History rendering:
 
 The semantic resource contains separate SVG-ready `cutting_segments` and
 `travel_segments`. It is prepared at the same 30-second cadence as the legacy
-live backbone but is **not** downloaded by beta15. The manifest only advertises
-its descriptor; a future card opts into that resource explicitly with
-`live_semantic_route_render=<resource_id>`.
+live backbone. Navimower Map Card 0.3.7 consumes the descriptor when available;
+older clients can continue using the legacy all-movement resource.
 
 While active, preparation is coalesced and rate-limited to at most one build per
 30 seconds. Session, activity, physical-zone and trail-active transitions bypass
@@ -84,7 +83,7 @@ live kind are retained so an in-flight client can complete safely.
 The normal Map API remains backward compatible. The beta25 short-tail contracts
 `prepared_live_tail=1` and `prepared_live_tail_only=1` are unchanged.
 
-Beta27 adds a separate semantic short-tail contract:
+The stable contract includes a separate semantic short-tail path:
 
 - `prepared_live_semantic_tail=1` returns only the classified active-session
   points added after the semantic backbone, with separate cutting/travel SVG
@@ -94,8 +93,8 @@ Beta27 adds a separate semantic short-tail contract:
 - session mismatch, rewind, missing semantic base or the 128-point safety limit
   leaves raw trail available as fallback.
 
-Keeping semantic transport separate means beta15 neither downloads nor computes
-the new semantic short tail on its normal Map API requests.
+Keeping semantic transport separate preserves compatibility for older clients
+while Map Card 0.3.7 can consume cutting/travel semantics when advertised.
 
 ## Current-cycle and History resources
 
@@ -180,12 +179,12 @@ healthy field test should normally show:
 
 ## Compatibility
 
-Map Card beta15 remains fully compatible with beta27. Its legacy prepared-live
-resource and short-tail response stay unchanged, while the new semantic resource
-and semantic tail are opt-in only.
+Navimower Map Card 0.3.7 remains compatible with the legacy prepared-live
+resource and short-tail response while also consuming the newer semantic resource
+and semantic tail when available.
 
-The beta26 Prepared History contract remains unchanged. Because beta27 tightens
-the shared cutting classifier, retained completed-session render caches without
+The Prepared History contract remains unchanged from its beta26 introduction. Because the later semantic classifier tightens
+the shared cutting rules, retained completed-session render caches without
 `classifier_version: 2` are rebuilt once during prewarm; the public render
 schema remains version 2.
 

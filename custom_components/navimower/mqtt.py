@@ -257,7 +257,7 @@ class NavimowerMqttBridge:
         _LOGGER.info(
             "Navimower MQTT started for mower %s using official device %s",
             self._masked_serial(self.coordinator.sn),
-            official_id or "unknown",
+            self._masked_serial(str(official_id)) if official_id else "unknown",
         )
         return True
 

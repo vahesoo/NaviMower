@@ -20,5 +20,5 @@
     "fontpkg==0.2.2",
     "fontpkg-noto-sans==2.15"
   ],
-  "version": "0.4.5-beta45"
+  "version": "0.4.5"
 }

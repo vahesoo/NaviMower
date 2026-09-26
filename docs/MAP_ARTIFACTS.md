@@ -1,4 +1,4 @@
-# Prepared map artifacts (0.4.5-beta14)
+# Prepared map artifacts
 
 This is an additive presentation API. ZoneLedger and VendorTrailStore still own cycle identity and exact vendor geometry; History owns individual sessions. Map artifacts do not change cloud polling, navigation, mowing commands, gate behavior or reset rules.
 
@@ -6,7 +6,7 @@ This is an additive presentation API. ZoneLedger and VendorTrailStore still own 
 
 The existing combined Map API and `current_cycle_only=1` JSON response keep their schemas. They now share a coordinator-owned prewarmed cache. A cold/dirty legacy request waits for one valid publication, not for an indefinitely stable moving geometry revision. Multiple cards share the build. A failed cold build returns HTTP 503 with Retry-After instead of an incorrect successful empty cycle.
 
-Map Card 0.3.7-beta7 continues to use the legacy composite path. Per-zone transport savings require a future frontend consumer of the protocol below. This release does not claim measured phone/browser speedups and does not implement PNG/WebP conversion.
+Navimower Map Card 0.3.7 progressively consumes the prepared backend resources while retaining the legacy composite path as a compatibility fallback. This document describes the integration-owned artifact protocol; presentation remains frontend-owned.
 
 ## Discovery and manifest
 

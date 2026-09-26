@@ -37,4 +37,12 @@ def pytest_ignore_collect(collection_path, config) -> bool:  # noqa: ARG001
         beta_name = name.removeprefix("test_v044_").removesuffix(".py")
         if version != f"0.4.4-{beta_name}":
             return True
+
+    # 0.4.5 beta files preserve temporary milestone contracts. Stable 0.4.5
+    # uses permanent/non-versioned regressions plus the stable release suite.
+    if name.startswith("test_v045_beta") and name.endswith(".py"):
+        if not version.startswith("0.4.5-beta"):
+            return True
+    if name == "test_v045_stable.py" and version != "0.4.5":
+        return True
     return False

@@ -2,6 +2,43 @@
 
 This changelog lists stable releases. Detailed prerelease/beta history remains available in GitHub Releases and under `.github/release-notes/`.
 
+## 0.4.5 - 2026-09-26
+
+Stable cumulative release from the tested 0.4.5 beta line through `0.4.5-beta45`, with one final privacy-only MQTT startup-log masking fix. Existing config entries and storage remain compatible.
+
+### Persistent mowing state and prepared map backend
+
+- Add per-zone current-cycle ownership through ZoneLedger and VendorTrailStore so valid vendor mowing geometry survives pauses, charging, task changes, temporary cloud gaps and Home Assistant restarts.
+- Keep MQTT movement as the short live extension of retained vendor geometry instead of replacing the current-cycle backbone.
+- Add prepared static/layout, live-route, short-tail and retained History resources to reduce repeated JSON transfer and browser-side SVG reconstruction.
+- Add semantic live-route classification so confirmed cutting can be separated from travel/transit.
+
+### Resume, task semantics and weather
+
+- Add backend-owned Smart Resume through `navimower.continue_task`, choosing between retained ordered-run continuation and the vendor Resume command from integration evidence.
+- Preserve ordered multi-zone runs and continue only unfinished zones in their original order.
+- Separate the immediate **Target zone** from the full **Planned zones** task selection.
+- Add vendor weather task context with distinct **Raining** and post-rain **Rain delay** states, scheduler/pause integration and restart-safe persisted rain evidence.
+
+### Map snapshots and capabilities
+
+- Add Home Assistant Map snapshot image entities with model-aware mower artwork, Unicode zone labels and an optional dark variant.
+- Make LiDAR terrain/elevation capability resource-driven so a validated vendor terrain package is authoritative rather than a hard-coded model-name guess.
+- Keep georeference, Site/Multi-mower and provider-underlay contracts available to the companion Map Card.
+
+### Home Assistant integration and diagnostics
+
+- Add bounded Activity/Logbook cause context for meaningful mower and zone transitions.
+- Curate public **Download diagnostics** around support-relevant state, source/freshness, capability, scheduler/Resume, map and render/cache evidence.
+- Exclude complete vendor raw payload bodies, raw notification/error bodies, user-authored labels/messages, exact mower-local geometry, full schedules/settings and full georeference control-point data from stable public diagnostics.
+- Mask mower/device serial identifiers in normal MQTT startup INFO logs.
+
+### Compatibility
+
+- Existing config entries, entity/device unique IDs, map/history/session storage, Schedule state, Gate/Custom Area configuration and account setup are retained.
+- No 0.4.5 beta needs to be installed before this stable release.
+- Navimower Map Card `0.3.7` is the matching stable frontend release.
+
 ## 0.4.4 - 2026-09-14
 
 Stable cumulative release from the tested 0.4.4 beta line through `0.4.4-beta39`. There is no intentional runtime behavior change from beta39.

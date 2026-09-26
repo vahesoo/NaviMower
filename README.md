@@ -16,9 +16,9 @@ Navimower does **not** require the older NavimowHA integration.
 - **Two independent connections** in one config entry:
   - Navimow account/cloud data for map geometry, settings, native schedules, notifications, maintenance and stable mower state;
   - official Smart Home OAuth + MQTT for dense live position, heading, battery and mower events.
-- **Persistent mowing history** retained through normal pause/resume, charging, integration reloads and Home Assistant restarts.
+- **Persistent current-cycle mowing state and History** retained per zone through normal pause/resume, charging, task changes, temporary cloud gaps, integration reloads and Home Assistant restarts.
 - **Per-zone state** including Coverage, Area, Mowed area, Last mowed and conservative/monotonic Last completed timestamps.
-- **Reset-based current-cycle rendering** prepared by the integration and published through a phased Map API.
+- **Backend-prepared map rendering** for current-cycle, retained History and semantic live cutting/travel routes, with compatibility fallbacks for older frontends.
 - **Navimower Schedule**, an integration-owned one-zone-at-a-time scheduler with Automatic or positional Custom order, repeated rounds, retained-task ownership and reversible pause/resume.
 - **Custom Areas** imported from temporary Navimow Off-limit polygons and stored locally.
 - **Physical-gate support** with zone-pair travel intent and exact local-X/Y polygon Gate areas.
@@ -28,7 +28,7 @@ Navimower does **not** require the older NavimowHA integration.
 - **Mowing pause reason** status with conservative low-battery confirmation.
 - **Model-aware settings** for mowing, weather, battery, lights, safety, navigation and supported family-specific features.
 - **Native GPS Location device tracker** when the mower account reports valid geographic coordinates.
-- **Sanitized cached-only Download diagnostics** for normal support.
+- **Curated privacy-safe Download diagnostics** for normal support, without complete vendor raw payloads or exact local property geometry.
 
 ## Installation
 
@@ -144,12 +144,13 @@ Navimower keeps counters with different meanings separate instead of turning eve
 - **Map coverage / Map mowed area** — current per-zone coverage snapshot.
 - **Active-zone progress** — progress attributed to the currently owned work zone when the evidence is sufficient.
 
-### Physical zone vs target zone
+### Physical zone, target zone and planned zones
 
 Navimower deliberately separates:
 
 - the mapped polygon the mower is physically inside;
-- the work target/progress-owner zone;
+- the **Target zone**, meaning the immediate automation-safe work target;
+- **Planned zones**, meaning the full selected multi-zone task;
 - whole-task progress;
 - active-zone progress.
 
@@ -219,9 +220,9 @@ Navimower prepares completed current-cycle mowing geometry on the Home Assistant
 
 Completed History sessions are also prepared on the backend. Retained completed sessions are prewarmed sequentially into immutable, content-addressed SVG-ready resources. A ready-only History manifest exposes those resource descriptors, while the exact timestamped session Stores remain the source of truth.
 
-Active sessions stay on Prepared Live + short-tail transport. In beta27 the backend also prepares an **opt-in semantic live route** that separates confirmed blade-on cutting edges from travel/transit edges. A cutting edge is accepted only when both samples are blade-on and both belong to the same physical mowing zone; zone-boundary crossings and missing-zone movement remain travel. This fixes a general route-classification issue rather than an X3-specific one.
+Active sessions stay on Prepared Live + short-tail transport. Navimower 0.4.5 also prepares a **semantic live route** that separates confirmed blade-on cutting edges from travel/transit edges. A cutting edge is accepted only when both samples are blade-on and both belong to the same physical mowing zone; zone-boundary crossings and missing-zone movement remain travel.
 
-The existing beta15 all-movement Prepared Live resource remains unchanged and does not download the new semantic geometry. The legacy session-render endpoint also remains available while compatibility cleanup is staged.
+The legacy all-movement Prepared Live resource and session-render endpoint remain available as compatibility fallbacks while Map Card 0.3.7 consumes the newer prepared and semantic resources.
 
 ### Trail retention
 
@@ -409,7 +410,7 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 
 The same backend decision is exposed on **Task progress** as `resume_available`, `resume_strategy`, `resume_reason` and `resume_evidence`, and through the Map API frontend metadata. This lets dashboard cards render Resume without duplicating mower-state policy in JavaScript.
 
-The low-level `navimower.resume` and `navimower.continue_last_ordered_run` actions remain available for automations and backward compatibility.
+`navimower.continue_task` is the preferred UI-facing continuation action. The low-level `navimower.resume` and `navimower.continue_last_ordered_run` actions remain available for automations and backward compatibility.
 
 ### Continue the last ordered run
 
