@@ -161,7 +161,12 @@ def _entry():
     return SimpleNamespace(
         entry_id="synthetic-entry",
         data={"access_token": "DEMO-TOKEN-ONLY", "vehicle_sn": "DEMO-MOWER-ONLY", "model": "H-test"},
-        options={"google_maps_api_key": "DEMO-GOOGLE-KEY", "chargingLimit": 100},
+        options={
+            "google_maps_api_key": "DEMO-GOOGLE-KEY",
+            "chargingLimit": 100,
+            "channels": [{"slug": "gate", "polygon": [[-34.7, 0.0], [-26.1, -0.1], [-25.9, 2.0]]}],
+            "custom_areas": [{"id": "private-area", "polygon": [[-34.5, 4.1], [-33.3, 0.9], [-25.4, 2.8]]}],
+        },
     )
 
 
@@ -174,6 +179,15 @@ def test_unloaded_download_cleans_entry_and_options(diagnostics):
     assert report["redaction_version"] == sanitizer.REDACTION_VERSION
     assert report["entry"]["data"]["access_token"] == sanitizer.REDACTED
     assert "google_maps_api_key" not in report["entry"]["options"]
+    assert "channels" not in report["entry"]["options"]
+    assert "custom_areas" not in report["entry"]["options"]
+    assert report["entry"]["options"]["local_area_summary"] == {
+        "gate_area_count": 1,
+        "custom_area_count": 1,
+        "coordinates_included": False,
+    }
+    assert "-34.7" not in json.dumps(report)
+    assert "-34.5" not in json.dumps(report)
     assert "DEMO-GOOGLE-KEY" not in json.dumps(report)
     assert entry.data["access_token"] == "DEMO-TOKEN-ONLY"
 
