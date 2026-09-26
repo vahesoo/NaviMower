@@ -1,8 +1,8 @@
 # Prepared backend render model
 
-Navimower 0.4.5-beta21 adds an additive backend contract intended for a future
-Navimower Map Card runtime. Existing Map API responses remain supported and the
-current Map Card does not need to opt in.
+Navimower 0.4.5 provides an additive prepared-render backend contract used by
+Navimower Map Card 0.3.7. Existing Map API responses remain supported through
+compatibility fallbacks while the card progressively consumes prepared resources.
 
 The goal is to move deterministic, style-independent work out of every browser
 instance while keeping presentation and interaction in the frontend.
@@ -180,12 +180,12 @@ healthy field test should normally show:
 
 ## Compatibility
 
-Map Card beta15 remains fully compatible with beta27. Its legacy prepared-live
-resource and short-tail response stay unchanged, while the new semantic resource
-and semantic tail are opt-in only.
+Navimower Map Card 0.3.7 remains compatible with the legacy prepared-live
+resource and short-tail response while also consuming the newer semantic resource
+and semantic tail when available.
 
-The beta26 Prepared History contract remains unchanged. Because beta27 tightens
-the shared cutting classifier, retained completed-session render caches without
+The Prepared History contract remains unchanged from its beta26 introduction. Because the later semantic classifier tightens
+the shared cutting rules, retained completed-session render caches without
 `classifier_version: 2` are rebuilt once during prewarm; the public render
 schema remains version 2.
 
