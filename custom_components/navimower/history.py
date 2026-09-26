@@ -424,6 +424,12 @@ class NavimowerHistory:
         # a new session without starting a new mowing cycle.
         self._force_new_cycle_zone_ids: list[int] = []
         self._last_cycle_event: dict[str, Any] | None = None
+        # Card-facing trail materialization is intentionally kept out of the
+        # MQTT/coordinator hot path. These counters make any remaining legacy
+        # Map API cost observable without rebuilding a trail for diagnostics.
+        self._card_materialize_count = 0
+        self._card_materialize_last_ms: float | None = None
+        self._card_materialize_max_ms: float = 0.0
 
     # ---------------------------------------------------------------- load
     async def async_load(self) -> None:
@@ -1793,10 +1799,35 @@ class NavimowerHistory:
     def active_started_at(self) -> str | None:
         return self.active_started_at_value
 
-    def active_trail_xy(self) -> list[list[float]]:
+    def active_point_count(self) -> int:
+        """Return active raw point count in O(1) without materializing XY."""
         with self._lock:
             active = self._cache.get(self._active_id or "")
-            return _card_points(active) if active else []
+            points = active.get("points") if isinstance(active, dict) else None
+            return len(points) if isinstance(points, list) else 0
+
+    def card_materialization_diagnostics(self) -> dict[str, Any]:
+        """Return counters without touching active route geometry."""
+        with self._lock:
+            return {
+                "count": self._card_materialize_count,
+                "last_ms": self._card_materialize_last_ms,
+                "max_ms": round(self._card_materialize_max_ms, 2),
+            }
+
+    def active_trail_xy(self) -> list[list[float]]:
+        started = time.perf_counter()
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            result = _card_points(active) if active else []
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._card_materialize_count += 1
+            self._card_materialize_last_ms = round(elapsed_ms, 2)
+            self._card_materialize_max_ms = max(
+                self._card_materialize_max_ms,
+                elapsed_ms,
+            )
+            return result
 
     def active_trail_segments_xy(self) -> list[list[list[float]]]:
         """Return active route fragments without drawing across interruptions."""
@@ -1859,16 +1890,18 @@ class NavimowerHistory:
         )
 
     def session_summaries(self, *, include_points: bool = False) -> list[dict[str, Any]]:
-        """Return retained session metadata, and cached points when requested."""
+        """Return retained session metadata, copying route points only on demand."""
         with self._lock:
             metadata = deepcopy(self._sessions)
+            if not include_points:
+                return [_card_session(meta, include_points=False) for meta in metadata]
             cache = deepcopy(self._cache)
         result: list[dict[str, Any]] = []
         for meta in metadata:
             session_id = str(meta.get("id") or "")
             full = cache.get(session_id)
             result.append(
-                _card_session(full or meta, include_points=include_points and full is not None)
+                _card_session(full or meta, include_points=full is not None)
             )
         return result
 

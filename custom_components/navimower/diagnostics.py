@@ -201,6 +201,20 @@ async def async_get_config_entry_diagnostics(
         mqtt_bridge.diagnostic_health()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_health") else None
     )
+    if isinstance(mqtt_health, dict):
+        mqtt_health = {
+            **mqtt_health,
+            "coordinator_ingest_count": int(
+                getattr(coordinator, "_mqtt_ingest_count", 0) or 0
+            ),
+            "coordinator_ingest_last_ms": getattr(
+                coordinator, "_mqtt_ingest_last_ms", None
+            ),
+            "coordinator_ingest_max_ms": round(
+                float(getattr(coordinator, "_mqtt_ingest_max_ms", 0.0) or 0.0),
+                2,
+            ),
+        }
     mqtt_inventory = (
         mqtt_bridge.diagnostic_inventory()
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory") else None
@@ -229,7 +243,21 @@ async def async_get_config_entry_diagnostics(
         navimower_schedule.diagnostics()
         if navimower_schedule is not None and hasattr(navimower_schedule, "diagnostics") else None
     )
-    history_index = coordinator.history.sessions_index_payload() if getattr(coordinator, "history", None) is not None else {}
+    history_manager = getattr(coordinator, "history", None)
+    history_index = history_manager.sessions_index_payload() if history_manager is not None else {}
+    trail_point_count = data.get("trail_point_count")
+    if (
+        trail_point_count is None
+        and history_manager is not None
+        and hasattr(history_manager, "active_point_count")
+    ):
+        trail_point_count = history_manager.active_point_count()
+    card_materialization = (
+        history_manager.card_materialization_diagnostics()
+        if history_manager is not None
+        and hasattr(history_manager, "card_materialization_diagnostics")
+        else None
+    )
     sessions = history_index.get("sessions") if isinstance(history_index, dict) else []
     sessions = sessions if isinstance(sessions, list) else []
     cycle = (
@@ -331,7 +359,8 @@ async def async_get_config_entry_diagnostics(
             "active_session": bool(history_index.get("active_session_id")),
             "cycle": cycle,
             "trail_active": data.get("trail_active"),
-            "trail_point_count": len(data.get("trail") or []),
+            "trail_point_count": trail_point_count,
+            "card_materialization": card_materialization,
         },
         "problem_history": problem_history,
         "error_investigation": {
