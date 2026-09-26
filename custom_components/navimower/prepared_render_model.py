@@ -1007,7 +1007,7 @@ class PreparedRenderModelManager:
     async def _build_live(self) -> None:
         try:
             started = time.perf_counter()
-            source = self._live_source()
+            source = await self.hass.async_add_executor_job(self._live_source)
             model = await self.hass.async_add_executor_job(
                 build_live_route_render_model,
                 source,
