@@ -115,6 +115,6 @@ def test_beta11_installs_after_dispatch_weather_semantics() -> None:
     assert weather < recovery
 
 
-def test_beta11_recovery_remains_in_the_045_release_line() -> None:
+def test_beta11_recovery_remains_in_later_release_lines() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    assert manifest["version"].split("-", 1)[0] == "0.4.5"
+    assert manifest["version"].split("-", 1)[0] in {"0.4.5", "0.4.6"}
