@@ -73,6 +73,7 @@ def _rain_runtime(coordinator: NavimowCoordinator) -> dict[str, Any]:
     if not isinstance(runtime, dict):
         runtime = {
             "last_rain_state": None,
+            "last_rain_state_at": None,
             "delay_started_at": None,
             "delay_until": None,
             "delay_minutes": 0,
@@ -271,7 +272,10 @@ def _compose_rain_delay(
     # missing weather must never invent a rain-clear edge.
     if vendor_fresh and rain_state is True:
         _clear_rain_delay(coordinator)
+        if runtime.get("last_rain_state") is not True:
+            _mark_rain_runtime_dirty(coordinator)
         runtime["last_rain_state"] = True
+        runtime["last_rain_state_at"] = now
     elif vendor_fresh and rain_state is False:
         if runtime.get("last_rain_state") is True:
             if delay_enabled and configured_minutes > 0:
@@ -282,7 +286,10 @@ def _compose_rain_delay(
                 )
             else:
                 _clear_rain_delay(coordinator)
+        if runtime.get("last_rain_state") is not False:
+            _mark_rain_runtime_dirty(coordinator)
         runtime["last_rain_state"] = False
+        runtime["last_rain_state_at"] = now
 
     # Turning the vendor delay mode off explicitly cancels a locally retained
     # cooldown. Changing the configured duration while a cooldown is already
@@ -336,6 +343,10 @@ def _compose_rain_delay(
             else "derived_rain_delay"
         )
 
+    weather["rain_last_fresh_state"] = runtime.get("last_rain_state")
+    weather["rain_last_fresh_state_at"] = _iso_timestamp(
+        runtime.get("last_rain_state_at")
+    )
     weather["rain_delay_enabled"] = delay_enabled
     weather["rain_delay_configured_minutes"] = configured_minutes
     weather["rain_delay_active"] = delay_active
@@ -371,6 +382,8 @@ def _decorate_snapshot(
     snapshot["weather_frost_state"] = weather["frost_state"]
     snapshot["weather_high_temperature_state"] = weather["high_temperature_state"]
     snapshot["weather_rain_level"] = weather["rain_level"]
+    snapshot["rain_last_fresh_state"] = weather["rain_last_fresh_state"]
+    snapshot["rain_last_fresh_state_at"] = weather["rain_last_fresh_state_at"]
     snapshot["rain_delay_enabled"] = weather["rain_delay_enabled"]
     snapshot["rain_delay_configured_minutes"] = weather[
         "rain_delay_configured_minutes"
@@ -429,6 +442,8 @@ def _refresh_vendor_weather(
 def _persisted_rain_runtime(coordinator: NavimowCoordinator) -> dict[str, Any]:
     runtime = _rain_runtime(coordinator)
     return {
+        "last_rain_state": runtime.get("last_rain_state"),
+        "last_rain_state_at": runtime.get("last_rain_state_at"),
         "delay_started_at": runtime.get("delay_started_at"),
         "delay_until": runtime.get("delay_until"),
         "delay_minutes": runtime.get("delay_minutes") or 0,
@@ -455,6 +470,7 @@ def install_weather_state_semantics() -> None:
         await original_load_state(self)
         runtime = _rain_runtime(self)
         runtime["last_rain_state"] = None
+        runtime["last_rain_state_at"] = None
         try:
             cached = await self._state_store.async_load()  # noqa: SLF001
         except Exception:  # noqa: BLE001
@@ -470,8 +486,14 @@ def install_weather_state_semantics() -> None:
                 until = float(row.get("delay_until") or 0)
                 started = float(row.get("delay_started_at") or 0)
                 minutes = int(row.get("delay_minutes") or 0)
+                last_state = row.get("last_rain_state")
+                last_state_at = float(row.get("last_rain_state_at") or 0)
             except (TypeError, ValueError):
                 until, started, minutes = 0.0, 0.0, 0
+                last_state, last_state_at = None, 0.0
+            if last_state in (True, False) and last_state_at > 0:
+                runtime["last_rain_state"] = last_state
+                runtime["last_rain_state_at"] = last_state_at
             if until > now and started > 0 and minutes > 0:
                 runtime["delay_started_at"] = started
                 runtime["delay_until"] = until
