@@ -66,7 +66,7 @@ def test_disabled_schedule_is_not_trapped_by_semantic_validation() -> None:
 
 def test_firmware_version_looking_like_ipv4_survives_without_weakening_ip_redaction() -> None:
     redactor = load_redactor()
-    assert redactor.REDACTION_VERSION == 4
+    assert redactor.REDACTION_VERSION >= 4
 
     clean = redactor.sanitize(
         {

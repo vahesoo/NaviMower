@@ -68,9 +68,17 @@ def _georeference_summary(value: Any) -> dict[str, Any] | None:
 
 
 def _diagnostic_options(entry: ConfigEntry) -> dict[str, Any]:
-    """Return stored options without exporting secret API-key placeholders."""
+    """Return stored options without exporting secrets or local-area coordinates."""
     options = deepcopy(dict(entry.options))
     options.pop(OPT_GOOGLE_MAPS_API_KEY, None)
+
+    channels = options.pop("channels", None)
+    custom_areas = options.pop("custom_areas", None)
+    options["local_area_summary"] = {
+        "gate_area_count": len(channels) if isinstance(channels, list) else 0,
+        "custom_area_count": len(custom_areas) if isinstance(custom_areas, list) else 0,
+        "coordinates_included": False,
+    }
     return sanitize(options)
 
 
@@ -381,7 +389,7 @@ async def async_get_config_entry_diagnostics(
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "Vendor raw payload bodies and raw notification/error bodies are not included; only curated evidence and cache shape/counts remain.",
             "User-authored names/message text are omitted from stable Download diagnostics.",
-            "Exact mower X/Y, local polygon coordinates, user labels, full schedules/settings and retained session timestamps are omitted from stable Download diagnostics.",
+            "Exact mower X/Y and local polygon coordinates, including user-created Gate/Custom Area option geometry, are omitted from Download diagnostics.",
             "Public support uses Home Assistant Download diagnostics; development captures are not exposed as integration actions.",
         ],
     }

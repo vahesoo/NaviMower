@@ -4,7 +4,7 @@
 
 Home Assistant **Download diagnostics** is the normal support path. It is designed to be cached-only and sanitized: downloading a report must not send mower commands or make additional service requests.
 
-The current Download report uses `format: navimower-diagnostics-v2` and identifies the active sanitizer with `redaction_version: 4`.
+The current Download report uses `format: navimower-diagnostics-v2` and identifies the active sanitizer with `redaction_version: 5`.
 
 ## What is redacted
 
@@ -36,7 +36,7 @@ See [MAP_GEOREFERENCE_AND_UNDERLAYS.md](MAP_GEOREFERENCE_AND_UNDERLAYS.md) for t
 
 ## Data that deliberately remains
 
-Stable map/zone/task IDs, counts, progress values, source/freshness metadata and selected operational timestamps remain available because they are needed for support. Exact mower-local X/Y and polygon coordinates, full schedules/settings, user-authored mower/zone/Gate-area names and notification text are omitted from the stable Download report because they can expose property layout, routines, addresses, family names or other personal context. This is **not a promise of complete anonymity**; review a report before posting it publicly.
+Stable map/zone/task IDs, counts, progress values, source/freshness metadata and selected operational timestamps remain available because they are needed for support. Exact mower-local X/Y and polygon coordinates are omitted from the Download report, including Home Assistant user-created Gate Area and Custom Area geometry stored in config-entry options. Full schedules/settings, user-authored mower/zone/Gate-area names and notification text are also omitted where they are not required for support. This is **not a promise of complete anonymity**; review a report before posting it publicly.
 
 Redaction tests cannot prove that every future service payload is safe. When in doubt, review the downloaded JSON before sharing it publicly.
 
