@@ -220,9 +220,9 @@ Navimower prepares completed current-cycle mowing geometry on the Home Assistant
 
 Completed History sessions are also prepared on the backend. Retained completed sessions are prewarmed sequentially into immutable, content-addressed SVG-ready resources. A ready-only History manifest exposes those resource descriptors, while the exact timestamped session Stores remain the source of truth.
 
-Active sessions stay on Prepared Live + short-tail transport. In beta27 the backend also prepares an **opt-in semantic live route** that separates confirmed blade-on cutting edges from travel/transit edges. A cutting edge is accepted only when both samples are blade-on and both belong to the same physical mowing zone; zone-boundary crossings and missing-zone movement remain travel. This fixes a general route-classification issue rather than an X3-specific one.
+Active sessions stay on Prepared Live + short-tail transport. Navimower 0.4.5 also prepares a **semantic live route** that separates confirmed blade-on cutting edges from travel/transit edges. A cutting edge is accepted only when both samples are blade-on and both belong to the same physical mowing zone; zone-boundary crossings and missing-zone movement remain travel.
 
-The existing beta15 all-movement Prepared Live resource remains unchanged and does not download the new semantic geometry. The legacy session-render endpoint also remains available while compatibility cleanup is staged.
+The legacy all-movement Prepared Live resource and session-render endpoint remain available as compatibility fallbacks while Map Card 0.3.7 consumes the newer prepared and semantic resources.
 
 ### Trail retention
 
