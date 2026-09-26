@@ -27,13 +27,14 @@ def test_beta10_error_sensor_is_cloud_canonical() -> None:
     assert 'snapshot["docked_source"] = "mqtt_error_state"' not in source
 
 
-def test_beta10_retains_raw_vendor_notification_feed() -> None:
+def test_beta10_runtime_retains_vendor_notification_feed_but_download_is_curated() -> None:
     source = (COMPONENT / "notification_feed.py").read_text(encoding="utf-8")
     assert 'coordinator._notification_raw_cache = deepcopy(response)' in source
     diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
-    assert '"vendor_notification_raw_cache"' in diagnostics
-    assert '"vendor_notification_normalized_cache"' in diagnostics
-    assert '"variable": deepcopy(data.get("notification_variable"))' in diagnostics
+    assert '"vendor_notification_raw_cached"' in diagnostics
+    assert '"vendor_notification_normalized_count"' in diagnostics
+    assert '"vendor_notification_raw_cache"' not in diagnostics
+    assert '"variable": deepcopy(data.get("notification_variable"))' not in diagnostics
 
 
 def test_beta10_error_context_survives_without_research_helpers() -> None:

@@ -8,7 +8,9 @@ diagnostics = (COMPONENT / "diagnostics.py").read_text(encoding="utf-8")
 
 assert '"off_limit_areas": _polygon_diagnostics(' in diagnostics
 assert '"area_m2": round(area, 4)' in diagnostics
-assert '"centroid": [round(centroid[0], 4), round(centroid[1], 4)]' in diagnostics
+assert '"point_count": len(points)' in diagnostics
+assert '"centroid"' not in diagnostics
+assert '"polygon": points' not in diagnostics
 assert '"edit_session_active": bool(' in diagnostics
 assert '"map_version": map_version' in diagnostics
 

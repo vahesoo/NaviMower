@@ -216,13 +216,22 @@ def test_loaded_download_is_cached_only_and_omits_retired_research(diagnostics):
     for retired in ("maintenance_h5_discovery", "error_h5_discovery", "command_discovery"):
         assert retired not in encoded
     assert report["map_edit"]["edit_session_active"] is True
-    assert report["map_edit"]["edit_map_info"]["editMapUid"] == sanitizer.REDACTED
+    assert "edit_map_info" not in report["map_edit"]
+    assert report["privacy"]["raw_payloads_included"] is False
+    assert report["privacy"]["human_labels_included"] is False
+    assert "raw" not in report
+    assert report["raw_cache_summary"]["index2"]["kind"] == "mapping"
+    assert report["raw_cache_summary"]["device_info"]["field_count"] == 2
     assert report["map"]["map_id"] == "test-map"
-    assert report["positioning"]["x"] == 2.0
+    assert "x" not in report["positioning"]
+    assert "y" not in report["positioning"]
     assert report["map"]["off_limit_areas"][0]["point_count"] == 3
+    assert "polygon" not in report["map"]["off_limit_areas"][0]
+    assert "centroid" not in report["map"]["off_limit_areas"][0]
     assert report["telemetry"]["battery"] == 84
     assert report["navimower_schedule"]["active_zone_id"] == 36
     assert report["telemetry"]["zone_states"][0]["last_completed_at"] == "2026-09-01T10:00:00+00:00"
-    assert report["settings"]["mowingHeightList"] == list(range(30, 85, 5))
+    assert "settings" not in report
+    assert "settings_summary" in report
     assert data == original
     assert entry.options["google_maps_api_key"] == "DEMO-GOOGLE-KEY"

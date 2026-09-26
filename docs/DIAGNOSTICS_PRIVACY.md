@@ -4,7 +4,7 @@
 
 Home Assistant **Download diagnostics** is the normal support path. It is designed to be cached-only and sanitized: downloading a report must not send mower commands or make additional service requests.
 
-The current Download report uses `format: navimower-diagnostics-v2` and identifies the active sanitizer with `redaction_version: 3`.
+The current Download report uses `format: navimower-diagnostics-v2` and identifies the active sanitizer with `redaction_version: 4`.
 
 ## What is redacted
 
@@ -14,7 +14,7 @@ Words are not arbitrary substrings: `mapping` and `spinning` must not be treated
 
 The report also handles nested JSON strings, common labelled credentials in free text, Bearer/Basic credentials, email addresses, UUIDs, MAC addresses and IPv4 addresses. Repeated known textual identifiers are removed from other values and dictionary keys. URL user information, paths, query strings and fragments are removed; only the service origin is retained. Large strings, opaque encoded strings, binary values and unsupported Python objects are summarized rather than exposing an arbitrary object representation.
 
-Redaction is applied to the complete assembled report, including unloaded-entry reports, config options, cached MQTT samples and nested service responses. It creates a new object and does not mutate the original runtime caches or config entry.
+Redaction is applied to the complete assembled report, including unloaded-entry reports, config options and curated cached state. Stable Download diagnostics does **not** export complete vendor raw payload bodies, raw notification/error bodies or arbitrary cached service responses. Instead it exposes selected state/capability/source-age fields plus a raw-cache shape/count summary. It creates a new object and does not mutate the original runtime caches or config entry.
 
 ## Georeference and map-underlay diagnostics
 
@@ -22,10 +22,10 @@ Map/georeference support needs enough information to diagnose alignment without 
 
 Normal Download diagnostics may therefore retain:
 
-- mower-local X/Y coordinates and local map polygons;
-- georeference source/status and fit-quality metadata;
+- geometry summaries such as polygon point counts and areas, but not polygon coordinates;
+- georeference source/status and fit-quality metadata, but not full transform/control-point objects;
 - sample/refinement counts, baseline/spatial-score information and validation error distances;
-- local-frame comparisons expressed as relative metre offsets;
+- bounded validation/error metrics and provider-frame status;
 - provider-frame availability/source and relative frame offsets;
 - country-level underlay capability such as `EE`;
 - Google Map Tiles configuration/session health such as configured state, session-active state, expiry and generic last-error status.
@@ -36,7 +36,7 @@ See [MAP_GEOREFERENCE_AND_UNDERLAYS.md](MAP_GEOREFERENCE_AND_UNDERLAYS.md) for t
 
 ## Data that deliberately remains
 
-Local map X/Y coordinates, local polygons, user-chosen mower/zone/Gate-area names and activity times remain available because they are needed for map, gate and schedule support. This is **not a promise of complete anonymity**. Review those fields before posting a report, especially names containing personal information.
+Stable map/zone/task IDs, counts, progress values, source/freshness metadata and selected operational timestamps remain available because they are needed for support. Exact mower-local X/Y and polygon coordinates, full schedules/settings, user-authored mower/zone/Gate-area names and notification text are omitted from the stable Download report because they can expose property layout, routines, addresses, family names or other personal context. This is **not a promise of complete anonymity**; review a report before posting it publicly.
 
 Redaction tests cannot prove that every future service payload is safe. When in doubt, review the downloaded JSON before sharing it publicly.
 
