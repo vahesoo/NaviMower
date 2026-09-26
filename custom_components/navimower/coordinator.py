@@ -1122,6 +1122,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_work_progress_last_update: float | None = None
         self._mqtt_task_progress_last_update: float | None = None
         self._mqtt_area_last_update: float | None = None
+        self._mqtt_ingest_count = 0
+        self._mqtt_ingest_last_ms: float | None = None
+        self._mqtt_ingest_max_ms = 0.0
         self._mqtt_connected = False
         self._mqtt_configured = bool(entry.data.get(CONF_OAUTH_TOKEN))
         self._oauth_connected = False
@@ -1891,6 +1894,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             ),
             "last_poll_had_success": self._last_private_poll_had_success,
             "last_poll_had_core_success": self._last_private_poll_had_core_success,
+            "mqtt_ingest": {
+                "count": self._mqtt_ingest_count,
+                "last_ms": self._mqtt_ingest_last_ms,
+                "max_ms": round(self._mqtt_ingest_max_ms, 2),
+            },
             "endpoints": endpoints,
         }
 
@@ -4142,6 +4150,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         """Merge one official MQTT update and persist the live session path."""
         if not isinstance(location, dict):
             return
+        ingest_started = time.perf_counter()
         previous_snapshot = dict(self.data or {})
         previous_activity = (self.data or {}).get("activity")
         previous_pose_valid = self._fresh_mqtt_position() is not None
@@ -4325,6 +4334,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             )
         elif pose_updated and not previous_pose_valid:
             self.request_fast_refresh("MQTT pose stream became live")
+        ingest_ms = (time.perf_counter() - ingest_started) * 1000.0
+        self._mqtt_ingest_count += 1
+        self._mqtt_ingest_last_ms = round(ingest_ms, 2)
+        self._mqtt_ingest_max_ms = max(self._mqtt_ingest_max_ms, ingest_ms)
 
     def ingest_mqtt_state(self, state: dict[str, Any]) -> None:
         """Merge official MQTT battery and named state independently."""
@@ -4393,7 +4406,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot = dict(self.data)
             snapshot["cycle_reset_detected"] = changed
             snapshot["cycle_reset_reason"] = source
-            snapshot["trail"] = self.history.active_points_xy()
+            snapshot.pop("trail", None)
+            snapshot["trail_point_count"] = self.history.active_point_count()
             snapshot["trail_session"] = self.history.active_session_no
             snapshot["trail_started_at"] = self.history.active_started_at()
             snapshot["sessions"] = self.history.session_summaries(include_points=False)
