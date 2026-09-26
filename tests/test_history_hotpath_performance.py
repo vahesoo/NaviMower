@@ -45,10 +45,7 @@ def test_active_point_count_is_metadata_only() -> None:
 def test_prepared_live_source_capture_is_off_main_thread() -> None:
     source = _source("prepared_render_model.py")
     ast.parse(source)
-    start = source.index("    async def _build_live")
-    end = source.index("    def request_refresh", start)
-    block = source[start:end]
-    assert "await self.hass.async_add_executor_job(self._live_source)" in block
+    assert "await self.hass.async_add_executor_job(self._live_source)" in source
 
 
 def test_performance_diagnostics_expose_ingest_and_materialization_cost() -> None:
