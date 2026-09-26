@@ -1,4 +1,4 @@
-# Prepared map artifacts (0.4.5-beta14)
+# Prepared map artifacts
 
 This is an additive presentation API. ZoneLedger and VendorTrailStore still own cycle identity and exact vendor geometry; History owns individual sessions. Map artifacts do not change cloud polling, navigation, mowing commands, gate behavior or reset rules.
 
