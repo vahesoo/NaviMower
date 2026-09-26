@@ -55,6 +55,111 @@ def parse_iso(value: Any) -> datetime | None:
     return parsed
 
 
+_MOW_START_ZONE_EVIDENCE_MAX_AGE_SECONDS = 60.0
+
+
+def _zone_id(value: Any) -> int | None:
+    try:
+        zone_id = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return zone_id if zone_id > 0 else None
+
+
+def _fresh_age(value: Any, *, limit: float = _MOW_START_ZONE_EVIDENCE_MAX_AGE_SECONDS) -> bool:
+    try:
+        age = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return 0.0 <= age <= limit
+
+
+def _report_seconds(value: Any) -> float | None:
+    try:
+        stamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if stamp <= 0:
+        return None
+    return stamp / 1000.0 if stamp > 10_000_000_000 else stamp
+
+
+def classify_schedule_mow_start(
+    commanded_zone_id: Any,
+    *,
+    vendor_mowing_now: bool,
+    vendor_mowing_at_send: bool | None,
+    data: dict[str, Any],
+    mqtt_location: dict[str, Any] | None,
+    sent_at: Any,
+) -> dict[str, Any]:
+    """Classify a scheduler mow start without mistaking another retained task for success.
+
+    A plain Docked/Idle -> Mowing transition is only a legacy fallback when no
+    fresh zone evidence exists. Any fresh observed zone must agree with the
+    scheduler command. A post-command MQTT work-target mismatch is strong
+    evidence that the mower resumed a different retained task.
+    """
+    commanded = _zone_id(commanded_zone_id)
+    if not vendor_mowing_now or commanded is None:
+        return {"state": "pending", "observed_zone_ids": [], "strong_mismatch_zone_ids": []}
+
+    observed: list[int] = []
+    strong: list[int] = []
+
+    active_zone = _zone_id(data.get("active_zone_progress_zone_id"))
+    if active_zone is not None and _fresh_age(data.get("active_zone_progress_source_age")):
+        observed.append(active_zone)
+
+    immediate_zone = _zone_id(data.get("target_zone_id"))
+    immediate_source = str(data.get("target_zone_immediate_source") or "")
+    if (
+        immediate_zone is not None
+        and immediate_source == "mqtt_work_target"
+        and _fresh_age(data.get("target_zone_immediate_age_seconds"))
+    ):
+        observed.append(immediate_zone)
+
+    location = mqtt_location if isinstance(mqtt_location, dict) else {}
+    sent = parse_iso(sent_at)
+    report = _report_seconds(location.get("pose_time") or location.get("state_time"))
+    mqtt_after_command = (
+        sent is not None
+        and report is not None
+        and report >= sent.timestamp() - 1.0
+        and _fresh_age(data.get("mqtt_action_age"))
+    )
+    if mqtt_after_command:
+        for key in ("work_target_zone", "mow_boundary"):
+            zone_id = _zone_id(location.get(key))
+            if zone_id is not None:
+                observed.append(zone_id)
+                strong.append(zone_id)
+
+    observed = list(dict.fromkeys(observed))
+    strong = list(dict.fromkeys(strong))
+    strong_mismatch = [zone_id for zone_id in strong if zone_id != commanded]
+    if strong_mismatch:
+        return {
+            "state": "zone_mismatch",
+            "observed_zone_ids": observed,
+            "strong_mismatch_zone_ids": strong_mismatch,
+        }
+
+    if observed:
+        return {
+            "state": "confirmed" if all(zone_id == commanded for zone_id in observed) else "pending",
+            "observed_zone_ids": observed,
+            "strong_mismatch_zone_ids": [],
+        }
+
+    return {
+        "state": "confirmed" if vendor_mowing_at_send is False else "pending",
+        "observed_zone_ids": [],
+        "strong_mismatch_zone_ids": [],
+    }
+
+
 def later_iso(first: Any, second: Any) -> str | None:
     """Return the later valid ISO timestamp."""
     a, b = parse_iso(first), parse_iso(second)
