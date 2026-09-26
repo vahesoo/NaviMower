@@ -1545,7 +1545,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             ),
         )
         schedule = getattr(self, "navimower_schedule", None)
-        schedule_state = schedule.diagnostics() if schedule is not None else None
+        schedule_state = {"enabled": schedule.enabled} if schedule is not None else None
         snapshot["task_resume"] = guard_managed_schedule_resume(
             resume_decision,
             schedule_state,
