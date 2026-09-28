@@ -54,3 +54,34 @@ def test_performance_diagnostics_expose_ingest_and_materialization_cost() -> Non
     assert '"coordinator_ingest_last_ms"' in diagnostics
     assert '"coordinator_ingest_max_ms"' in diagnostics
     assert '"card_materialization"' in diagnostics
+
+
+def test_active_session_hot_paths_use_metadata_and_incremental_tail() -> None:
+    coordinator = _source("coordinator.py")
+    zone_ledger = _source("zone_ledger_semantics.py")
+    coordinator_semantics = _source("coordinator_semantics.py")
+    schedule = _source("navimower_schedule.py")
+    services = _source("services.py")
+
+    refresh_start = coordinator.index("    def _refresh_zone_model")
+    refresh_end = coordinator.index("    def _session_completed", refresh_start)
+    refresh = coordinator[refresh_start:refresh_end]
+    assert "active_session_metadata()" in refresh
+    assert "self.history.active_session," not in refresh
+
+    assert "active_session_metadata()" in zone_ledger
+    assert "self.history.active_session_tail(after_ms=last_stamp)" in coordinator_semantics
+    assert "history.active_session_metadata()" in schedule
+    assert "coordinator.history.active_session_metadata()" in services
+
+
+def test_active_session_access_diagnostics_are_point_count_only() -> None:
+    history = _source("history.py")
+    diagnostics = _source("diagnostics.py")
+    assert "def active_session_metadata" in history
+    assert "def active_session_tail" in history
+    assert "def active_session_access_diagnostics" in history
+    assert '"active_point_count"' in history
+    assert '"last_copied_point_count"' in history
+    assert '"last_points_per_second"' in history
+    assert '"active_session_access"' in diagnostics
