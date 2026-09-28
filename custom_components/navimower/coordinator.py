@@ -1333,7 +1333,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "totals": {},
             "trail_point_count": self.history.active_point_count(),
             "sessions": self.history.session_summaries(include_points=False),
-            "trail_active": self.history.active_session is not None,
+            "trail_active": self.history.active_session_metadata() is not None,
             "gate_areas": [channel.as_dict() for channel in self.channels],
             "gates": [gate.as_dict() for gate in self.gates],
             "raw": {},
@@ -1504,6 +1504,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             candidates = snapshot.get("current_zone_ids") or []
             if len(candidates) == 1:
                 active_zone_id = _as_int(candidates[0])
+        active_session = self.history.active_session_metadata()_metadata()
         zone_states, totals = build_zone_model(
             map_zones=map_zones,
             zone_details=[
@@ -1512,7 +1513,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             ],
             coverage=snapshot.get("coverage"),
             zone_history=self.history.zone_history(),
-            active_session=self.history.active_session,
+            active_session=active_session,
             active_zone_id=active_zone_id,
             task_progress_pct=snapshot.get("mowing_progress"),
             task_mowed_area_m2=snapshot.get("session_area"),
@@ -1535,7 +1536,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         snapshot["map_area"] = totals.get("map_area_m2")
         snapshot["last_map_mowed_at"] = totals.get("last_map_mowed_at")
         snapshot["last_map_completed_at"] = totals.get("last_map_completed_at")
-        snapshot["active_cycle_id"] = (self.history.active_session or {}).get("id")
+        snapshot["active_cycle_id"] = (active_session or {}).get("id")
         self._update_last_ordered_run(snapshot)
         snapshot["last_ordered_run"] = last_ordered_run_snapshot(
             self._last_ordered_run
@@ -1543,7 +1544,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         retained_sessions = self.history.session_summaries(include_points=False)
         resume_decision = task_resume_decision(
             snapshot,
-            active_session=self.history.active_session,
+            active_session=active_session,
             retained_session=(
                 retained_sessions[-1] if retained_sessions else None
             ),
@@ -1558,7 +1559,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
         """Return success only for zones confirmed inside this observed cycle."""
         del snapshot
-        active = self.history.active_session
+        active = self.history.active_session_metadata()
         if not active:
             return None
         selected = {
@@ -4441,7 +4442,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._map_geometry or {},
             cutting_height_supported=data.get("cutting_height_supported"),
         )
-        active = self.history.active_session
+        active = self.history.active_session_metadata()
         active_meta = None
         if active is not None:
             active_meta = {
@@ -4458,9 +4459,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                     "completed",
                     "visited_zone_ids",
                     "task_zone_progress",
+                    "point_count",
                 )
             }
-            active_meta["point_count"] = len(active.get("points") or [])
         return {
             "schema_version": MAP_API_SCHEMA_VERSION,
             "entry_id": entry_id,
