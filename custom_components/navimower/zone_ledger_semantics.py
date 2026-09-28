@@ -193,7 +193,12 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
 
     map_payload = snapshot.get("map")
     map_zones = map_payload.get("zones") if isinstance(map_payload, dict) else []
-    active_session = getattr(getattr(owner, "history", None), "active_session", None)
+    history = getattr(owner, "history", None)
+    active_session = (
+        history.active_session_metadata()
+        if history is not None and hasattr(history, "active_session_metadata")
+        else None
+    )
     if not isinstance(active_session, dict):
         active_session = None
 
