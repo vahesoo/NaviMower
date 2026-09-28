@@ -264,6 +264,12 @@ async def async_get_config_entry_diagnostics(
         and hasattr(history_manager, "active_session_access_diagnostics")
         else None
     )
+    vendor_trail_recovery = (
+        coordinator.vendor_trail_store.recovery_diagnostics()
+        if hasattr(coordinator, "vendor_trail_store")
+        and hasattr(coordinator.vendor_trail_store, "recovery_diagnostics")
+        else None
+    )
     sessions = history_index.get("sessions") if isinstance(history_index, dict) else []
     sessions = sessions if isinstance(sessions, list) else []
     cycle = (
@@ -368,6 +374,7 @@ async def async_get_config_entry_diagnostics(
             "trail_point_count": trail_point_count,
             "active_session_access": active_session_access,
             "card_materialization": card_materialization,
+            "vendor_trail_recovery": vendor_trail_recovery,
         },
         "problem_history": problem_history,
         "error_investigation": {
@@ -424,6 +431,7 @@ async def async_get_config_entry_diagnostics(
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "History performance diagnostics include only point counts and timing/counter statistics; route geometry is not exported.",
+            "Vendor trail recovery diagnostics expose only bootstrap/checkpoint/backfill counts and timings; route geometry is not exported.",
             "Vendor raw payload bodies and raw notification/error bodies are not included; only curated evidence and cache shape/counts remain.",
             "User-authored names/message text are omitted from stable Download diagnostics.",
             "Exact mower X/Y and local polygon coordinates, including user-created Gate/Custom Area option geometry, are omitted from Download diagnostics.",

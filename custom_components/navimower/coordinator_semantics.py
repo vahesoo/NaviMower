@@ -114,8 +114,18 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
     def _accept_vendor_observations(self, snapshot: dict[str, Any]) -> None:
         store = self.vendor_trail_store
         store.reconcile(self._zone_ledger_shadow_state)
+        observations = snapshot.pop("_vendor_trail_observations", [])
+        observed_at_ms = int(time.time() * 1000)
+        if observations:
+            store.begin_vendor_observation_batch(observed_at_ms)
         adoption_checkpoint_ids: set[int] = set()
-        for row in snapshot.pop("_vendor_trail_observations", []):
+        for raw_row in observations:
+            row = store.prepare_observation(
+                raw_row,
+                observed_at_ms=observed_at_ms,
+            )
+            if row is None:
+                continue
             try:
                 zone_id = int(row.get("zone_id"))
             except (TypeError, ValueError):
@@ -124,6 +134,8 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             current = store.records.get(zone_id) if zone_id is not None else None
             if accepted and isinstance(current, dict) and not current.get("artifact"):
                 adoption_checkpoint_ids.add(zone_id)
+        if observations:
+            store.finish_vendor_observation_batch(observed_at_ms)
         last_stamps: list[int] = []
         needs_full_adoption_source = False
         for row in store.records.values():
