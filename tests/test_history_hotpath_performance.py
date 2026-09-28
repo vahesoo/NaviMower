@@ -85,3 +85,16 @@ def test_active_session_access_diagnostics_are_point_count_only() -> None:
     assert '"last_copied_point_count"' in history
     assert '"last_points_per_second"' in history
     assert '"active_session_access"' in diagnostics
+
+
+def test_prepared_live_uses_minimal_render_snapshot_not_full_session_copy() -> None:
+    prepared = _source("prepared_render_model.py")
+    history = _source("history.py")
+    start = prepared.index("    def _live_source")
+    end = prepared.index("    async def _build_live", start)
+    block = prepared[start:end]
+    assert "active_session_render_snapshot" in block
+    assert 'getattr(history, "active_session", None)' not in block
+    assert '"active_session": deepcopy(active_session)' not in block
+    assert "def active_session_render_snapshot" in history
+    assert '"render_snapshots"' in history
