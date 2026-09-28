@@ -426,7 +426,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         retained_sessions = coordinator.history.session_summaries(include_points=False)
         decision = task_resume_decision(
             coordinator.data,
-            active_session=coordinator.history.active_session,
+            active_session=coordinator.history.active_session_metadata(),
             retained_session=(
                 retained_sessions[-1] if retained_sessions else None
             ),
