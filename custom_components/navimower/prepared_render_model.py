@@ -525,7 +525,12 @@ def _prepared_semantic_lines(
     return rows, rendered_points
 
 
-def _semantic_route_model(session: Any) -> dict[str, Any]:
+def _semantic_route_model(
+    session: Any,
+    *,
+    cutting_segments: list[list[list[float]]] | None = None,
+    travel_segments: list[list[list[float]]] | None = None,
+) -> dict[str, Any]:
     """Classify one active History session into cutting and travel SVG paths."""
     if not isinstance(session, dict):
         return {
@@ -541,7 +546,11 @@ def _semantic_route_model(session: Any) -> dict[str, Any]:
             "travel_render_point_count": 0,
         }
 
-    _all_segments, cutting, travel = split_session_route_segments(session)
+    if cutting_segments is None or travel_segments is None:
+        _all_segments, cutting, travel = split_session_route_segments(session)
+    else:
+        cutting = cutting_segments
+        travel = travel_segments
     cutting_rows, cutting_points = _prepared_semantic_lines(
         cutting,
         kind="cutting",
@@ -659,13 +668,21 @@ def _semantic_tail_model(
 
 
 def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
-    """Prepare current route as SVG-ready paths without changing route ownership."""
+    """Prepare current route from one active-session route split."""
+    session = source.get("active_session")
+    if isinstance(session, dict):
+        all_segments, cutting_segments, travel_segments = split_session_route_segments(
+            session
+        )
+    else:
+        all_segments, cutting_segments, travel_segments = [], [], []
+
     rows: list[dict[str, Any]] = []
     total_points = 0
     all_points: list[list[float]] = []
     invalid = 0
-    for index, raw in enumerate(source.get("trail_segments") or []):
-        points = _points(raw)
+    for index, raw in enumerate(all_segments):
+        points = simplify_xy_points(raw)
         if len(points) < 2:
             if raw:
                 invalid += 1
@@ -677,7 +694,12 @@ def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
         rows.append(row)
         total_points += row["point_count"]
         all_points.extend(points)
-    semantic = _semantic_route_model(source.get("active_session"))
+
+    semantic = _semantic_route_model(
+        session,
+        cutting_segments=cutting_segments,
+        travel_segments=travel_segments,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": "live_route_render_model",
@@ -686,13 +708,13 @@ def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
         "trail_active": bool(source.get("trail_active")),
         "activity": source.get("activity"),
         "current_physical_zone_id": source.get("current_physical_zone_id"),
-        # Legacy all-movement route remains unchanged for beta15 and older cards.
+        # Legacy all-movement route is derived from the same split pass as the
+        # semantic blade-on/travel model, avoiding a second History materialization.
         "segments": rows,
         "bounds": _bounds(all_points),
         "segment_count": len(rows),
         "point_count": total_points,
         "invalid_segment_count": invalid,
-        # Future cards can render blade-on and travel paths independently.
         "semantic_route": semantic,
     }
 
@@ -990,14 +1012,17 @@ class PreparedRenderModelManager:
 
     def _live_source(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
-        payload = self.coordinator._map_payload_with_sessions([], None)  # noqa: SLF001
         history = getattr(self.coordinator, "history", None)
         render_reader = getattr(history, "active_session_render_snapshot", None)
         active_session = render_reader() if callable(render_reader) else None
+        trail_session = (
+            getattr(history, "active_session_no", 0)
+            if history is not None
+            else 0
+        )
         return {
-            "trail_segments": deepcopy(payload.get("trail_segments") or []),
-            "trail_session": payload.get("trail_session"),
-            "trail_active": bool(payload.get("trail_active")),
+            "trail_session": trail_session,
+            "trail_active": bool(data.get("trail_active")),
             "activity": data.get("activity"),
             "current_physical_zone_id": data.get("current_physical_zone_id"),
             "active_session": active_session,
