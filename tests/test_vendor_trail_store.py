@@ -342,3 +342,105 @@ def test_two_mowers_with_same_zone_id_keep_independent_storage(store, tmp_path):
     assert other.records[92]["cycle_id"] != store.records[92]["cycle_id"]
     assert len(other.records[92]["points"]) == 4
     assert len(store.records[92]["points"]) == 11
+
+
+def test_fresh_install_baselines_existing_vendor_cycle_without_importing_prefix(tmp_path):
+    storage = DiskStorage(tmp_path / "fresh.json")
+    fresh = store_module.VendorTrailStore(Hass(), "fresh", storage=storage)
+    asyncio.run(fresh.async_load())
+    assert fresh.bootstrap_mode == "from_install"
+
+    # Synthetic vendor start predates the installation checkpoint.
+    fresh.tracking_started_at_ms = 200_000
+    snap, _ = observe(fresh, start=100)
+    row = geometry(end=100, start=100)
+    fresh.begin_vendor_observation_batch(201_000)
+    prepared = fresh.prepare_observation(row, observed_at_ms=201_000)
+    assert prepared is None
+    fresh.finish_vendor_observation_batch(201_000)
+
+    assert fresh.records == {}
+    assert fresh.preinstall_skipped_point_count == 101
+    assert fresh.install_baselines[92]["source_point_offset"] == 101
+
+    # New points in the same vendor cycle are retained only from the install
+    # anchor forward; the pre-install prefix never enters the local record.
+    row = geometry(end=105, start=100)
+    fresh.begin_vendor_observation_batch(206_000)
+    prepared = fresh.prepare_observation(row, observed_at_ms=206_000)
+    assert prepared is not None
+    assert len(prepared["points"]) == 6
+    assert prepared["points"][0][:2] == [100.0, 0.0]
+    assert prepared["points"][-1][:2] == [105.0, 0.0]
+    assert fresh.accept(prepared)
+    fresh.finish_vendor_observation_batch(206_000)
+    assert len(fresh.records[92]["points"]) == 6
+    assert fresh.records[92]["bootstrap_source_point_count"] == 106
+
+
+def test_fresh_install_baseline_survives_restart_and_recovers_only_new_suffix(tmp_path):
+    storage = DiskStorage(tmp_path / "fresh-restart.json")
+    first = store_module.VendorTrailStore(Hass(), "fresh", storage=storage)
+    asyncio.run(first.async_load())
+    first.tracking_started_at_ms = 200_000
+    snap, _ = observe(first, start=100)
+
+    first.begin_vendor_observation_batch(201_000)
+    assert first.prepare_observation(
+        geometry(end=100, start=100),
+        observed_at_ms=201_000,
+    ) is None
+    first.finish_vendor_observation_batch(201_000)
+
+    first.begin_vendor_observation_batch(206_000)
+    prepared = first.prepare_observation(
+        geometry(end=105, start=100),
+        observed_at_ms=206_000,
+    )
+    assert prepared is not None and first.accept(prepared)
+    first.finish_vendor_observation_batch(206_000)
+    asyncio.run(first.async_flush())
+
+    restored = store_module.VendorTrailStore(Hass(), "fresh", storage=storage)
+    asyncio.run(restored.async_load())
+    assert restored.bootstrap_mode == "from_install"
+    assert restored.install_baselines[92]["source_point_offset"] == 101
+    assert restored.recovery_checkpoint_at_ms == 206_000
+    assert restored._restart_recovery_pending is True
+
+    observe(restored, start=100, observation=2)
+    restored.begin_vendor_observation_batch(216_000)
+    prepared = restored.prepare_observation(
+        geometry(end=115, start=100),
+        observed_at_ms=216_000,
+    )
+    assert prepared is not None
+    assert len(prepared["points"]) == 16
+    assert restored.accept(prepared)
+    restored.finish_vendor_observation_batch(216_000)
+
+    diag = restored.recovery_diagnostics()
+    assert diag["recovery_count"] == 1
+    assert diag["last_recovery_backfill_seconds"] == 10.0
+    assert diag["last_recovery_backfill_point_count"] == 10
+    assert diag["last_recovery_backfill_zone_count"] == 1
+    assert len(restored.records[92]["points"]) == 16
+
+
+def test_existing_store_without_recovery_metadata_is_upgrade_not_fresh_install(tmp_path):
+    storage = DiskStorage(tmp_path / "legacy.json")
+    legacy = store_module.VendorTrailStore(Hass(), "legacy", storage=storage)
+    observe(legacy)
+    assert legacy.accept(geometry(end=10))
+    # Simulate pre-beta6 storage format.
+    asyncio.run(storage.async_save({
+        "ledger": legacy.ledger,
+        "records": legacy.records,
+        "revision": legacy.revision,
+    }))
+
+    restored = store_module.VendorTrailStore(Hass(), "legacy", storage=storage)
+    asyncio.run(restored.async_load())
+    assert restored.bootstrap_mode == "existing_store_migration"
+    assert len(restored.records[92]["points"]) == 11
+    assert restored.install_baselines == {}
