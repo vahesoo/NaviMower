@@ -17,6 +17,7 @@ from .const import DOMAIN
 from .session_svg import (
     SESSION_SVG_CLASSIFIER_VERSION,
     build_session_svg_archive,
+    build_session_svg_archive_profiled,
     render_matches_session,
 )
 
@@ -147,6 +148,15 @@ class SessionArchiveManager:
         self.last_build_ms: float | None = None
         self.last_error: str | None = None
         self.last_session_id: str | None = None
+        self.last_build_source_point_count = 0
+        self.last_build_render_point_count = 0
+        self.max_session_point_count = 0
+        self.retained_point_count_total = 0
+        self.last_cache_miss_reason: str | None = None
+        self.last_build_reason: str | None = None
+        self.last_build_stage_ms: dict[str, float | int | str | None] = {}
+        self.prewarm_started_mono: float | None = None
+        self.prewarm_total_ms: float | None = None
 
         # Prepared History lifecycle and transport counters.
         self.prewarm_started = False
@@ -174,6 +184,7 @@ class SessionArchiveManager:
         self._last_revision = self.history.active_session_no
         self._unsub = self.coordinator.async_add_listener(self._state_updated)
         self.prewarm_started = True
+        self.prewarm_started_mono = time.perf_counter()
         self._prewarm_task = self.hass.async_create_task(
             self._async_prewarm_retained(),
             f"Prewarm Navimower History renders {self.entry_id}",
@@ -314,6 +325,11 @@ class SessionArchiveManager:
             self._prune_memory()
             await self._async_prune_archive_stores()
             self.prewarm_complete = True
+            if self.prewarm_started_mono is not None:
+                self.prewarm_total_ms = round(
+                    (time.perf_counter() - self.prewarm_started_mono) * 1000.0,
+                    2,
+                )
         except asyncio.CancelledError:
             raise
         finally:
@@ -367,47 +383,103 @@ class SessionArchiveManager:
         requested = str(session_id)
         lock = self._locks.setdefault(requested, asyncio.Lock())
         async with lock:
+            total_started = time.perf_counter()
+
+            stage_started = time.perf_counter()
             session = await self.history.async_session_payload(requested)
+            session_load_ms = round((time.perf_counter() - stage_started) * 1000.0, 3)
             if not isinstance(session, dict) or session.get("active"):
                 return None
 
+            source_point_count = len(session.get("points") or [])
+            self.max_session_point_count = max(
+                self.max_session_point_count,
+                source_point_count,
+            )
+
             store = _archive_store(self.hass, self.entry_id, requested)
+            stage_started = time.perf_counter()
             try:
                 cached = await store.async_load()
             except Exception:  # noqa: BLE001
                 cached = None
+            cache_load_ms = round((time.perf_counter() - stage_started) * 1000.0, 3)
             if render_matches_session(cached, session):
                 self.cache_hits += 1
                 if reason == "prewarm":
                     self.prewarm_cache_hit_count += 1
+                publish_started = time.perf_counter()
                 self._publish_resource(requested, cached)
+                publish_ms = round((time.perf_counter() - publish_started) * 1000.0, 3)
                 if reason != "prewarm":
                     await self._async_save_archive_index()
                 self.last_session_id = requested
                 self.last_error = None
+                self.last_build_stage_ms = {
+                    "session_load_ms": session_load_ms,
+                    "cache_load_ms": cache_load_ms,
+                    "publish_ms": publish_ms,
+                    "total_ms": round(
+                        (time.perf_counter() - total_started) * 1000.0,
+                        3,
+                    ),
+                    "cache_hit": True,
+                }
                 return deepcopy(cached)
 
+            if cached is None:
+                cache_miss_reason = "missing_archive"
+            elif not isinstance(cached, dict):
+                cache_miss_reason = "invalid_archive"
+            else:
+                cached_source = cached.get("source")
+                current_source = {
+                    "session_id": str(session.get("id") or ""),
+                    "point_count": source_point_count,
+                    "ended_at_ms": session.get("ended_at_ms"),
+                    "segment_count": max(
+                        1,
+                        len(session.get("segment_starts_ms") or []),
+                    ),
+                    "classifier_version": SESSION_SVG_CLASSIFIER_VERSION,
+                }
+                cache_miss_reason = (
+                    "source_fingerprint_changed"
+                    if cached_source != current_source
+                    else "schema_or_version_changed"
+                )
+            self.last_cache_miss_reason = cache_miss_reason
+
+            copy_started = time.perf_counter()
             render_session = deepcopy(session)
+            session_copy_ms = round((time.perf_counter() - copy_started) * 1000.0, 3)
             if render_session.get("mowing_path_width_m") is None:
                 width = (self.coordinator.data or {}).get("mowing_path_width_m")
                 if width is not None:
                     render_session["mowing_path_width_m"] = width
-            started = time.perf_counter()
+
+            build_started = time.perf_counter()
             try:
-                artifact = await self.hass.async_add_executor_job(
-                    build_session_svg_archive,
+                artifact, render_profile = await self.hass.async_add_executor_job(
+                    build_session_svg_archive_profiled,
                     render_session,
                 )
             except Exception as err:
                 self.failure_count += 1
                 self.last_error = type(err).__name__
                 raise
+            build_ms = round((time.perf_counter() - build_started) * 1000.0, 3)
             if artifact is None:
                 return None
 
             # Re-read after CPU work. A docked session can reopen during the
             # five-minute continuation window; never publish that stale archive.
+            validate_started = time.perf_counter()
             latest = await self.history.async_session_payload(requested)
+            validation_reload_ms = round(
+                (time.perf_counter() - validate_started) * 1000.0,
+                3,
+            )
             if (
                 not isinstance(latest, dict)
                 or latest.get("active")
@@ -415,22 +487,49 @@ class SessionArchiveManager:
             ):
                 return None
 
+            save_started = time.perf_counter()
             try:
                 await store.async_save(artifact)
             except Exception as err:
                 self.failure_count += 1
                 self.last_error = type(err).__name__
                 raise
+            store_save_ms = round((time.perf_counter() - save_started) * 1000.0, 3)
 
             self.build_count += 1
             if reason == "prewarm":
                 self.prewarm_build_count += 1
             else:
                 self.lazy_build_count += 1
-            self.last_build_ms = round((time.perf_counter() - started) * 1000.0, 2)
+
+            publish_started = time.perf_counter()
             self._publish_resource(requested, artifact)
+            publish_ms = round((time.perf_counter() - publish_started) * 1000.0, 3)
             if reason != "prewarm":
                 await self._async_save_archive_index()
+
+            render_point_count = int(
+                ((artifact.get("route") or {}).get("render_point_count") or 0)
+            )
+            self.last_build_ms = round(
+                (time.perf_counter() - total_started) * 1000.0,
+                2,
+            )
+            self.last_build_source_point_count = source_point_count
+            self.last_build_render_point_count = render_point_count
+            self.last_build_reason = reason
+            self.last_build_stage_ms = {
+                "session_load_ms": session_load_ms,
+                "cache_load_ms": cache_load_ms,
+                "session_copy_ms": session_copy_ms,
+                "render_executor_ms": build_ms,
+                "validation_reload_ms": validation_reload_ms,
+                "store_save_ms": store_save_ms,
+                "publish_ms": publish_ms,
+                "render_profile": render_profile,
+                "total_ms": self.last_build_ms,
+                "cache_hit": False,
+            }
             self.last_session_id = requested
             self.last_error = None
             return deepcopy(artifact)
@@ -562,6 +661,16 @@ class SessionArchiveManager:
             if not row.get("active") and int(row.get("point_count") or 0) >= 2
         }
         ready_ids = eligible_ids.intersection(self._resources_by_session)
+        self.retained_point_count_total = sum(
+            int(row.get("point_count") or 0)
+            for row in retained_rows
+            if not row.get("active")
+        )
+        if retained_rows:
+            self.max_session_point_count = max(
+                self.max_session_point_count,
+                max(int(row.get("point_count") or 0) for row in retained_rows),
+            )
         return {
             "store_version": _ARCHIVE_STORE_VERSION,
             "prepared_history_schema_version": _HISTORY_RESOURCE_SCHEMA_VERSION,
@@ -612,6 +721,14 @@ class SessionArchiveManager:
             "failure_count": self.failure_count,
             "scan_failure_count": self.scan_failure_count,
             "last_build_ms": self.last_build_ms,
+            "last_build_source_point_count": self.last_build_source_point_count,
+            "last_build_render_point_count": self.last_build_render_point_count,
+            "max_session_point_count": self.max_session_point_count,
+            "retained_point_count_total": self.retained_point_count_total,
+            "last_cache_miss_reason": self.last_cache_miss_reason,
+            "last_build_reason": self.last_build_reason,
+            "last_build_stage_ms": deepcopy(self.last_build_stage_ms),
+            "prewarm_total_ms": self.prewarm_total_ms,
             "last_error": self.last_error,
             "last_session_id": self.last_session_id,
         }

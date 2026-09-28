@@ -64,6 +64,15 @@ def test_completed_session_archive_manager() -> None:
         def matches(render, session):
             return isinstance(render, dict) and render.get("source") == fingerprint(session)
         svg.build_session_svg_archive = build
+        svg.build_session_svg_archive_profiled = lambda session: (
+            build(session),
+            {
+                "source_point_count": len(session["points"]),
+                "route_render_point_count": len(session["points"]),
+                "total_ms": 0.01,
+                "reason": "built",
+            },
+        )
         svg.render_matches_session = matches
 
         spec = importlib.util.spec_from_file_location(
@@ -113,6 +122,12 @@ def test_completed_session_archive_manager() -> None:
             assert first_diag["cache_hits"] == 0
             assert first_diag["failure_count"] == 0
             assert first_diag["last_build_ms"] is not None
+            assert first_diag["last_build_source_point_count"] == 2
+            assert first_diag["last_build_render_point_count"] == 0
+            assert first_diag["last_cache_miss_reason"] == "missing_archive"
+            assert first_diag["last_build_reason"] == "legacy"
+            assert first_diag["last_build_stage_ms"]["cache_hit"] is False
+            assert first_diag["last_build_stage_ms"]["render_profile"]["source_point_count"] == 2
             assert first_diag["last_session_id"] == "s1"
             assert await manager.async_get("s1") == artifact
             cached_diag = manager.diagnostics()

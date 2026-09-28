@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime
 import math
+import time
 from typing import Any, Iterable
 
 from .const import (
@@ -426,24 +427,55 @@ def render_matches_session(render: Any, session: dict[str, Any]) -> bool:
     )
 
 
-def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a compact SVG-ready archive for one completed session."""
+def build_session_svg_archive_profiled(
+    session: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Build one archive and return privacy-safe stage timings/counts."""
+    total_started = time.perf_counter()
+    profile: dict[str, Any] = {
+        "source_point_count": len(session.get("points") or []),
+        "source_segment_count": max(1, len(session.get("segment_starts_ms") or [])),
+    }
     if session.get("active"):
-        return None
+        profile["reason"] = "active_session"
+        profile["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 3)
+        return None, profile
+
+    stage_started = time.perf_counter()
     all_segments, cutting_segments, travel_segments = split_session_route_segments(session)
+    profile["route_split_ms"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+    profile["all_segment_count"] = len(all_segments)
+    profile["cutting_segment_count"] = len(cutting_segments)
+    profile["travel_segment_count"] = len(travel_segments)
     if not all_segments:
-        return None
+        profile["reason"] = "no_route_segments"
+        profile["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 3)
+        return None, profile
 
     swath_width = _as_float(session.get("mowing_path_width_m"))
     if swath_width is None or not 0.1 <= swath_width <= 2.0:
         swath_width = SWATH_WIDTH_M
+
+    stage_started = time.perf_counter()
     occupied, grid_size = _rasterize_swath(cutting_segments, width_m=swath_width)
+    profile["swath_raster_ms"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+    profile["occupied_cell_count"] = len(occupied)
+
+    stage_started = time.perf_counter()
     loops = _boundary_loops(occupied) if occupied else []
+    profile["boundary_trace_ms"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+    profile["boundary_loop_count"] = len(loops)
+
+    stage_started = time.perf_counter()
     mowed_path = _loops_path(loops, grid_size) if loops else ""
     travel_path, travel_points = _polyline_path(travel_segments)
     route_path, route_points = _polyline_path(all_segments)
+    profile["svg_path_encode_ms"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+    profile["travel_render_point_count"] = travel_points
+    profile["route_render_point_count"] = route_points
 
-    return {
+    stage_started = time.perf_counter()
+    artifact = {
         "version": SESSION_SVG_ARCHIVE_VERSION,
         "coordinate_space": "map_xy_m",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -479,3 +511,13 @@ def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
             "bbox": _bbox(all_segments),
         },
     }
+    profile["artifact_assemble_ms"] = round((time.perf_counter() - stage_started) * 1000.0, 3)
+    profile["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 3)
+    profile["reason"] = "built"
+    return artifact, profile
+
+
+def build_session_svg_archive(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a compact SVG-ready archive for one completed session."""
+    artifact, _profile = build_session_svg_archive_profiled(session)
+    return artifact
