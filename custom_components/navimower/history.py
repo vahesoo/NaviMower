@@ -452,6 +452,12 @@ class NavimowerHistory:
         self._active_full_copy_max_ms = 0.0
         self._active_full_copy_last_point_count = 0
         self._active_full_copy_max_point_count = 0
+        self._active_render_read_count = 0
+        self._active_render_read_total_ms = 0.0
+        self._active_render_read_last_ms: float | None = None
+        self._active_render_read_max_ms = 0.0
+        self._active_render_last_point_count = 0
+        self._active_render_max_point_count = 0
 
     # ---------------------------------------------------------------- load
     async def async_load(self) -> None:
@@ -1844,6 +1850,42 @@ class NavimowerHistory:
             result["point_count"] = point_count
         return result
 
+    def active_session_render_snapshot(self) -> dict[str, Any] | None:
+        """Return the minimal active-session payload needed by prepared live rendering."""
+        started = time.perf_counter()
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            if not isinstance(active, dict):
+                result = None
+                point_count = 0
+            else:
+                points = active.get("points")
+                points = points if isinstance(points, list) else []
+                point_count = len(points)
+                result = {
+                    "id": active.get("id"),
+                    "active": bool(active.get("active", True)),
+                    "points": deepcopy(points),
+                    "segment_starts_ms": deepcopy(
+                        active.get("segment_starts_ms") or []
+                    ),
+                }
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            self._active_render_read_count += 1
+            self._active_render_read_total_ms += elapsed_ms
+            self._active_render_read_last_ms = round(elapsed_ms, 3)
+            self._active_render_read_max_ms = max(
+                self._active_render_read_max_ms,
+                elapsed_ms,
+            )
+            self._active_render_last_point_count = point_count
+            self._active_render_max_point_count = max(
+                self._active_render_max_point_count,
+                point_count,
+            )
+        return result
+
     def active_session_tail(
         self,
         *,
@@ -1919,9 +1961,11 @@ class NavimowerHistory:
             metadata_count = self._active_metadata_read_count
             tail_count = self._active_tail_read_count
             full_count = self._active_full_copy_count
+            render_count = self._active_render_read_count
             metadata_last_ms = self._active_metadata_read_last_ms
             tail_last_ms = self._active_tail_read_last_ms
             full_last_ms = self._active_full_copy_last_ms
+            render_last_ms = self._active_render_read_last_ms
 
             def _average(total: float, count: int) -> float | None:
                 return round(total / count, 3) if count else None
@@ -1957,6 +2001,21 @@ class NavimowerHistory:
                     "last_points_per_second": _throughput(
                         self._active_tail_last_copied_points,
                         tail_last_ms,
+                    ),
+                },
+                "render_snapshots": {
+                    "count": render_count,
+                    "last_ms": render_last_ms,
+                    "max_ms": round(self._active_render_read_max_ms, 3),
+                    "avg_ms": _average(
+                        self._active_render_read_total_ms,
+                        render_count,
+                    ),
+                    "last_point_count": self._active_render_last_point_count,
+                    "max_point_count": self._active_render_max_point_count,
+                    "last_points_per_second": _throughput(
+                        self._active_render_last_point_count,
+                        render_last_ms,
                     ),
                 },
                 "full_copies": {
