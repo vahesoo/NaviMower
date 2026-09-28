@@ -2,6 +2,44 @@
 
 This changelog lists stable releases. Detailed prerelease/beta history remains available in GitHub Releases and under `.github/release-notes/`.
 
+## 0.4.6 - 2026-09-28
+
+Stable cumulative release from the tested 0.4.6 beta line through `0.4.6-beta8`. This release is primarily a **Home Assistant stability and History-performance** update, with scheduler/Resume hardening and safer first-install trail recovery.
+
+### Home Assistant main-thread and History performance
+
+- Remove repeated full active-trail materialization from normal MQTT/coordinator updates.
+- Replace recurring full active-session copies with metadata-only reads or incremental point tails.
+- Add a minimal active-session render snapshot for Prepared Live and derive legacy plus semantic live routes from one History split pass.
+- Keep the public Map API compatibility trail available for explicit consumers without putting it back on the normal MQTT hot path.
+- Add privacy-safe performance diagnostics for History access, Prepared Live and Prepared History build stages.
+
+These changes address the large retained-session CPU/main-thread failure mode reported in issue #406.
+
+### First install and restart recovery
+
+- Do not import/download the vendor-retained prefix of a mowing cycle that started before a genuinely fresh Navimower installation.
+- Persist an install/recovery checkpoint so a normal Home Assistant restart recovers only route geometry that appeared while Home Assistant was down.
+- Preserve existing retained History and VendorTrailStore data during upgrades.
+- Keep new post-install mowing cycles eligible for normal vendor retained-trail recovery.
+
+### Schedule and Resume reliability
+
+- Harden managed Schedule start confirmation so dispatch state is not advanced without evidence that the mower actually accepted/started the task.
+- Keep Schedule and Resume/continue-task ownership coherent across interrupted managed runs.
+
+### Prepared History and render diagnostics
+
+- Expose retained point totals, largest session size, cache-hit/build state and cold-build stage timings without exporting route geometry.
+- Keep Prepared History cache reuse intact across the 0.4.6 upgrade.
+- Reduce Prepared Live route preparation to one render snapshot and one classification/split pass.
+
+### Compatibility
+
+- Existing config entries, entity/device unique IDs, retained History/session Stores, Schedule state, Gate/Custom Area configuration and map resources are preserved.
+- No 0.4.6 beta needs to be installed before this stable release.
+- Existing public Map API compatibility fields remain available for older frontend consumers.
+
 ## 0.4.5 - 2026-09-26
 
 Stable cumulative release from the tested 0.4.5 beta line through `0.4.5-beta45`, with one final privacy-only MQTT startup-log masking fix. Existing config entries and storage remain compatible.
