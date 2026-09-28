@@ -675,7 +675,13 @@ def build_live_route_render_model(source: dict[str, Any]) -> dict[str, Any]:
             session
         )
     else:
-        all_segments, cutting_segments, travel_segments = [], [], []
+        # Retain the standalone helper's legacy input contract for tests and
+        # non-manager callers. Prepared Live itself no longer supplies this key.
+        all_segments = [
+            _points(raw)
+            for raw in source.get("trail_segments") or []
+        ]
+        cutting_segments, travel_segments = [], []
 
     rows: list[dict[str, Any]] = []
     total_points = 0
