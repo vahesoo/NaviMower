@@ -207,6 +207,20 @@ class _FakeHistory:
     active_session_no = 3
     trail_revision = 10
 
+    def __init__(self) -> None:
+        self.render_points = [
+            [1, 0.0, 0.0, 1, 0, 4, "mowing", 5],
+            [2, 1.0, 0.0, 1, 0, 4, "mowing", 5],
+        ]
+
+    def active_session_render_snapshot(self):
+        return {
+            "id": "fake-active",
+            "active": True,
+            "points": [list(point) for point in self.render_points],
+            "segment_starts_ms": [1],
+        }
+
 
 class _FakeStore:
     revision = 7
@@ -288,7 +302,11 @@ def test_manager_prewarms_and_only_rebuilds_static_geometry_when_needed() -> Non
             assert same["live_build_count"] == 1
 
             owner.history.trail_revision += 1
-            owner.live_segments = [[[0, 0], [2, 0], [3, 1]]]
+            owner.history.render_points = [
+                [1, 0.0, 0.0, 1, 0, 4, "mowing", 5],
+                [2, 2.0, 0.0, 1, 0, 4, "mowing", 5],
+                [3, 3.0, 1.0, 1, 0, 4, "mowing", 5],
+            ]
             manager.request_refresh()
             await _wait_tasks(manager)
             live_changed = manager.diagnostics()
