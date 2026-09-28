@@ -992,16 +992,15 @@ class PreparedRenderModelManager:
         data = self.coordinator.data or {}
         payload = self.coordinator._map_payload_with_sessions([], None)  # noqa: SLF001
         history = getattr(self.coordinator, "history", None)
-        active_session = getattr(history, "active_session", None)
+        render_reader = getattr(history, "active_session_render_snapshot", None)
+        active_session = render_reader() if callable(render_reader) else None
         return {
             "trail_segments": deepcopy(payload.get("trail_segments") or []),
             "trail_session": payload.get("trail_session"),
             "trail_active": bool(payload.get("trail_active")),
             "activity": data.get("activity"),
             "current_physical_zone_id": data.get("current_physical_zone_id"),
-            "active_session": deepcopy(active_session)
-            if isinstance(active_session, dict)
-            else None,
+            "active_session": active_session,
         }
 
     async def _build_live(self) -> None:
