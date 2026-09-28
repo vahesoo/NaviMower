@@ -1504,7 +1504,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             candidates = snapshot.get("current_zone_ids") or []
             if len(candidates) == 1:
                 active_zone_id = _as_int(candidates[0])
-        active_session = self.history.active_session_metadata()_metadata()
+        active_session = self.history.active_session_metadata()
         zone_states, totals = build_zone_model(
             map_zones=map_zones,
             zone_details=[
@@ -3255,7 +3255,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     def _mow_command_state_snapshot(self) -> dict[str, Any]:
         """Return the small live-state subset useful for command debugging."""
         data = self.data or {}
-        active_session = self.history.active_session
+        active_session = self.history.active_session_metadata()
         return {
             "state_code": data.get("state_code"),
             "activity": data.get("activity"),
