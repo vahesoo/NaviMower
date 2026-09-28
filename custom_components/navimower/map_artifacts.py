@@ -266,7 +266,7 @@ class MapArtifactManager:
                     # published base before the next Map API read.
                     self.store.update_live_tail(
                         self.coordinator.data or {},
-                        getattr(self.coordinator.history, "active_session", None),
+                        self.coordinator.history.active_session_tail(after_ms=0),
                     )
                     self.store.schedule_save()
                     refresh = self.request_refresh()
