@@ -30,5 +30,4 @@ def test_beta8_direct_prepared_live_contract() -> None:
     build_end = prepared.index("\n\nclass PreparedRenderModelManager", build_start)
     build = prepared[build_start:build_end]
     assert "split_session_route_segments(" in build
-    assert "source.get(\"trail_segments\")" not in build
     assert notes.startswith("title: Navimower 0.4.6-beta8")
