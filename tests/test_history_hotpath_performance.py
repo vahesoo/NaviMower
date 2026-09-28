@@ -98,3 +98,20 @@ def test_prepared_live_uses_minimal_render_snapshot_not_full_session_copy() -> N
     assert '"active_session": deepcopy(active_session)' not in block
     assert "def active_session_render_snapshot" in history
     assert '"render_snapshots"' in history
+
+
+def test_prepared_live_builds_directly_from_render_snapshot_once() -> None:
+    prepared = _source("prepared_render_model.py")
+    start = prepared.index("    def _live_source")
+    end = prepared.index("    async def _build_live", start)
+    live_source = prepared[start:end]
+    assert "_map_payload_with_sessions" not in live_source
+    assert "active_session_render_snapshot" in live_source
+    assert '"trail_segments"' not in live_source
+
+    build_start = prepared.index("def build_live_route_render_model")
+    build_end = prepared.index("\n\nclass PreparedRenderModelManager", build_start)
+    build = prepared[build_start:build_end]
+    assert "split_session_route_segments(" in build
+    assert "cutting_segments=cutting_segments" in build
+    assert "travel_segments=travel_segments" in build
