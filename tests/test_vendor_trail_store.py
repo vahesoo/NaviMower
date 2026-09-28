@@ -444,3 +444,64 @@ def test_existing_store_without_recovery_metadata_is_upgrade_not_fresh_install(t
     assert restored.bootstrap_mode == "existing_store_migration"
     assert len(restored.records[92]["points"]) == 11
     assert restored.install_baselines == {}
+
+
+def test_fresh_install_vendor_fetch_filter_blocks_preinstall_cycles(tmp_path):
+    fresh = store_module.VendorTrailStore(
+        Hass(),
+        "fresh-filter",
+        storage=DiskStorage(tmp_path / "fresh-filter.json"),
+    )
+    asyncio.run(fresh.async_load())
+    fresh.tracking_started_at_ms = 200_000
+
+    requested = fresh.vendor_fetch_zone_ids(
+        [91, 92, 93],
+        {
+            91: {"start_time": 100},
+            92: {"start_time": 210},
+            93: {"start_time": 0},
+        },
+    )
+    assert requested == [92]
+    diag = fresh.recovery_diagnostics()
+    assert diag["last_vendor_fetch_candidate_zone_count"] == 3
+    assert diag["last_vendor_fetch_requested_zone_count"] == 1
+    assert diag["last_vendor_fetch_blocked_zone_count"] == 2
+
+
+def test_beta6_baseline_remains_fetchable_after_beta7_upgrade(tmp_path):
+    fresh = store_module.VendorTrailStore(
+        Hass(),
+        "fresh-baseline",
+        storage=DiskStorage(tmp_path / "fresh-baseline.json"),
+    )
+    asyncio.run(fresh.async_load())
+    fresh.tracking_started_at_ms = 200_000
+    fresh.install_baselines[92] = {
+        "cycle_id": "existing-beta6-cycle",
+        "source_point_offset": 100,
+        "anchor_xy": [1.0, 2.0],
+    }
+
+    requested = fresh.vendor_fetch_zone_ids(
+        [92],
+        {92: {"start_time": 100}},
+    )
+    assert requested == [92]
+
+
+def test_existing_install_vendor_fetch_filter_remains_unrestricted(tmp_path):
+    storage = DiskStorage(tmp_path / "existing-filter.json")
+    asyncio.run(storage.async_save({
+        "ledger": {"revision": 0, "zones": {}, "task": {}},
+        "records": {},
+        "revision": 0,
+    }))
+    restored = store_module.VendorTrailStore(Hass(), "existing", storage=storage)
+    asyncio.run(restored.async_load())
+    assert restored.bootstrap_mode == "existing_store_migration"
+    assert restored.vendor_fetch_zone_ids(
+        [91, 92],
+        {91: {"start_time": 100}, 92: {"start_time": 100}},
+    ) == [91, 92]

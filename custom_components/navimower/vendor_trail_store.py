@@ -62,6 +62,9 @@ class VendorTrailStore:
         self._batch_recovery = False
         self._batch_backfill_points = 0
         self._batch_backfill_zones: set[int] = set()
+        self.last_vendor_fetch_candidate_zone_count = 0
+        self.last_vendor_fetch_requested_zone_count = 0
+        self.last_vendor_fetch_blocked_zone_count = 0
 
     def export(self) -> dict[str, Any]:
         return deepcopy(
@@ -322,6 +325,48 @@ class VendorTrailStore:
         self._batch_backfill_points = 0
         self._batch_backfill_zones = set()
 
+    def vendor_fetch_zone_ids(
+        self,
+        candidate_zone_ids: list[int],
+        coverage: dict[int, dict[str, Any]],
+    ) -> list[int]:
+        """Return zones safe to request from vendor retained-trail transport.
+
+        Fresh installs must not download a route prefix from a mowing cycle that
+        already existed before tracking started. Existing beta6 baselines remain
+        fetchable so upgrades preserve their restart-recovery contract.
+        """
+        candidates = sorted({int(zone_id) for zone_id in candidate_zone_ids if int(zone_id) > 0})
+        self.last_vendor_fetch_candidate_zone_count = len(candidates)
+        if self.bootstrap_mode != "from_install":
+            self.last_vendor_fetch_requested_zone_count = len(candidates)
+            self.last_vendor_fetch_blocked_zone_count = 0
+            return candidates
+
+        tracking_s = (
+            int(self.tracking_started_at_ms / 1000)
+            if self.tracking_started_at_ms is not None
+            else None
+        )
+        requested: list[int] = []
+        for zone_id in candidates:
+            if zone_id in self.install_baselines or zone_id in self.records:
+                requested.append(zone_id)
+                continue
+            row = coverage.get(zone_id)
+            start_time = as_int(row.get("start_time")) if isinstance(row, dict) else None
+            if (
+                tracking_s is not None
+                and start_time is not None
+                and start_time > 0
+                and start_time >= tracking_s
+            ):
+                requested.append(zone_id)
+
+        self.last_vendor_fetch_requested_zone_count = len(requested)
+        self.last_vendor_fetch_blocked_zone_count = len(candidates) - len(requested)
+        return requested
+
     def recovery_diagnostics(self) -> dict[str, Any]:
         """Return privacy-safe fresh-install/restart recovery state."""
         return {
@@ -336,6 +381,9 @@ class VendorTrailStore:
             "last_recovery_backfill_seconds": self.last_recovery_backfill_seconds,
             "last_recovery_backfill_point_count": self.last_recovery_backfill_point_count,
             "last_recovery_backfill_zone_count": self.last_recovery_backfill_zone_count,
+            "last_vendor_fetch_candidate_zone_count": self.last_vendor_fetch_candidate_zone_count,
+            "last_vendor_fetch_requested_zone_count": self.last_vendor_fetch_requested_zone_count,
+            "last_vendor_fetch_blocked_zone_count": self.last_vendor_fetch_blocked_zone_count,
         }
 
     def accept(self, row: dict[str, Any]) -> bool:

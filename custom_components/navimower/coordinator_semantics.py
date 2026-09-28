@@ -239,8 +239,21 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
     def _refresh_vendor_trail_debug(self, snapshot: dict[str, Any]) -> None:
         """Poll retained vendor geometry at a bounded active-mowing cadence."""
         active = self._private_poll_active()
-        zone_ids = sorted({int(row["id"]) for row in (snapshot.get("map") or {}).get("zones", []) if row.get("id")} | set(coverage_by_zone(snapshot)))
+        fresh_coverage = coverage_by_zone(snapshot)
+        candidate_zone_ids = sorted(
+            {
+                int(row["id"])
+                for row in (snapshot.get("map") or {}).get("zones", [])
+                if row.get("id")
+            }
+            | set(fresh_coverage)
+        )
+        zone_ids = self.vendor_trail_store.vendor_fetch_zone_ids(
+            candidate_zone_ids,
+            fresh_coverage,
+        )
         if not zone_ids:
+            self._vendor_trail_last_zone_ids = ()
             return
         zone_key = tuple(zone_ids)
         now = time.monotonic()
@@ -261,7 +274,6 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
                 {"vehicle_sn": self.sn, "partitionList": list(zone_ids)},
             )
             decoded = decode_vendor_trail_response(payload)
-            fresh_coverage = coverage_by_zone(snapshot)
             decoded_by_id: dict[int, dict[str, Any]] = {}
             for row in decoded:
                 if not isinstance(row, dict):
