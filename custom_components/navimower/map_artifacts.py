@@ -264,9 +264,16 @@ class MapArtifactManager:
                     self.last_checkpoint_error = None
                     # Re-anchor already collected MQTT points to the newly
                     # published base before the next Map API read.
+                    history = self.coordinator.history
+                    tail_reader = getattr(history, "active_session_tail", None)
+                    reanchor_session = (
+                        tail_reader(after_ms=0)
+                        if callable(tail_reader)
+                        else getattr(history, "active_session", None)
+                    )
                     self.store.update_live_tail(
                         self.coordinator.data or {},
-                        getattr(self.coordinator.history, "active_session", None),
+                        reanchor_session,
                     )
                     self.store.schedule_save()
                     refresh = self.request_refresh()

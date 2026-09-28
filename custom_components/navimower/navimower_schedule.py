@@ -646,7 +646,11 @@ class NavimowerScheduleController:
         ):
             return False
         history = getattr(self.coordinator, "history", None)
-        active = getattr(history, "active_session", None)
+        active = (
+            history.active_session_metadata()
+            if history is not None and hasattr(history, "active_session_metadata")
+            else None
+        )
         if not isinstance(active, dict) or not active.get("id"):
             return False
         try:

@@ -124,7 +124,25 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             current = store.records.get(zone_id) if zone_id is not None else None
             if accepted and isinstance(current, dict) and not current.get("artifact"):
                 adoption_checkpoint_ids.add(zone_id)
-        store.update_live_tail(snapshot, self.history.active_session)
+        last_stamps: list[int] = []
+        needs_full_adoption_source = False
+        for row in store.records.values():
+            tail = row.get("tail") if isinstance(row, dict) else None
+            if not isinstance(tail, dict) or not tail.get("initialized"):
+                needs_full_adoption_source = True
+                break
+            last_stamps.append(int(tail.get("last_stamp") or 0))
+        last_stamp = (
+            0
+            if needs_full_adoption_source
+            else min(last_stamps, default=0)
+        )
+        live_session = (
+            self.history.active_session_tail(after_ms=last_stamp)
+            if store.records
+            else None
+        )
+        store.update_live_tail(snapshot, live_session)
         self._vendor_trail_cache = store.records
         self._vendor_trail_revision = store.revision
         artifacts = getattr(self, "map_artifacts", None)

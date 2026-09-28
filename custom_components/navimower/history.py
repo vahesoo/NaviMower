@@ -430,6 +430,28 @@ class NavimowerHistory:
         self._card_materialize_count = 0
         self._card_materialize_last_ms: float | None = None
         self._card_materialize_max_ms: float = 0.0
+        # Keep active-session access costs observable without exporting route
+        # geometry. Metadata reads exclude points; live-tail reads copy only the
+        # suffix required by VendorTrailStore; full copies remain available for
+        # explicit on-demand compatibility paths.
+        self._active_metadata_read_count = 0
+        self._active_metadata_read_total_ms = 0.0
+        self._active_metadata_read_last_ms: float | None = None
+        self._active_metadata_read_max_ms = 0.0
+        self._active_metadata_last_point_count = 0
+        self._active_tail_read_count = 0
+        self._active_tail_read_total_ms = 0.0
+        self._active_tail_read_last_ms: float | None = None
+        self._active_tail_read_max_ms = 0.0
+        self._active_tail_last_copied_points = 0
+        self._active_tail_max_copied_points = 0
+        self._active_tail_last_total_points = 0
+        self._active_full_copy_count = 0
+        self._active_full_copy_total_ms = 0.0
+        self._active_full_copy_last_ms: float | None = None
+        self._active_full_copy_max_ms = 0.0
+        self._active_full_copy_last_point_count = 0
+        self._active_full_copy_max_point_count = 0
 
     # ---------------------------------------------------------------- load
     async def async_load(self) -> None:
@@ -1768,7 +1790,191 @@ class NavimowerHistory:
     # --------------------------------------------------------------- payload
     @property
     def active_session(self) -> dict[str, Any] | None:
-        return self._active_snapshot()
+        """Return the complete active session for explicit on-demand consumers."""
+        started = time.perf_counter()
+        result = self._active_snapshot()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        point_count = (
+            len(result.get("points") or [])
+            if isinstance(result, dict)
+            else 0
+        )
+        with self._lock:
+            self._active_full_copy_count += 1
+            self._active_full_copy_total_ms += elapsed_ms
+            self._active_full_copy_last_ms = round(elapsed_ms, 3)
+            self._active_full_copy_max_ms = max(
+                self._active_full_copy_max_ms,
+                elapsed_ms,
+            )
+            self._active_full_copy_last_point_count = point_count
+            self._active_full_copy_max_point_count = max(
+                self._active_full_copy_max_point_count,
+                point_count,
+            )
+        return result
+
+    def active_session_metadata(self) -> dict[str, Any] | None:
+        """Return active-session metadata without copying the dense point array."""
+        started = time.perf_counter()
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            points = active.get("points") if isinstance(active, dict) else None
+            point_count = len(points) if isinstance(points, list) else 0
+            result = (
+                {
+                    key: deepcopy(value)
+                    for key, value in active.items()
+                    if key != "points"
+                }
+                if isinstance(active, dict)
+                else None
+            )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            self._active_metadata_read_count += 1
+            self._active_metadata_read_total_ms += elapsed_ms
+            self._active_metadata_read_last_ms = round(elapsed_ms, 3)
+            self._active_metadata_read_max_ms = max(
+                self._active_metadata_read_max_ms,
+                elapsed_ms,
+            )
+            self._active_metadata_last_point_count = point_count
+        if result is not None:
+            result["point_count"] = point_count
+        return result
+
+    def active_session_tail(
+        self,
+        *,
+        after_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Copy only active points newer than after_ms for live-tail updates."""
+        started = time.perf_counter()
+        floor_ms = max(0, _as_int(after_ms) or 0)
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            if not isinstance(active, dict):
+                result = None
+                total_points = 0
+                copied_points = 0
+            else:
+                points = active.get("points")
+                points = points if isinstance(points, list) else []
+                total_points = len(points)
+                start_index = 0
+                if floor_ms > 0 and points:
+                    # last_stamp normally sits near the end of the append-only
+                    # route, so scan backwards rather than re-walking the route
+                    # from point zero on every MQTT/private-cloud refresh.
+                    start_index = total_points
+                    for index in range(total_points - 1, -1, -1):
+                        raw = points[index]
+                        stamp = (
+                            _as_int(raw[0])
+                            if isinstance(raw, (list, tuple)) and raw
+                            else None
+                        )
+                        if stamp is not None and stamp <= floor_ms:
+                            start_index = index + 1
+                            break
+                    else:
+                        start_index = 0
+                copied = deepcopy(points[start_index:])
+                copied_points = len(copied)
+                segment_starts = [
+                    stamp
+                    for raw in active.get("segment_starts_ms") or []
+                    if (stamp := _as_int(raw)) is not None and stamp > floor_ms
+                ]
+                result = {
+                    "id": active.get("id"),
+                    "sequence": active.get("sequence"),
+                    "segment_starts_ms": segment_starts,
+                    "points": copied,
+                }
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            self._active_tail_read_count += 1
+            self._active_tail_read_total_ms += elapsed_ms
+            self._active_tail_read_last_ms = round(elapsed_ms, 3)
+            self._active_tail_read_max_ms = max(
+                self._active_tail_read_max_ms,
+                elapsed_ms,
+            )
+            self._active_tail_last_copied_points = copied_points
+            self._active_tail_max_copied_points = max(
+                self._active_tail_max_copied_points,
+                copied_points,
+            )
+            self._active_tail_last_total_points = total_points
+        return result
+
+    def active_session_access_diagnostics(self) -> dict[str, Any]:
+        """Return privacy-safe point-count and active-session read timing stats."""
+        with self._lock:
+            active = self._cache.get(self._active_id or "")
+            points = active.get("points") if isinstance(active, dict) else None
+            active_points = len(points) if isinstance(points, list) else 0
+            metadata_count = self._active_metadata_read_count
+            tail_count = self._active_tail_read_count
+            full_count = self._active_full_copy_count
+            metadata_last_ms = self._active_metadata_read_last_ms
+            tail_last_ms = self._active_tail_read_last_ms
+            full_last_ms = self._active_full_copy_last_ms
+
+            def _average(total: float, count: int) -> float | None:
+                return round(total / count, 3) if count else None
+
+            def _throughput(points_count: int, duration_ms: float | None) -> float | None:
+                if not duration_ms or duration_ms <= 0:
+                    return None
+                return round(points_count * 1000.0 / duration_ms, 1)
+
+            return {
+                "active_point_count": active_points,
+                "metadata_reads": {
+                    "count": metadata_count,
+                    "last_ms": metadata_last_ms,
+                    "max_ms": round(self._active_metadata_read_max_ms, 3),
+                    "avg_ms": _average(
+                        self._active_metadata_read_total_ms,
+                        metadata_count,
+                    ),
+                    "last_active_point_count": self._active_metadata_last_point_count,
+                },
+                "tail_reads": {
+                    "count": tail_count,
+                    "last_ms": tail_last_ms,
+                    "max_ms": round(self._active_tail_read_max_ms, 3),
+                    "avg_ms": _average(
+                        self._active_tail_read_total_ms,
+                        tail_count,
+                    ),
+                    "last_copied_point_count": self._active_tail_last_copied_points,
+                    "max_copied_point_count": self._active_tail_max_copied_points,
+                    "last_active_point_count": self._active_tail_last_total_points,
+                    "last_points_per_second": _throughput(
+                        self._active_tail_last_copied_points,
+                        tail_last_ms,
+                    ),
+                },
+                "full_copies": {
+                    "count": full_count,
+                    "last_ms": full_last_ms,
+                    "max_ms": round(self._active_full_copy_max_ms, 3),
+                    "avg_ms": _average(
+                        self._active_full_copy_total_ms,
+                        full_count,
+                    ),
+                    "last_point_count": self._active_full_copy_last_point_count,
+                    "max_point_count": self._active_full_copy_max_point_count,
+                    "last_points_per_second": _throughput(
+                        self._active_full_copy_last_point_count,
+                        full_last_ms,
+                    ),
+                },
+            }
 
     @property
     def trail_revision(self) -> int:
