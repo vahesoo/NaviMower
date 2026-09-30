@@ -56,8 +56,11 @@ def test_scheduler_uses_raw_vendor_state_not_optimistic_activity_for_new_start()
 
 def test_scheduler_does_not_dispatch_a_new_zone_while_vendor_reports_charging():
     source = (COMPONENT / "navimower_schedule.py").read_text(encoding="utf-8")
-    assert "MQTT_STATE_CHARGING" in source
+    assert "MQTT_STATE_CHARGING" not in source
     assert "STATE_IDLE_DOCKED_POST" in source
+    charging = _function(source, "_vendor_charging")
+    assert 'state_code' in charging
+    assert 'mqtt_vehicle_state' not in charging
     evaluate = _function(source, "_evaluate_locked")
     guard = evaluate.index("if self._vendor_charging(data):")
     dispatch = evaluate.index("await self._async_send_mow(zone_id, reset=True")
