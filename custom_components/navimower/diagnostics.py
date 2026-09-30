@@ -93,6 +93,12 @@ def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict
     """Return cached MQTT navigation fields needed to research gate timing."""
     location = getattr(coordinator, "_mqtt_location", None)
     location = location if isinstance(location, dict) else {}
+    bridge = getattr(coordinator, "mqtt_bridge", None)
+    ordering = (
+        bridge.location_ordering_diagnostics()
+        if bridge is not None and hasattr(bridge, "location_ordering_diagnostics")
+        else None
+    )
     keys = (
         "vehicle_state", "action", "sub_action", "work_action", "work_sub_action",
         "work_mode", "work_target_zone", "mow_boundary", "partition_ids",
@@ -118,6 +124,7 @@ def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict
         "zone_transition": data.get("zone_transition"),
         "gate_states": deepcopy(data.get("gate_states") or {}),
         "gate_arrival_guards": deepcopy(data.get("gate_arrival_guards") or {}),
+        "source_ordering": ordering,
     }
 
 

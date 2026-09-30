@@ -5,8 +5,8 @@ promoting only field observations that are now repeated/proven enough for
 public entity semantics:
 
 * private state 0103 is Idle (not docked),
-* official MQTT numeric vehicleState=3 is a coarse stopped state and must not
-  imply docked/charging by itself,
+* official MQTT numeric vehicleState=3 is a coarse pause/idle hint and must not
+  imply docked/charging or force Paused by itself,
 * private state 0301 is the generic numeric-fault state,
 * index2.error_data is the authoritative source for active numeric fault code,
   title and content,
@@ -29,7 +29,6 @@ from . import coordinator as _coordinator
 _STATE_IDLE = "0103"
 _STATE_FAULT = "0301"
 _STATE_LIFTED = "0302"
-_MQTT_STOPPED = 3
 
 
 def _first_error(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -149,10 +148,6 @@ def install_state_semantics() -> None:
     _const.VEHICLE_STATE_LABELS[_STATE_IDLE] = "Idle"
     _const.VEHICLE_STATE_TO_ACTIVITY[_STATE_FAULT] = _const.ACTIVITY_ERROR
     _const.VEHICLE_STATE_LABELS[_STATE_FAULT] = "Error"
-
-    # Observed H215 MQTT numeric state 3 accompanies both isIdel/0103 and
-    # isPaused/0211. It is therefore neutral stopped context, not charging.
-    _const.MQTT_DOCKED_STATES.discard(_MQTT_STOPPED)
 
     original_parse = cls._parse
     original_apply_problem = cls._apply_problem_latch

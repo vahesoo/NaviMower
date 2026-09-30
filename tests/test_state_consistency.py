@@ -73,7 +73,7 @@ ns.update({
     "ACTIVITY_MOWING": "mowing", "ACTIVITY_PAUSED": "paused",
     "ACTIVITY_RETURNING": "returning", "MQTT_STATE_MOWING": 4,
     "MQTT_STATE_RETURNING": 5, "MQTT_STATE_MAPPING": 6,
-    "MQTT_DOCKED_STATES": {2, 3}, "DOCKED_STATES": {"0101", "0102"},
+    "MQTT_DOCKED_STATES": {2}, "DOCKED_STATES": {"0101", "0102"},
 })
 exec(compile(mod, "coordinator.py", "exec"), ns)
 resolve_docked = ns["Mini"]()._resolved_docked_state
@@ -82,7 +82,11 @@ assert resolve_docked("0101", None, "mowing", None) == (False, "normalized_activ
 assert resolve_docked("0101", None, "docked", "mowing") == (False, "pending_activity")
 assert resolve_docked("0101", None, "docked", "paused") == (False, "pending_activity")
 assert resolve_docked("0101", None, "docked", "returning") == (False, "pending_activity")
-assert resolve_docked("", 3, "docked", None) == (True, "mqtt_docked_state")
+assert resolve_docked("", 3, "docked", None) == (False, "not_docked")
+assert resolve_docked("0103", 3, "paused", None) == (False, "normalized_activity")
+assert resolve_docked("0211", 3, "paused", None) == (False, "normalized_activity")
+assert resolve_docked("0101", 3, "docked", None) == (True, "private_docked_state")
+assert resolve_docked("0102", 3, "docked", None) == (True, "private_docked_state")
 assert resolve_docked("0101", None, "docked", None) == (True, "private_docked_state")
 
 assert 'boundary.pop("height_set", None)' in source

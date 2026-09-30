@@ -980,6 +980,27 @@ class NavimowerMqttBridge:
             }
         return out
 
+    def location_ordering_diagnostics(self) -> dict[str, Any]:
+        """Return value-free per-type source ordering diagnostics."""
+        row = self._location_cache.get(self._device_id) if self._device_id else None
+        row = row if isinstance(row, dict) else {}
+        source_times = dict(row.get("_source_time_by_type") or {})
+        rejected = dict(row.get("_late_rejected_by_type") or {})
+        return {
+            "source_time_by_type": {
+                str(key): value for key, value in source_times.items()
+            },
+            "late_rejected_by_type": {
+                str(key): int(value or 0) for key, value in rejected.items()
+            },
+            "last_accepted_message_types": list(
+                row.get("_accepted_message_types") or []
+            ),
+            "last_late_rejected_message_types": list(
+                row.get("_late_rejected_message_types") or []
+            ),
+        }
+
     def diagnostic_health(self) -> dict[str, Any]:
         """Return value-free bridge lifecycle and recovery diagnostics."""
         now = time.monotonic()

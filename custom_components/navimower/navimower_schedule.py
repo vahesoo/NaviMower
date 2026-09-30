@@ -23,7 +23,6 @@ from .const import (
     DEFAULT_SCHEDULE_ORDER_MODE,
     DEFAULT_SCHEDULE_START,
     DOMAIN,
-    MQTT_STATE_CHARGING,
     MQTT_STATE_MOWING,
     OPT_SCHEDULE_ENABLED,
     OPT_SCHEDULE_END,
@@ -520,10 +519,7 @@ class NavimowerScheduleController:
 
     @staticmethod
     def _vendor_charging(data: dict[str, Any]) -> bool:
-        """Return whether the mower itself currently reports charging in the dock."""
-        mqtt_state = _as_int(data.get("mqtt_vehicle_state"))
-        if mqtt_state is not None:
-            return mqtt_state == MQTT_STATE_CHARGING
+        """Return canonical vendor Charging without inferring it from pose code 3."""
         return str(data.get("state_code") or "") == STATE_IDLE_DOCKED_POST
 
     @staticmethod

@@ -27,8 +27,7 @@ def test_beta16_runtime_state_and_error_contract() -> None:
     assert '_STATE_IDLE = "0103"' in source
     assert '_STATE_FAULT = "0301"' in source
     assert '_STATE_LIFTED = "0302"' in source
-    assert '_MQTT_STOPPED = 3' in source
-    assert 'MQTT_DOCKED_STATES.discard(_MQTT_STOPPED)' in source
+    assert 'MQTT_DOCKED_STATES.discard' not in source
     assert 'VEHICLE_STATE_LABELS[_STATE_IDLE] = "Idle"' in source
     assert 'VEHICLE_STATE_LABELS[_STATE_FAULT] = "Error"' in source
     assert '"error_code"' in source
