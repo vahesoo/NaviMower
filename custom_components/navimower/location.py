@@ -19,6 +19,7 @@ RTK reference (NOT latitude/longitude).
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -128,34 +129,113 @@ def update_dock_estimate(
     }
 
 
+def _normalize_source_time(value: Any) -> float | None:
+    """Normalize vendor source time to epoch-like seconds for ordering only."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None
+    # Observed location timestamps are usually epoch milliseconds. Keep epoch
+    # seconds unchanged and normalize milliseconds so diagnostics are readable.
+    return parsed / 1000.0 if parsed > 10_000_000_000 else parsed
+
+
+def _message_source_time(item: dict[str, Any]) -> float | None:
+    """Return the best source timestamp carried by one location sub-message."""
+    for key in ("time", "timestamp", "reportTime", "report_time"):
+        if key in item:
+            parsed = _normalize_source_time(item.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _accept_source_order(
+    source_times: dict[str, float],
+    late_counts: dict[str, int],
+    item: dict[str, Any],
+) -> tuple[bool, int | None, float | None]:
+    """Reject a source-time regression independently for each message type."""
+    try:
+        message_type = int(item.get("type"))
+    except (TypeError, ValueError):
+        return True, None, None
+    if message_type not in {1, 2, 3, 4}:
+        return True, message_type, None
+
+    source_time = _message_source_time(item)
+    if source_time is None:
+        # Compatibility path for mower/firmware variants that omit source time.
+        return True, message_type, None
+
+    key = str(message_type)
+    latest = _normalize_source_time(source_times.get(key))
+    if latest is not None and source_time < latest:
+        late_counts[key] = int(late_counts.get(key) or 0) + 1
+        return False, message_type, source_time
+
+    if latest is None or source_time > latest:
+        source_times[key] = source_time
+    return True, message_type, source_time
+
+
 def parse_location_payload(
     cache: dict[str, dict], device_id: str, data: Any
 ) -> dict | None:
-    """Merge one location message into the per-device cache.
+    """Merge one ordered location message into the per-device cache.
 
-    Fields persist across messages (a pose update keeps the last-known zone).
-    Returns the updated record, or None if nothing relevant changed.
+    Fields persist across messages, but each vendor sub-message type owns an
+    independent source-time high-water mark. Delayed/out-of-order type 1/2/3/4
+    entries are rejected before they can overwrite newer semantic state.
     """
     if not isinstance(data, list):
         return None
     loc = dict(cache.get(device_id) or {})
     loc["device_id"] = device_id
-    # This flag is per MQTT message, not persistent cache state. Progress/zone
-    # messages may carry the last cached X/Y but must not make an old pose look
-    # fresh to gate logic or pose-age diagnostics.
-    loc["_pose_updated"] = False
-    loc["_progress_updated"] = False
-    loc["_route_progress_updated"] = False
-    loc["_work_progress_updated"] = False
-    loc["_task_progress_updated"] = False
-    loc["_area_updated"] = False
-    loc["_battery_updated"] = False
-    loc["_task_delay_updated"] = False
+    source_times = dict(loc.get("_source_time_by_type") or {})
+    late_counts = {
+        str(key): int(value or 0)
+        for key, value in dict(loc.get("_late_rejected_by_type") or {}).items()
+    }
+    loc["_source_time_by_type"] = source_times
+    loc["_late_rejected_by_type"] = late_counts
+    loc["_accepted_message_types"] = []
+    loc["_late_rejected_message_types"] = []
+
+    # These flags describe only fields accepted from this MQTT message. Cached
+    # values remain available, but must not become fresh again accidentally.
+    for flag in (
+        "_pose_updated",
+        "_progress_updated",
+        "_route_progress_updated",
+        "_work_progress_updated",
+        "_task_progress_updated",
+        "_area_updated",
+        "_battery_updated",
+        "_task_delay_updated",
+        "_state_updated",
+        "_action_updated",
+        "_partition_ids_updated",
+        "_work_target_updated",
+    ):
+        loc[flag] = False
+
     changed = False
     for item in data:
         if not isinstance(item, dict):
             continue
-        t = item.get("type")
+        accepted, t, _source_time = _accept_source_order(
+            source_times, late_counts, item
+        )
+        if not accepted:
+            if t is not None:
+                loc["_late_rejected_message_types"].append(t)
+            continue
+        if t is not None:
+            loc["_accepted_message_types"].append(t)
+
         if t == 1:
             try:
                 loc["x"] = float(item["postureX"])
@@ -165,6 +245,7 @@ def parse_location_payload(
                 pass
             if "vehicleState" in item:
                 loc["vehicle_state"] = item["vehicleState"]
+                loc["_state_updated"] = True
             if "time" in item:
                 loc["pose_time"] = item["time"]
             if (battery := extract_mqtt_battery(item)) is not None:
@@ -173,10 +254,6 @@ def parse_location_payload(
             loc["_pose_updated"] = True
             changed = True
         elif t == 2:
-            # Live physical-mowing progress. currentMowBoundary is the
-            # partition the mower is actually mowing now (works for "mow all"
-            # too); currentMowProgress is route progress (0-10000, hits 10000
-            # at completion -- planned-path progress, not area coverage %).
             if "currentMowBoundary" in item:
                 loc["mow_boundary"] = item.get("currentMowBoundary")
             if "currentMowProgress" in item:
@@ -185,8 +262,10 @@ def parse_location_payload(
                 loc["_route_progress_updated"] = True
             if "action" in item:
                 loc["action"] = item.get("action")
+                loc["_action_updated"] = True
             if "subAction" in item:
                 loc["sub_action"] = item.get("subAction")
+                loc["_action_updated"] = True
             if "mapWorkPosition" in item:
                 loc["map_work_position"] = item.get("mapWorkPosition")
                 decoded = decode_map_work_position(item.get("mapWorkPosition"))
@@ -198,13 +277,13 @@ def parse_location_payload(
                     loc["work_progress"] = decoded["progress"]
                     loc["_progress_updated"] = True
                     loc["_work_progress_updated"] = True
-                    # Prefer explicit fields from this message; otherwise the
-                    # packed words must replace a stale cached action during
-                    # transit between selected zones.
+                    loc["_work_target_updated"] = True
                     if "action" not in item:
                         loc["action"] = decoded["action"]
+                        loc["_action_updated"] = True
                     if "subAction" not in item:
                         loc["sub_action"] = decoded["sub_action"]
+                        loc["_action_updated"] = True
             if "mowStartType" in item:
                 loc["mow_start_type"] = item.get("mowStartType")
             if "mowingPercentage" in item:
@@ -225,16 +304,21 @@ def parse_location_payload(
             pids = item.get("partitionIds")
             loc["partition_ids"] = pids
             loc["partition"] = pids[0] if isinstance(pids, list) and pids else None
+            loc["_partition_ids_updated"] = "partitionIds" in item
             changed = True
         elif t == 4:
             loc["task_delay"] = item.get("taskDelay")
             loc["_task_delay_updated"] = "taskDelay" in item
             if "vehicleState" in item:
                 loc["vehicle_state"] = item.get("vehicleState")
+                loc["_state_updated"] = True
             if "time" in item:
                 loc["state_time"] = item.get("time")
             changed = True
+
+    # Persist ordering metadata even if every semantic item was rejected so the
+    # next packet and diagnostics see the correct counters/high-water marks.
+    cache[device_id] = loc
     if not changed:
         return None
-    cache[device_id] = loc
     return loc
