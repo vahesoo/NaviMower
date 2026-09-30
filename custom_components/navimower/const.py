@@ -227,14 +227,17 @@ VEHICLE_STATE_LABELS: Final[dict[str, str]] = {
 DOCKED_STATES: Final = {STATE_IDLE_DOCKED, STATE_IDLE_DOCKED_POST}
 ACTIVE_STATES: Final = {STATE_MOWING, STATE_MOWING_MANUAL, STATE_RETURNING}
 
-# Observed official MQTT location payload vehicleState values.
+# Observed official MQTT location payload vehicleState values. These numeric
+# pose-channel values are coarse live hints, not the canonical mower state.
+# H215 captures show value 3 alongside both private 0103/isIdel and
+# 0211/isPaused, so it must not imply Charging or Docked by itself.
 MQTT_STATE_IDLE: Final = 1
 MQTT_STATE_DOCKED: Final = 2
-MQTT_STATE_CHARGING: Final = 3
+MQTT_STATE_PAUSED_OR_IDLE: Final = 3
 MQTT_STATE_MOWING: Final = 4
 MQTT_STATE_RETURNING: Final = 5
 MQTT_STATE_MAPPING: Final = 6
-MQTT_DOCKED_STATES: Final = {MQTT_STATE_DOCKED, MQTT_STATE_CHARGING}
+MQTT_DOCKED_STATES: Final = {MQTT_STATE_DOCKED}
 MQTT_CUTTING_ACTIONS: Final = {5, 8}  # normal mowing / boundary mowing
 
 # --- Mow options -----------------------------------------------------------
