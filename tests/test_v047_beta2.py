@@ -41,7 +41,7 @@ def test_beta2_custom_area_uses_conservative_cloud_fallback() -> None:
     assert "_navigation_fallback._cloud_report_time" in binary
     assert '"cloud_fallback": source == "private_cloud"' in binary
     assert "if count >= 2:" in fallback
-    assert 'source == "private_cloud"' in fallback
+    assert 'source != "private_cloud"' in fallback
 
 
 def test_beta2_raw_export_stays_available_on_prerelease() -> None:
