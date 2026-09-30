@@ -50,7 +50,8 @@ def test_scheduler_uses_raw_vendor_state_not_optimistic_activity_for_new_start()
     classifier = logic[logic.index("def classify_schedule_mow_start"):logic.index("def later_iso")]
     assert 'data.get("active_zone_progress_zone_id")' in classifier
     assert '"work_target_zone"' in classifier
-    assert '"mow_boundary"' in classifier
+    assert "currentMowBoundary" in classifier
+    assert 'for key in ("work_target_zone", "mow_boundary")' not in classifier
 
 
 def test_scheduler_does_not_dispatch_a_new_zone_while_vendor_reports_charging():
