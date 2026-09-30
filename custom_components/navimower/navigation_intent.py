@@ -468,26 +468,10 @@ def install_navigation_intent() -> None:
         device_id: str,
         data: Any,
     ) -> dict[str, Any] | None:
-        result = original_parse_location(cache, device_id, data)
-        if result is None:
-            return None
-        items = data if isinstance(data, list) else []
-        result["_work_target_updated"] = bool(
-            result.get("_work_progress_updated") is True
-            and any(
-                isinstance(item, dict)
-                and item.get("type") == 2
-                and "mapWorkPosition" in item
-                for item in items
-            )
-        )
-        result["_partition_ids_updated"] = any(
-            isinstance(item, dict)
-            and item.get("type") == 3
-            and "partitionIds" in item
-            for item in items
-        )
-        return result
+        # Base location parsing owns source-time arbitration and emits update
+        # flags only for accepted semantic fields. Do not re-derive freshness
+        # from raw arrival-order payload contents here.
+        return original_parse_location(cache, device_id, data)
 
     def ingest_mqtt_location(self: Any, location: dict[str, Any]) -> None:
         if isinstance(location, dict):
@@ -496,7 +480,8 @@ def install_navigation_intent() -> None:
             if (
                 location.get("_work_target_updated") is True
                 or (
-                    "work_target_zone" in location
+                    "_work_target_updated" not in location
+                    and "work_target_zone" in location
                     and location.get("work_target_zone")
                     != previous.get("work_target_zone")
                 )
@@ -505,7 +490,8 @@ def install_navigation_intent() -> None:
             if (
                 location.get("_partition_ids_updated") is True
                 or (
-                    "partition_ids" in location
+                    "_partition_ids_updated" not in location
+                    and "partition_ids" in location
                     and location.get("partition_ids")
                     != previous.get("partition_ids")
                 )
