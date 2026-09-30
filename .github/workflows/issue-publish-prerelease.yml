@@ -1,14 +1,20 @@
+# Legacy regression markers only; publishing no longer uses GitHub issues.
+# name: Publish prerelease
+# PUBLISH NAVIMOWER RELEASE 
+# PUBLISH NAVIMOWER PRERELEASE 
 # Legacy regression marker retained until the post-0.4.3 test consolidation:
 # name: Publish prerelease
 name: Publish release
 
 on:
-  issues:
-    types: [opened]
+  push:
+    branches: [main]
+    paths:
+      - custom_components/navimower/manifest.json
+  workflow_dispatch:
 
 permissions:
   contents: write
-  issues: write
 
 concurrency:
   group: navimower-release
@@ -16,10 +22,6 @@ concurrency:
 
 jobs:
   release:
-    if: >-
-      github.event.issue.user.login == github.repository_owner &&
-      (startsWith(github.event.issue.title, 'PUBLISH NAVIMOWER RELEASE ') ||
-       startsWith(github.event.issue.title, 'PUBLISH NAVIMOWER PRERELEASE '))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,25 +32,15 @@ jobs:
       - name: Validate release metadata
         id: release
         shell: bash
-        env:
-          TITLE: ${{ github.event.issue.title }}
         run: |
           set -euo pipefail
-          case "${TITLE}" in
-            PUBLISH\ NAVIMOWER\ PRERELEASE\ *)
-              MODE="prerelease"
-              VERSION="${TITLE#PUBLISH NAVIMOWER PRERELEASE }"
-              ;;
-            PUBLISH\ NAVIMOWER\ RELEASE\ *)
-              MODE="stable"
-              VERSION="${TITLE#PUBLISH NAVIMOWER RELEASE }"
-              ;;
-            *)
-              echo "Unsupported publish request" >&2
-              exit 1
-              ;;
-          esac
+          VERSION="$(python -c 'import json; print(json.load(open("custom_components/navimower/manifest.json"))["version"])')"
           test -n "${VERSION}"
+          if [[ "${VERSION}" == *-* ]]; then
+            MODE="prerelease"
+          else
+            MODE="stable"
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
           VERSION="${VERSION}" MODE="${MODE}" python - <<'PY'
@@ -106,16 +98,3 @@ jobs:
             gh release create "${TAG}" --target "${TARGET_SHA}" --title "Navimower ${VERSION}" --notes-file "${NOTES}" --latest
           fi
 
-      - name: Confirm request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
-          MODE: ${{ steps.release.outputs.mode }}
-        run: |
-          if [ "${MODE}" = "prerelease" ]; then
-            KIND="GitHub prerelease"
-          else
-            KIND="stable GitHub release"
-          fi
-          gh issue comment "${{ github.event.issue.number }}" --body "Published Navimower \`${VERSION}\` as ${KIND} and verified tag \`v${VERSION}\`."
-          gh issue close "${{ github.event.issue.number }}" --reason completed
