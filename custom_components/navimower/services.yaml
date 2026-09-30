@@ -291,3 +291,22 @@ refresh_map_snapshot:
       selector:
         device:
           integration: navimower
+
+export_raw_data:
+  name: Export raw development data
+  description: >-
+    Prerelease maintainer/development action. Write an explicit unredacted
+    capture under /config/navimower_diagnostics/raw/. The file preserves fresh
+    private-cloud responses, full map-detail data, decoded map/calibration state
+    and the current parsed MQTT cache. This is separate from Home Assistant
+    Download diagnostics, which remains sanitized for public support. Raw exports
+    contain sensitive coordinates and identifiers and must not be published or
+    attached to a public issue.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
