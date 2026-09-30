@@ -36,7 +36,7 @@ def test_beta6_preserves_proven_runtime_contracts_under_semantic_names() -> None
     state = (COMPONENT / "state_semantics.py").read_text(encoding="utf-8")
     assert '_STATE_IDLE = "0103"' in state
     assert '_STATE_FAULT = "0301"' in state
-    assert 'MQTT_DOCKED_STATES.discard(_MQTT_STOPPED)' in state
+    assert 'MQTT_DOCKED_STATES.discard' not in state
     assert 'request_fast_refresh("MQTT state changed to Error")' in state
 
     capabilities = (COMPONENT / "capability_extensions.py").read_text(encoding="utf-8")
