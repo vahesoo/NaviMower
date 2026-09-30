@@ -25,6 +25,7 @@ from .notification_actions import (
     async_mark_all_notifications_read,
     async_mark_notification_read,
 )
+from .raw_export import async_export_raw_data
 from .resume import async_resume_task
 from .task_resume import (
     RESUME_STRATEGY_ORDERED_RUN,
@@ -47,6 +48,7 @@ SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 SERVICE_RELEARN_GEOREFERENCE = "relearn_georeference"
 SERVICE_REFRESH_MAP_SNAPSHOT = "refresh_map_snapshot"
+SERVICE_EXPORT_RAW_DATA = "export_raw_data"
 
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
@@ -112,6 +114,7 @@ CONTINUE_LAST_ORDERED_RUN_SCHEMA = DEVICE_ONLY_SCHEMA
 CONTINUE_TASK_SCHEMA = DEVICE_ONLY_SCHEMA
 RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
 REFRESH_MAP_SNAPSHOT_SCHEMA = DEVICE_ONLY_SCHEMA
+EXPORT_RAW_DATA_SCHEMA = DEVICE_ONLY_SCHEMA
 
 MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
     {
@@ -605,6 +608,27 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 f"Navimower map snapshot refresh failed: {err}"
             ) from err
 
+    async def _export_raw_data(call: ServiceCall) -> None:
+        coordinator = _resolve_coordinator(call)
+        try:
+            path = await async_export_raw_data(hass, coordinator)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Navimower raw data export failed: {err}"
+            ) from err
+        persistent_notification.async_create(
+            hass,
+            (
+                "Unredacted Navimower raw-data export completed.\n\n"
+                f"File: `{path}`\n\n"
+                "This prerelease development file intentionally contains exact "
+                "vendor/map/location values and identifiers. Do not publish or "
+                "attach it to a public issue."
+            ),
+            title="Navimower raw data export",
+            notification_id="navimower_raw_data_export",
+        )
+
     registrations = (
         (SERVICE_SET_SCHEDULE, _set_schedule, SET_SCHEDULE_SCHEMA),
         (SERVICE_MOW, _mow, MOW_SCHEMA),
@@ -622,6 +646,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_MARK_ALL_NOTIFICATIONS_READ, _mark_all_notifications_read, MARK_ALL_NOTIFICATIONS_READ_SCHEMA),
         (SERVICE_RELEARN_GEOREFERENCE, _relearn_georeference, RELEARN_GEOREFERENCE_SCHEMA),
         (SERVICE_REFRESH_MAP_SNAPSHOT, _refresh_map_snapshot, REFRESH_MAP_SNAPSHOT_SCHEMA),
+        (SERVICE_EXPORT_RAW_DATA, _export_raw_data, EXPORT_RAW_DATA_SCHEMA),
     )
     for service, handler, schema in registrations:
         if not hass.services.has_service(DOMAIN, service):
