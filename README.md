@@ -246,11 +246,13 @@ The imported Custom Area remains local to Navimower. Polygon matching does not d
 
 Each Custom Area creates a binary sensor:
 
-- **On** while fresh official MQTT X/Y is inside/on the polygon;
-- **Off** while the fresh pose is outside;
-- **Unavailable** when live MQTT pose is missing/stale.
+- **On** while the best fresh mower-local X/Y pose is inside/on the polygon;
+- **Off** while the best fresh pose is outside;
+- prefers official MQTT X/Y for low-latency occupancy;
+- falls back to sufficiently fresh private-cloud X/Y when MQTT pose is unavailable;
+- requires two distinct fresh cloud reports before a previously active area is cleared from **On** to **Off**.
 
-Custom Area occupancy intentionally does **not** use cloud fallback. Gate areas have different, more conservative fallback semantics because they are designed for physical-gate workflows.
+This keeps Custom Areas usable for gate-arrival automations during short MQTT pose gaps without allowing one delayed cloud sample to close a physical-gate workflow early.
 
 ## Gates and Gate areas
 
@@ -453,7 +455,7 @@ When pose degrades, Navimower keeps useful MQTT state/progress traffic while clo
 | Map coverage / mowed area | current per-zone coverage | retained last-known zone context |
 | Map, settings and native schedule | Navimow account/cloud | persisted/local cache where supported |
 | Physical Gate intent/area safety | fresh MQTT pose/targets | fresh cloud evidence with conservative confirmation where supported |
-| Custom Area occupancy | fresh MQTT pose | none; becomes unavailable |
+| Custom Area occupancy | fresh MQTT pose | fresh cloud X/Y with conservative two-report OFF confirmation |
 
 Navimower does not generate synthetic/interpolated battery percentages.
 
