@@ -54,7 +54,7 @@ def test_completion_must_be_newer_than_baseline_and_dispatch():
     assert completion_advanced("2026-08-15T10:30:00+00:00", baseline, dispatch)
 
 
-def test_scheduler_start_rejects_fresh_wrong_zone_mqtt_evidence():
+def test_scheduler_start_keeps_conflicting_zone_evidence_pending():
     result = classify_schedule_mow_start(
         37,
         vendor_mowing_now=True,
@@ -62,6 +62,8 @@ def test_scheduler_start_rejects_fresh_wrong_zone_mqtt_evidence():
         data={
             "active_zone_progress_zone_id": 36,
             "active_zone_progress_source_age": 2.0,
+            "work_target_zone": 36,
+            "work_progress_source_age": 2.0,
             "mqtt_action_age": 2.0,
         },
         mqtt_location={
@@ -71,9 +73,54 @@ def test_scheduler_start_rejects_fresh_wrong_zone_mqtt_evidence():
         },
         sent_at="2026-09-26T08:24:47+00:00",
     )
-    assert result["state"] == "zone_mismatch"
-    assert result["strong_mismatch_zone_ids"] == [36]
+    assert result["state"] == "pending"
+    assert result["conflicting_zone_ids"] == [36]
+    assert result["strong_mismatch_zone_ids"] == []
 
+
+def test_scheduler_ignores_current_mow_boundary_as_target_rejection():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=True,
+        data={
+            "work_target_zone": 37,
+            "work_progress_source_age": 2.0,
+            "mqtt_action_age": 1.0,
+        },
+        mqtt_location={
+            "work_target_zone": 36,
+            "mow_boundary": 36,
+            "pose_time": 1790752427000,
+        },
+        sent_at="2026-09-30T07:13:47+00:00",
+    )
+    assert result["state"] == "confirmed"
+    assert result["observed_zone_ids"] == [37]
+
+
+def test_scheduler_cached_mqtt_target_is_not_refreshed_by_new_pose():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=True,
+        data={
+            "active_zone_progress_zone_id": 36,
+            "active_zone_progress_source_age": 2.0,
+            "target_zone_id": 37,
+            "target_zone_immediate_source": "ha_command",
+            "target_zone_immediate_age_seconds": 1.0,
+            "mqtt_action_age": 1.0,
+        },
+        mqtt_location={
+            "work_target_zone": 36,
+            "mow_boundary": 36,
+            "pose_time": 1790752427000,
+        },
+        sent_at="2026-09-30T07:13:47+00:00",
+    )
+    assert result["state"] == "pending"
+    assert result["conflicting_zone_ids"] == [36]
 
 def test_scheduler_start_confirms_matching_fresh_zone():
     result = classify_schedule_mow_start(
@@ -126,9 +173,8 @@ def test_scheduler_handoff_waits_through_old_zone_mqtt_evidence():
         sent_at="2026-09-30T07:13:47+00:00",
     )
     assert result["state"] == "pending"
-    assert result["handoff_conflict"] is True
-    assert result["strong_mismatch_zone_ids"] == [36]
-
+    assert result["conflicting_zone_ids"] == [36]
+    assert result["strong_mismatch_zone_ids"] == []
 
 def test_scheduler_requested_zone_confirmation_beats_stale_handoff_boundary():
     result = classify_schedule_mow_start(
