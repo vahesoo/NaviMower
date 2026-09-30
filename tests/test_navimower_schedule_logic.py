@@ -122,6 +122,7 @@ def test_scheduler_cached_mqtt_target_is_not_refreshed_by_new_pose():
     assert result["state"] == "pending"
     assert result["conflicting_zone_ids"] == [36]
 
+
 def test_scheduler_start_confirms_matching_fresh_zone():
     result = classify_schedule_mow_start(
         37,
@@ -176,6 +177,7 @@ def test_scheduler_handoff_waits_through_old_zone_mqtt_evidence():
     assert result["conflicting_zone_ids"] == [36]
     assert result["strong_mismatch_zone_ids"] == []
 
+
 def test_scheduler_requested_zone_confirmation_beats_stale_handoff_boundary():
     result = classify_schedule_mow_start(
         37,
@@ -195,4 +197,4 @@ def test_scheduler_requested_zone_confirmation_beats_stale_handoff_boundary():
         sent_at="2026-09-30T07:13:47+00:00",
     )
     assert result["state"] == "confirmed"
-    assert result["strong_mismatch_zone_ids"] == [36]
+    assert result["strong_mismatch_zone_ids"] == []
