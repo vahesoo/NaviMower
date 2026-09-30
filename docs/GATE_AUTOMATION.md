@@ -161,7 +161,7 @@ If stable `open` is never confirmed, `continue_on_timeout: false` aborts the run
 The older pattern combines travel intent and physical arrival:
 
 - **Gate required** says the mower intends to cross the configured zone pair;
-- a **Custom Area** around the gate says the mower has physically reached the passage.
+- a **Custom Area** around the gate says the mower has physically reached the passage. MQTT X/Y is preferred, while sufficiently fresh private-cloud X/Y is used as a conservative fallback if the MQTT pose stream is temporarily unavailable. A cloud-backed entry may assert the area immediately, but leaving an already-active area requires two distinct fresh cloud reports.
 
 This can be useful when the gate passage should only react to a known A-to-B/B-to-A mowing transition and the same physical area can be entered for other reasons.
 

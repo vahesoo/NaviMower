@@ -24,7 +24,9 @@ from .custom_area import (
     parse_custom_areas,
     point_in_polygon,
 )
+from .custom_area_fallback import resolve_custom_area_presence
 from .entity import NavimowEntity
+from . import navigation_fallback as _navigation_fallback
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -173,7 +175,7 @@ class NavimowerChannelBinarySensor(NavimowEntity, BinarySensorEntity):
 
 
 class NavimowerCustomAreaBinarySensor(NavimowEntity, BinarySensorEntity):
-    """On while the mower's fresh live X/Y pose is inside a Custom Area."""
+    """On while the best fresh live pose is inside a Custom Area."""
 
     _attr_icon = "mdi:vector-polygon"
 
@@ -181,24 +183,67 @@ class NavimowerCustomAreaBinarySensor(NavimowEntity, BinarySensorEntity):
         super().__init__(coordinator, f"custom_area_{area.slug}")
         self.area = area
         self._attr_name = area.name
+        self._presence_memory: dict = {}
+
+    def _resolved_presence(self) -> tuple[bool | None, str, float | None]:
+        mqtt_position = self.coordinator._fresh_mqtt_position()
+        if mqtt_position is not None:
+            inside = point_in_polygon(
+                mqtt_position["x"], mqtt_position["y"], self.area.polygon
+            )
+            state, memory = resolve_custom_area_presence(
+                self._presence_memory,
+                inside=inside,
+                source="mqtt",
+                usable=True,
+            )
+            self._presence_memory = memory
+            return state, "mqtt", self.coordinator.pose_age()
+
+        context = _navigation_fallback._position_context(
+            self.coordinator, self.data
+        )
+        source = str(context.get("source") or "unavailable")
+        position = context.get("position")
+        inside = (
+            point_in_polygon(position["x"], position["y"], self.area.polygon)
+            if isinstance(position, dict)
+            and position.get("x") is not None
+            and position.get("y") is not None
+            else None
+        )
+        state, memory = resolve_custom_area_presence(
+            self._presence_memory,
+            inside=inside,
+            source=source,
+            usable=bool(context.get("gate_usable")),
+            report_key=_navigation_fallback._cloud_report_time(self.data),
+        )
+        self._presence_memory = memory
+        return state, source, context.get("age")
 
     @property
     def is_on(self) -> bool | None:
-        position = self.coordinator._fresh_mqtt_position()
-        if position is None:
-            return None
-        return point_in_polygon(position["x"], position["y"], self.area.polygon)
+        state, _source, _age = self._resolved_presence()
+        return state
 
     @property
     def available(self) -> bool:
-        return super().available and self.coordinator._fresh_mqtt_position() is not None
+        state, _source, _age = self._resolved_presence()
+        return super().available and state is not None
 
     @property
     def extra_state_attributes(self) -> dict:
+        state, source, age = self._resolved_presence()
         return {
             **self.area.as_dict(),
-            "position_source": "mqtt",
-            "position_age": self.coordinator.pose_age(),
+            "position_source": source,
+            "position_age": age,
+            "cloud_fallback": source == "private_cloud",
+            "state_confirmed": state is not None,
+            "cloud_outside_confirmation_count": int(
+                self._presence_memory.get("outside_count") or 0
+            ),
         }
 
 

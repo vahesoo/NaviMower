@@ -35,8 +35,10 @@ def test_binary_sensor_creates_one_entity_per_saved_custom_area() -> None:
     assert 'self._attr_name = area.name' in source
 
 
-def test_custom_area_occupancy_requires_fresh_mqtt_xy() -> None:
+def test_custom_area_occupancy_prefers_mqtt_with_safe_cloud_fallback() -> None:
     source = (COMPONENT / "binary_sensor.py").read_text(encoding="utf-8")
-    assert "position = self.coordinator._fresh_mqtt_position()" in source
-    assert "point_in_polygon(position[\"x\"], position[\"y\"], self.area.polygon)" in source
-    assert "return super().available and self.coordinator._fresh_mqtt_position() is not None" in source
+    assert "mqtt_position = self.coordinator._fresh_mqtt_position()" in source
+    assert "point_in_polygon" in source
+    assert "resolve_custom_area_presence" in source
+    assert "_navigation_fallback._position_context" in source
+    assert '"cloud_fallback": source == "private_cloud"' in source
