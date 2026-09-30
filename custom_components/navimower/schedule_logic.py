@@ -94,25 +94,50 @@ def classify_schedule_mow_start(
     sent_at: Any,
     handoff_at_send: bool | None = None,
 ) -> dict[str, Any]:
-    """Classify a scheduler mow start without mistaking another retained task for success.
+    """Classify a scheduler start without letting telemetry rewrite its plan.
 
-    A plain Docked/Idle -> Mowing transition is only a legacy fallback when no
-    fresh zone evidence exists. Matching fresh requested-zone evidence confirms
-    the start. A post-command MQTT mismatch remains strong evidence for a start
-    from dock/paused state, but during a scheduler-owned zone handoff the old
-    zone can legitimately remain in MQTT briefly while the mower transitions.
+    Navimower Schedule owns the requested queue slot. MQTT is useful as a fast
+    positive confirmation source, but a conflicting telemetry value is not
+    allowed to veto the scheduler intent. In particular, currentMowBoundary
+    describes the physical/current mowing partition and can legitimately remain
+    on the previous zone while the mower travels to the requested one.
+
+    Confirmation therefore uses only matching, source-fresh work evidence.
+    Conflicting observations keep the command pending; the scheduler's bounded
+    dispatch/retry layer remains responsible for unresolved starts.
     """
     commanded = _zone_id(commanded_zone_id)
     if not vendor_mowing_now or commanded is None:
-        return {"state": "pending", "observed_zone_ids": [], "strong_mismatch_zone_ids": []}
+        return {
+            "state": "pending",
+            "observed_zone_ids": [],
+            "conflicting_zone_ids": [],
+            "strong_mismatch_zone_ids": [],
+        }
 
     observed: list[int] = []
-    strong: list[int] = []
 
+    # Canonical/private-cloud active work evidence. This is already freshness
+    # tagged by the coordinator and may also be filled by a truly fresh MQTT
+    # work-progress packet.
     active_zone = _zone_id(data.get("active_zone_progress_zone_id"))
-    if active_zone is not None and _fresh_age(data.get("active_zone_progress_source_age")):
+    if (
+        active_zone is not None
+        and _fresh_age(data.get("active_zone_progress_source_age"))
+    ):
         observed.append(active_zone)
 
+    # Private-cloud mapWorkPosition is a stable immediate-work source. Its own
+    # endpoint age is used rather than the age of an unrelated pose packet.
+    cloud_work_zone = _zone_id(data.get("work_target_zone"))
+    if (
+        cloud_work_zone is not None
+        and _fresh_age(data.get("work_progress_source_age"))
+    ):
+        observed.append(cloud_work_zone)
+
+    # MQTT may accelerate confirmation, but only through the navigation layer's
+    # field-specific freshness tracking for mapWorkPosition.target_zone.
     immediate_zone = _zone_id(data.get("target_zone_id"))
     immediate_source = str(data.get("target_zone_immediate_source") or "")
     if (
@@ -122,64 +147,39 @@ def classify_schedule_mow_start(
     ):
         observed.append(immediate_zone)
 
-    location = mqtt_location if isinstance(mqtt_location, dict) else {}
-    sent = parse_iso(sent_at)
-    report = _report_seconds(location.get("pose_time") or location.get("state_time"))
-    mqtt_after_command = (
-        sent is not None
-        and report is not None
-        and report >= sent.timestamp() - 1.0
-        and _fresh_age(data.get("mqtt_action_age"))
-    )
-    if mqtt_after_command:
-        for key in ("work_target_zone", "mow_boundary"):
-            zone_id = _zone_id(location.get(key))
-            if zone_id is not None:
-                observed.append(zone_id)
-                strong.append(zone_id)
+    # Raw cached MQTT location fields are deliberately not read here. A new pose
+    # packet must not make an older cached work target or current boundary look
+    # like fresh post-command target evidence.
+    _ = (mqtt_location, sent_at, handoff_at_send)
 
     observed = list(dict.fromkeys(observed))
-    strong = list(dict.fromkeys(strong))
     matching = [zone_id for zone_id in observed if zone_id == commanded]
-    strong_mismatch = [zone_id for zone_id in strong if zone_id != commanded]
+    conflicting = [zone_id for zone_id in observed if zone_id != commanded]
 
-    # Requested-zone evidence wins over an old boundary/work-target value. This
-    # is especially important during direct queue handoff where the previous
-    # zone can remain fresh for a short period after the next Mow command.
     if matching:
         return {
             "state": "confirmed",
             "observed_zone_ids": observed,
-            "strong_mismatch_zone_ids": strong_mismatch,
-        }
-
-    if strong_mismatch:
-        if handoff_at_send is True:
-            return {
-                "state": "pending",
-                "observed_zone_ids": observed,
-                "strong_mismatch_zone_ids": strong_mismatch,
-                "handoff_conflict": True,
-            }
-        return {
-            "state": "zone_mismatch",
-            "observed_zone_ids": observed,
-            "strong_mismatch_zone_ids": strong_mismatch,
+            "conflicting_zone_ids": conflicting,
+            "strong_mismatch_zone_ids": [],
         }
 
     if observed:
         return {
             "state": "pending",
             "observed_zone_ids": observed,
+            "conflicting_zone_ids": conflicting,
             "strong_mismatch_zone_ids": [],
         }
 
+    # Compatibility fallback for mower families that expose no usable per-zone
+    # start evidence at all. A real conflicting zone keeps us out of this path.
     return {
         "state": "confirmed" if vendor_mowing_at_send is False else "pending",
         "observed_zone_ids": [],
+        "conflicting_zone_ids": [],
         "strong_mismatch_zone_ids": [],
     }
-
 
 def later_iso(first: Any, second: Any) -> str | None:
     """Return the later valid ISO timestamp."""
