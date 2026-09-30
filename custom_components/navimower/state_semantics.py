@@ -5,8 +5,8 @@ promoting only field observations that are now repeated/proven enough for
 public entity semantics:
 
 * private state 0103 is Idle (not docked),
-* official MQTT numeric vehicleState=3 is a coarse stopped state and must not
-  imply docked/charging by itself,
+* official MQTT numeric vehicleState=3 is a coarse pause/idle hint and must not
+  imply docked/charging or force Paused by itself,
 * private state 0301 is the generic numeric-fault state,
 * index2.error_data is the authoritative source for active numeric fault code,
   title and content,
