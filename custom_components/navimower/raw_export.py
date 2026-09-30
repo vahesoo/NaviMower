@@ -1,8 +1,8 @@
 """Explicit unredacted Navimower raw-data export for local development.
 
-Unlike Home Assistant Download diagnostics, this action deliberately preserves
-vendor payload values and full map data. It is intended for the integration
-owner's local field research only and writes files below /config.
+Unlike Home Assistant Download diagnostics, this prerelease action deliberately
+preserves vendor payload values and full map data. It is intended for maintainer
+field research only, writes files below /config and must not be shared publicly.
 """
 from __future__ import annotations
 
@@ -92,12 +92,6 @@ async def async_export_raw_data(hass: HomeAssistant, coordinator: Any) -> str:
     private_payloads = await hass.async_add_executor_job(
         _fresh_private_payloads, coordinator
     )
-    mqtt_bridge = getattr(coordinator, "mqtt_bridge", None)
-    mqtt_raw = (
-        mqtt_bridge.raw_message_diagnostics()
-        if mqtt_bridge is not None and hasattr(mqtt_bridge, "raw_message_diagnostics")
-        else None
-    )
     document = {
         "format": "navimower-raw-data-v1",
         "created_utc": datetime.now(UTC).isoformat(),
@@ -113,7 +107,6 @@ async def async_export_raw_data(hass: HomeAssistant, coordinator: Any) -> str:
         "private_cloud_cached": deepcopy(getattr(coordinator, "_raw_cache", {})),
         "map_geometry_decoded": deepcopy(getattr(coordinator, "_map_geometry", None)),
         "map_cache_key": deepcopy(getattr(coordinator, "_map_cache_key", None)),
-        "mqtt_raw_last_messages": deepcopy(mqtt_raw),
         "mqtt_parsed_cache": deepcopy(getattr(coordinator, "_mqtt_location", None)),
         "coordinator_snapshot": deepcopy(coordinator.data or {}),
         "local_frame_check": local_frame_diagnostics(coordinator),
