@@ -632,6 +632,7 @@ class NavimowerScheduleController:
             data=data,
             mqtt_location=getattr(self.coordinator, "_mqtt_location", None),
             sent_at=pending.get("sent_at"),
+            handoff_at_send=pending.get("handoff_at_send"),
         )
 
     def _pending_mow_confirmed(self, pending: dict[str, Any], data: dict[str, Any]) -> bool:
@@ -1041,6 +1042,10 @@ class NavimowerScheduleController:
         partition_setup = mow_setup(reset=reset, ordered=False)
         data_before_send = self.coordinator.data or {}
         vendor_mowing_at_send = self._vendor_mowing(data_before_send)
+        handoff_at_send = data_before_send.get("activity") in {
+            ACTIVITY_MOWING,
+            ACTIVITY_RETURNING,
+        }
         self.coordinator.begin_mow_command_trace(
             source=source,
             requested_zone_ids=[zone_id],
@@ -1091,6 +1096,7 @@ class NavimowerScheduleController:
             "source": source,
             "baseline_completed_at": row.get("last_completed_at") if reset else None,
             "vendor_mowing_at_send": vendor_mowing_at_send if reset else None,
+            "handoff_at_send": handoff_at_send if reset else None,
         }
         self._runtime["last_command"] = f"mow:{zone_id}:reset={str(reset).lower()}"
         self._runtime["last_command_at"] = sent_at
