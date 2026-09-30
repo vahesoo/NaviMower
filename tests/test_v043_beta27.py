@@ -58,7 +58,9 @@ def test_scheduler_does_not_dispatch_a_new_zone_while_vendor_reports_charging():
     source = (COMPONENT / "navimower_schedule.py").read_text(encoding="utf-8")
     assert "MQTT_STATE_CHARGING" not in source
     assert "STATE_IDLE_DOCKED_POST" in source
-    charging = _function(source, "_vendor_charging")
+    charging_start = source.index("    def _vendor_charging(")
+    charging_end = source.index("    def _charging_limit_percent(", charging_start)
+    charging = source[charging_start:charging_end]
     assert 'state_code' in charging
     assert 'mqtt_vehicle_state' not in charging
     evaluate = _function(source, "_evaluate_locked")
