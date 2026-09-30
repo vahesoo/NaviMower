@@ -4170,9 +4170,19 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         if pose_updated:
             self._mqtt_last_update = now_monotonic
-        if location.get("vehicle_state") is not None:
+        state_updated = location.get("_state_updated") is True or (
+            "_state_updated" not in location
+            and location.get("vehicle_state") is not None
+            and location.get("vehicle_state") != previous_mqtt.get("vehicle_state")
+        )
+        if state_updated:
             self._mqtt_state_last_update = now_monotonic
-        if location.get("action") is not None:
+        action_updated = location.get("_action_updated") is True or (
+            "_action_updated" not in location
+            and location.get("action") is not None
+            and location.get("action") != previous_mqtt.get("action")
+        )
+        if action_updated:
             self._mqtt_action_last_update = now_monotonic
         if bool(location.get("_task_delay_updated")) or (
             self._mqtt_task_delay_last_update is None
