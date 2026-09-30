@@ -1,4 +1,17 @@
-from custom_components.navimower.custom_area_fallback import resolve_custom_area_presence
+import importlib.util
+from pathlib import Path
+
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "custom_components"
+    / "navimower"
+    / "custom_area_fallback.py"
+)
+spec = importlib.util.spec_from_file_location("navimower_custom_area_fallback", MODULE_PATH)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+resolve_custom_area_presence = module.resolve_custom_area_presence
 
 
 def test_mqtt_area_state_is_immediate():
