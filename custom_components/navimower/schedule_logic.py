@@ -92,13 +92,15 @@ def classify_schedule_mow_start(
     data: dict[str, Any],
     mqtt_location: dict[str, Any] | None,
     sent_at: Any,
+    handoff_at_send: bool | None = None,
 ) -> dict[str, Any]:
     """Classify a scheduler mow start without mistaking another retained task for success.
 
     A plain Docked/Idle -> Mowing transition is only a legacy fallback when no
-    fresh zone evidence exists. Any fresh observed zone must agree with the
-    scheduler command. A post-command MQTT work-target mismatch is strong
-    evidence that the mower resumed a different retained task.
+    fresh zone evidence exists. Matching fresh requested-zone evidence confirms
+    the start. A post-command MQTT mismatch remains strong evidence for a start
+    from dock/paused state, but during a scheduler-owned zone handoff the old
+    zone can legitimately remain in MQTT briefly while the mower transitions.
     """
     commanded = _zone_id(commanded_zone_id)
     if not vendor_mowing_now or commanded is None:
@@ -138,8 +140,27 @@ def classify_schedule_mow_start(
 
     observed = list(dict.fromkeys(observed))
     strong = list(dict.fromkeys(strong))
+    matching = [zone_id for zone_id in observed if zone_id == commanded]
     strong_mismatch = [zone_id for zone_id in strong if zone_id != commanded]
+
+    # Requested-zone evidence wins over an old boundary/work-target value. This
+    # is especially important during direct queue handoff where the previous
+    # zone can remain fresh for a short period after the next Mow command.
+    if matching:
+        return {
+            "state": "confirmed",
+            "observed_zone_ids": observed,
+            "strong_mismatch_zone_ids": strong_mismatch,
+        }
+
     if strong_mismatch:
+        if handoff_at_send is True:
+            return {
+                "state": "pending",
+                "observed_zone_ids": observed,
+                "strong_mismatch_zone_ids": strong_mismatch,
+                "handoff_conflict": True,
+            }
         return {
             "state": "zone_mismatch",
             "observed_zone_ids": observed,
@@ -148,7 +169,7 @@ def classify_schedule_mow_start(
 
     if observed:
         return {
-            "state": "confirmed" if all(zone_id == commanded for zone_id in observed) else "pending",
+            "state": "pending",
             "observed_zone_ids": observed,
             "strong_mismatch_zone_ids": [],
         }

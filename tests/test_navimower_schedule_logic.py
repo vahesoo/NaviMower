@@ -105,3 +105,48 @@ def test_scheduler_start_keeps_legacy_transition_fallback_without_zone_evidence(
         sent_at="2026-09-26T08:24:47+00:00",
     )
     assert result["state"] == "confirmed"
+
+
+def test_scheduler_handoff_waits_through_old_zone_mqtt_evidence():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=True,
+        handoff_at_send=True,
+        data={
+            "active_zone_progress_zone_id": 36,
+            "active_zone_progress_source_age": 2.0,
+            "mqtt_action_age": 2.0,
+        },
+        mqtt_location={
+            "work_target_zone": 36,
+            "mow_boundary": 36,
+            "pose_time": 1790752427000,
+        },
+        sent_at="2026-09-30T07:13:47+00:00",
+    )
+    assert result["state"] == "pending"
+    assert result["handoff_conflict"] is True
+    assert result["strong_mismatch_zone_ids"] == [36]
+
+
+def test_scheduler_requested_zone_confirmation_beats_stale_handoff_boundary():
+    result = classify_schedule_mow_start(
+        37,
+        vendor_mowing_now=True,
+        vendor_mowing_at_send=True,
+        handoff_at_send=True,
+        data={
+            "active_zone_progress_zone_id": 37,
+            "active_zone_progress_source_age": 2.0,
+            "mqtt_action_age": 2.0,
+        },
+        mqtt_location={
+            "work_target_zone": 36,
+            "mow_boundary": 36,
+            "pose_time": 1790752466000,
+        },
+        sent_at="2026-09-30T07:13:47+00:00",
+    )
+    assert result["state"] == "confirmed"
+    assert result["strong_mismatch_zone_ids"] == [36]

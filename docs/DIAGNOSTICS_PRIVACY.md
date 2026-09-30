@@ -42,9 +42,11 @@ Redaction tests cannot prove that every future service payload is safe. When in 
 
 ## Development captures
 
-The shipped integration does not expose raw-data export or arbitrary endpoint-probe actions. Home Assistant **Download diagnostics** is the supported public troubleshooting path.
+Home Assistant **Download diagnostics** is the supported public troubleshooting path and remains sanitized on every release channel.
 
-Maintainers may still arrange a separate private field-capture workflow for a specific compatibility investigation. Such captures are outside the integration UI/actions, may contain exact map/location values or identifiers, and must not be attached to a public GitHub issue or forum post.
+Stable releases do not expose raw-data export or arbitrary endpoint-probe actions. A prerelease development line may temporarily expose the explicit maintainer-only `navimower.export_raw_data` action for controlled field investigations. That action is unredacted by design, writes locally under `/config/navimower_diagnostics/raw/`, and must be removed again before stable promotion.
+
+Raw development captures may contain exact map/location values or identifiers and must not be attached to a public GitHub issue or forum post. Arbitrary endpoint probing, passive discovery and exact MQTT-payload retention remain outside the shipped integration.
 
 Only synthetic fixtures belong in the public test suite. Private field captures used during development are not committed or published by the tests.
 

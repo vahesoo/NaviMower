@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,33 +16,39 @@ def _source(name: str) -> str:
     return text
 
 
-def test_production_tree_does_not_ship_retired_development_capture_surfaces() -> None:
-    for name in (
-        "private_api_probe.py",
-        "raw_export.py",
-        "raw_mqtt_semantics.py",
-    ):
-        assert not (COMPONENT / name).exists(), name
-
-    init = _source("__init__.py")
-    runtime = _source("runtime.py")
+def test_development_capture_surfaces_follow_release_channel() -> None:
+    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
+    prerelease = "-" in str(manifest.get("version") or "")
     services = _source("services.py")
     services_yaml = _source("services.yaml")
+    runtime = _source("runtime.py")
 
+    # Private-cloud raw export is allowed only on prerelease builds for explicit
+    # maintainer field work. Stable releases must remove it again.
+    if prerelease:
+        assert (COMPONENT / "raw_export.py").exists()
+        assert "SERVICE_EXPORT_RAW_DATA" in services
+        assert "async_export_raw_data" in services
+        assert "export_raw_data:" in services_yaml
+    else:
+        assert not (COMPONENT / "raw_export.py").exists()
+        assert "SERVICE_EXPORT_RAW_DATA" not in services
+        assert "async_export_raw_data" not in services
+        assert "export_raw_data" not in services_yaml
+
+    # Arbitrary endpoint probing, passive discovery and exact MQTT-payload
+    # retention stay retired on every release channel.
+    assert not (COMPONENT / "private_api_probe.py").exists()
+    assert not (COMPONENT / "raw_mqtt_semantics.py").exists()
     for token in (
         "async_setup_private_api_probe",
         "SERVICE_PROBE_PRIVATE_API",
         "probe_private_api",
-        "SERVICE_EXPORT_RAW_DATA",
-        "async_export_raw_data",
-        "export_raw_data",
         "install_raw_mqtt_semantics",
     ):
-        assert token not in init
         assert token not in runtime
         assert token not in services
         assert token not in services_yaml
-
 
 def test_retired_passive_discovery_is_not_user_configurable_or_subscribed() -> None:
     const = _source("const.py")
@@ -79,8 +86,10 @@ def test_home_assistant_download_is_the_only_shipped_support_export() -> None:
 
     assert "def sanitize" in sanitizer
     assert "REDACTION_VERSION" in sanitizer
-    assert "Home Assistant **Download diagnostics** is the supported public troubleshooting path." in privacy_doc
-    assert "does not expose raw-data export or arbitrary endpoint-probe actions" in privacy_doc
+    assert "Home Assistant **Download diagnostics** is the supported public troubleshooting path" in privacy_doc
+    assert "Stable releases do not expose raw-data export or arbitrary endpoint-probe actions" in privacy_doc
+    assert "navimower.export_raw_data" in privacy_doc
+    assert "must be removed again before stable promotion" in privacy_doc
 
 
 def test_interoperability_boundary_keeps_secrets_backend_owned() -> None:
