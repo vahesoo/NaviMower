@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -65,6 +66,8 @@ def _find_first(value: Any, keys: set[str]) -> Any:
 
 def _redact_signed_urls(value: Any) -> Any:
     """Persist response structure/metadata without storing short-lived URLs."""
+    if isinstance(value, str) and value.startswith(("https://", "http://")):
+        return _REDACTED_SIGNED_URL
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for key, item in value.items():
@@ -110,9 +113,10 @@ def _normalize_types(values: Any) -> list[int]:
 
 
 def _safe_error(err: Exception) -> dict[str, Any]:
+    message = re.sub(r"https?://\\S+", "<redacted-url>", str(err))
     return {
         "type": type(err).__name__,
-        "message": str(err)[:500],
+        "message": message[:500],
     }
 
 
