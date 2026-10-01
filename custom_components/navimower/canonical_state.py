@@ -1,6 +1,6 @@
 """Pure canonical-v2 shadow model for the 0.5 architecture migration.
 
-Beta2 deliberately keeps this model read-only while field parity hardens. It receives already captured
+Beta3 keeps this model read-only while current-map semantics align to vendor state. It receives already captured
 observations plus the current ZoneLedger state and resolves a compact canonical
 view without mutating Home Assistant entities, History, Schedule or rendering.
 """
@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 CANONICAL_SCHEMA_VERSION = 1
-CANONICAL_MODE = "shadow_beta2"
+CANONICAL_MODE = "shadow_beta3"
 DEFAULT_MQTT_POSE_MAX_AGE_S = 20.0
 DEFAULT_CLOUD_POSITION_MAX_AGE_S = 90.0
 
@@ -168,7 +168,7 @@ def build_canonical_shadow(
     cloud_position_age_s: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
 ) -> dict[str, Any]:
-    """Build the beta1 canonical candidate without changing public state."""
+    """Build the beta3 canonical candidate without changing public authority."""
     owned = set(vendor_owned_zone_ids or set())
     mqtt_age = _as_float(snapshot.get("mqtt_pose_age"))
     position = resolve_position(
