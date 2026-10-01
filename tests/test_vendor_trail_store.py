@@ -578,3 +578,64 @@ def test_current_cycle_history_fallback_drops_non_cutting_travel_points(store):
     result = get_render(store, [travel])
     assert result["source_point_count"] == 2
     assert result["vendor_trail_debug"]["mqtt_fallback_zone_ids"] == [91]
+
+
+def test_beta4_gap_guard_does_not_retroactively_split_existing_geometry(store):
+    observe(store)
+    row = geometry(end=10)
+    # Synthetic old phantom edge inside geometry already present before beta4.
+    row["points"][5] = [50.0, 0.0]
+    assert store.accept(row)
+
+    record = store.records[92]
+    assert record["future_gap_break_indices"] == []
+    assert record["gap_guard_scanned_point_count"] == len(row["points"])
+
+    source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
+    assert len(source["segment_starts_ms"]) == 1
+
+
+def test_beta4_gap_guard_splits_only_newly_appended_large_jump(store):
+    observe(store)
+    assert store.accept(geometry(end=10))
+    before = deepcopy(store.records[92])
+    assert before["future_gap_break_indices"] == []
+
+    row = geometry(end=10)
+    row["points"] = [*row["points"], [100.0, 0.0], [101.0, 0.0]]
+    assert store.accept(row)
+
+    record = store.records[92]
+    assert record["future_gap_break_indices"] == [11]
+    assert record["gap_guard_scanned_point_count"] == 13
+
+    source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
+    assert len(source["segment_starts_ms"]) == 2
+    break_stamp = source["points"][11][0]
+    assert break_stamp in source["segment_starts_ms"]
+
+    # The newly rendered cutting geometry must contain two route fragments,
+    # so no edge from x=10 directly to x=100 is rasterized.
+    archive = svg.build_session_svg_archive(source)
+    assert len(archive["route"]["cutting_segments"]) == 2
+    assert archive["route"]["cutting_segments"][0][-1] == [10.0, 0.0]
+    assert archive["route"]["cutting_segments"][1][0] == [100.0, 0.0]
+
+
+def test_beta4_gap_guard_metadata_survives_restart(store):
+    observe(store)
+    assert store.accept(geometry(end=10))
+    row = geometry(end=10)
+    row["points"] = [*row["points"], [50.0, 0.0]]
+    assert store.accept(row)
+    assert store.records[92]["future_gap_break_indices"] == [11]
+
+    asyncio.run(store.async_flush())
+    restored = store_module.VendorTrailStore(Hass(), "mower", storage=store.storage)
+    asyncio.run(restored.async_load())
+    assert restored.records[92]["future_gap_break_indices"] == [11]
+    assert restored.records[92]["gap_guard_scanned_point_count"] == 12
+    diag = restored.recovery_diagnostics()
+    assert diag["future_gap_guard_threshold_m"] == 5.0
+    assert diag["future_gap_guard_break_count"] == 1
+    assert diag["future_gap_guard_zone_count"] == 1
