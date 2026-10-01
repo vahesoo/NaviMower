@@ -144,3 +144,47 @@ def test_task_shadow_uses_zone_ledger_task_candidate() -> None:
     assert state["task"]["source"] == "zone_ledger_task"
     assert state["task"]["progress_pct"] == 43.0
     assert state["task"]["zone_ids"] == [5]
+
+
+def test_missing_mqtt_pose_reports_private_cloud_fallback_reason() -> None:
+    snapshot = _base_snapshot()
+    snapshot["mqtt_pose_age"] = None
+    snapshot["position"] = {"x": 7.5, "y": -0.4, "heading": 1.2}
+    ledger_state, ledger_diagnostics = _ledger()
+    state = canonical.build_canonical_shadow(
+        snapshot,
+        ledger_state=ledger_state,
+        ledger_diagnostics=ledger_diagnostics,
+        cloud_position=snapshot["position"],
+        cloud_position_age_s=8.0,
+    )
+    assert state["health"]["mqtt_pose_seen"] is False
+    assert state["health"]["mqtt_pose_available"] is False
+    assert state["health"]["position_fallback_reason"] == "mqtt_pose_missing"
+    assert state["parity"]["match"] is True
+
+
+def test_ledger_enrichment_does_not_fail_compatibility_parity() -> None:
+    snapshot = _base_snapshot()
+    snapshot["mqtt_pose_age"] = 1
+    snapshot["position"] = {"x": 0, "y": 0}
+    ledger_state, ledger_diagnostics = _ledger()
+    ledger_diagnostics["strict_match"] = False
+    ledger_diagnostics["enrichments"] = {
+        "task_area_m2": {
+            "legacy": None,
+            "ledger": 100.0,
+            "delta": None,
+            "classification": "canonical_enrichment",
+        }
+    }
+    state = canonical.build_canonical_shadow(
+        snapshot,
+        ledger_state=ledger_state,
+        ledger_diagnostics=ledger_diagnostics,
+        mqtt_position={"x": 0, "y": 0},
+    )
+    assert state["parity"]["match"] is True
+    assert state["parity"]["zone_ledger_match"] is True
+    assert state["parity"]["zone_ledger_strict_match"] is False
+    assert "task_area_m2" in state["parity"]["zone_ledger_enrichments"]
