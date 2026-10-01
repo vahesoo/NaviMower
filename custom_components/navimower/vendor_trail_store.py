@@ -20,6 +20,7 @@ from .zone_ledger import as_int, normalize_ledger_state
 
 _LOGGER = logging.getLogger(__name__)
 STORE_VERSION = 1
+FUTURE_VENDOR_GAP_SPLIT_M = 5.0
 
 
 def trail_store(hass: Any, entry_id: str) -> Any:
@@ -430,6 +431,17 @@ class VendorTrailStore:
             "last_vendor_fetch_candidate_zone_count": self.last_vendor_fetch_candidate_zone_count,
             "last_vendor_fetch_requested_zone_count": self.last_vendor_fetch_requested_zone_count,
             "last_vendor_fetch_blocked_zone_count": self.last_vendor_fetch_blocked_zone_count,
+            "future_gap_guard_threshold_m": FUTURE_VENDOR_GAP_SPLIT_M,
+            "future_gap_guard_break_count": sum(
+                len(row.get("future_gap_break_indices") or [])
+                for row in self.records.values()
+                if isinstance(row, dict)
+            ),
+            "future_gap_guard_zone_count": sum(
+                1
+                for row in self.records.values()
+                if isinstance(row, dict) and row.get("future_gap_break_indices")
+            ),
         }
 
     def accept(self, row: dict[str, Any]) -> bool:
@@ -449,11 +461,60 @@ class VendorTrailStore:
         if ledger_row.get("progress_pct") == 0 or ledger_row.get("progress_guard"):
             return False
         previous = self.records.get(zone_id) or {}
-        if len(points) < len(previous.get("points") or []):
+        previous_points = previous.get("points") or []
+        if len(points) < len(previous_points):
             return False
         digest = hashlib.sha256(json.dumps(points, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         if previous.get("geometry_revision") == digest:
             return False
+
+        # Beta4 forward-only gap guard. Existing retained geometry is never
+        # rescanned or rewritten on upgrade: the first observation establishes
+        # a scan cursor at the already-known point count. Only edges appended
+        # after that cursor can create a new segment break.
+        known_scan_count = as_int(previous.get("gap_guard_scanned_point_count"))
+        if previous:
+            scan_from = (
+                max(1, min(known_scan_count, len(points)))
+                if known_scan_count is not None
+                else len(previous_points)
+            )
+        else:
+            scan_from = len(points)
+
+        prefix_continues = True
+        if previous_points and len(points) >= len(previous_points):
+            prefix_continues = self._same_xy(
+                previous_points[-1],
+                points[len(previous_points) - 1],
+            )
+        breaks = {
+            int(index)
+            for index in (previous.get("future_gap_break_indices") or [])
+            if isinstance(index, int) and 0 < index < len(points)
+        } if prefix_continues else set()
+
+        if prefix_continues and scan_from < len(points):
+            for index in range(max(1, scan_from), len(points)):
+                first = points[index - 1]
+                second = points[index]
+                if (
+                    not isinstance(first, (list, tuple))
+                    or not isinstance(second, (list, tuple))
+                    or len(first) < 2
+                    or len(second) < 2
+                ):
+                    continue
+                try:
+                    distance = math.hypot(
+                        float(second[0]) - float(first[0]),
+                        float(second[1]) - float(first[1]),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(distance) and distance > FUTURE_VENDOR_GAP_SPLIT_M:
+                    breaks.add(index)
+
         record = deepcopy(row)
         record.update({
             "cycle_id": cycle_id,
@@ -464,6 +525,9 @@ class VendorTrailStore:
             "artifact_anchor_xy": previous.get("artifact_anchor_xy"),
             "artifact_point_count": previous.get("artifact_point_count"),
             "tail": previous.get("tail", {}),
+            "future_gap_break_indices": sorted(breaks),
+            "gap_guard_scanned_point_count": len(points),
+            "gap_guard_version": 1,
         })
         self.records[zone_id] = record
         self.revision += 1
