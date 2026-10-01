@@ -1,6 +1,6 @@
 """Pure canonical-v2 shadow model for the 0.5 architecture migration.
 
-Beta1 deliberately keeps this model read-only. It receives already captured
+Beta2 deliberately keeps this model read-only while field parity hardens. It receives already captured
 observations plus the current ZoneLedger state and resolves a compact canonical
 view without mutating Home Assistant entities, History, Schedule or rendering.
 """
@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 CANONICAL_SCHEMA_VERSION = 1
-CANONICAL_MODE = "shadow"
+CANONICAL_MODE = "shadow_beta2"
 DEFAULT_MQTT_POSE_MAX_AGE_S = 20.0
 DEFAULT_CLOUD_POSITION_MAX_AGE_S = 90.0
 
@@ -189,7 +189,30 @@ def build_canonical_shadow(
     task_area_match = _close(task.get("mowed_area_m2"), totals.get("task_mowed_area_m2"), 0.05)
     zone_count_match = len(cycles) == len(public_rows) if cycles or public_rows else True
     ledger_match = ledger_diagnostics.get("match") if isinstance(ledger_diagnostics, dict) else None
+    ledger_strict_match = (
+        ledger_diagnostics.get("strict_match")
+        if isinstance(ledger_diagnostics, dict)
+        else None
+    )
+    ledger_enrichments = (
+        deepcopy(ledger_diagnostics.get("enrichments") or {})
+        if isinstance(ledger_diagnostics, dict)
+        else {}
+    )
     checks = [v for v in (position_match, task_progress_match, task_area_match, zone_count_match, ledger_match) if isinstance(v, bool)]
+
+    mqtt_pose_seen = mqtt_age is not None
+    mqtt_pose_fresh = _position(mqtt_position) is not None and (
+        mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s
+    )
+    fallback_reason = None
+    if position.get("source") == "private_cloud":
+        if mqtt_age is None:
+            fallback_reason = "mqtt_pose_missing"
+        elif mqtt_age > mqtt_pose_max_age_s:
+            fallback_reason = "mqtt_pose_stale"
+        elif not mqtt_pose_fresh:
+            fallback_reason = "mqtt_pose_unavailable"
 
     map_payload = snapshot.get("map") if isinstance(snapshot.get("map"), dict) else {}
     return {
@@ -246,10 +269,15 @@ def build_canonical_shadow(
             "task_mowed_area_match": task_area_match,
             "zone_count_match": zone_count_match,
             "zone_ledger_match": ledger_match,
+            "zone_ledger_strict_match": ledger_strict_match,
+            "zone_ledger_enrichments": ledger_enrichments,
         },
         "health": {
             "mqtt_pose_age_s": round(mqtt_age, 3) if mqtt_age is not None else None,
+            "mqtt_pose_seen": mqtt_pose_seen,
+            "mqtt_pose_available": mqtt_pose_fresh,
             "mqtt_pose_sparse_or_stale": bool(mqtt_age is not None and mqtt_age > mqtt_pose_max_age_s),
+            "position_fallback_reason": fallback_reason,
             "private_cloud_position_fallback_active": position.get("source") == "private_cloud",
         },
     }
