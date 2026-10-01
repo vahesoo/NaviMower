@@ -295,7 +295,6 @@ def _write_bundle(bundle: Path, json_path: Path, artifacts: list[Path]) -> None:
 def _run_probe_blocking(
     coordinator: Any,
     file_types: list[int],
-    *,
     download_artifacts: bool,
     folder: Path,
     stamp: str,
@@ -368,9 +367,9 @@ async def async_probe_iot_file(
         _run_probe_blocking,
         coordinator,
         normalized,
-        download_artifacts=bool(download_artifacts),
-        folder=folder,
-        stamp=stamp,
+        bool(download_artifacts),
+        folder,
+        stamp,
     )
 
     json_path = folder / f"navimower_iot_file_probe_{stamp}.json"
