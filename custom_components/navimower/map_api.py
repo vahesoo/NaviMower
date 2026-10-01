@@ -121,11 +121,67 @@ def _frontend_metadata(coordinator: Any) -> dict[str, Any]:
     }
 
 
+def _canonical_frontend_state(coordinator: Any) -> dict[str, Any]:
+    """Return the paired v2 frontend contract from authoritative cached state."""
+    state = getattr(coordinator, "_canonical_state", None)
+    if not isinstance(state, dict):
+        return {
+            "schema_version": 1,
+            "mode": "unavailable",
+            "public_owner": "canonical_mower_state",
+            "device": {},
+            "navigation": {},
+            "task": {},
+            "cycles": {"rows": []},
+        }
+
+    navigation = dict(state.get("navigation") or {})
+    position = dict(navigation.get("position") or {})
+    # Exact local X/Y already has dedicated HA entities; keep the resource
+    # contract compact and source-oriented.
+    navigation["position"] = {
+        "available": position.get("available"),
+        "source": position.get("source"),
+        "source_age_s": position.get("source_age_s"),
+        "stale": position.get("stale"),
+    }
+    return {
+        "schema_version": state.get("schema_version"),
+        "mode": state.get("mode"),
+        "public_owner": state.get("public_owner"),
+        "owners": dict(state.get("owners") or {}),
+        "device": dict(state.get("device") or {}),
+        "navigation": navigation,
+        "task": dict(state.get("task") or {}),
+        "cycles": {
+            "ledger_revision": (state.get("cycles") or {}).get("ledger_revision"),
+            "vendor_store_revision": (state.get("cycles") or {}).get("vendor_store_revision"),
+            "rows": [
+                dict(row)
+                for row in (state.get("cycles") or {}).get("rows") or []
+                if isinstance(row, dict)
+            ],
+        },
+    }
+
+
 def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach small frontend metadata and persistent Custom Area geometry."""
+    """Attach the paired resource contract and persistent Custom Area geometry."""
+    frontend = _frontend_metadata(coordinator)
+    frontend["resource_contract_version"] = 2
     return {
         **payload,
-        "frontend": _frontend_metadata(coordinator),
+        "contract": {
+            "version": 2,
+            "authority": "canonical_mower_state",
+            "cycle_owner": "ZoneLedger",
+            "history_owner": "History",
+            "current_cycle_resource": "map_artifacts",
+            "live_route_resource": "prepared_render_model",
+            "compatibility_aliases": True,
+        },
+        "canonical": _canonical_frontend_state(coordinator),
+        "frontend": frontend,
         "custom_areas": [
             area.as_dict()
             for area in parse_custom_areas(
