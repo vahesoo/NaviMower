@@ -1,8 +1,8 @@
-"""Run the canonical ZoneLedger beside the legacy zone model without publishing it.
+"""Run ZoneLedger as the public CycleEngine zone/task owner.
 
-ZoneLedger is authoritative for retained trail cycle/reset identity. Numeric
-sensor migration remains a shadow comparison against the existing public model.
-The ledger and VendorTrailStore are persisted together before restart recovery.
+Legacy reduction is still compared for cutover diagnostics, but public
+zone_states/totals/task aliases are projected from the ledger result. The ledger
+and VendorTrailStore remain persisted together across restart recovery.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from . import coordinator as _coordinator
 from .zone_ledger import as_float, as_int, reduce_zone_ledger
 
 _LOGGER = logging.getLogger(__name__)
-_SHADOW_TOTALS_KEY = "_zone_ledger_shadow"
+_CUTOVER_TOTALS_KEY = "_zone_ledger_cutover"
 
 
 def _close(left: Any, right: Any, *, tolerance: float) -> bool:
@@ -107,7 +107,7 @@ def _metric_diff(
     }
 
 
-def build_shadow_diagnostics(
+def build_cutover_diagnostics(
     *,
     legacy_rows: list[dict[str, Any]],
     legacy_totals: dict[str, Any],
@@ -117,7 +117,7 @@ def build_shadow_diagnostics(
     ledger_state: dict[str, Any],
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return a compact, deterministic legacy-vs-ledger comparison."""
+    """Return a compact legacy-vs-authority comparison during cutover."""
     legacy_by_id = _rows_by_id(legacy_rows)
     ledger_by_id = _rows_by_id(ledger_rows)
     zone_differences: list[dict[str, Any]] = []
@@ -185,8 +185,8 @@ def build_shadow_diagnostics(
     match = not zone_differences and not metric_differences
     strict_match = match and not enrichments
     return {
-        "mode": "shadow",
-        "public_owner": "legacy_zone_model",
+        "mode": "authority_cutover",
+        "public_owner": "ZoneLedger",
         "ledger_revision": as_int(ledger_state.get("revision")) or 0,
         "match": match,
         "strict_match": strict_match,
@@ -214,8 +214,8 @@ def build_shadow_diagnostics(
     }
 
 
-def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
-    """Reduce and compare one completed legacy snapshot without changing public values."""
+def _run_authority(owner: Any, snapshot: dict[str, Any]) -> None:
+    """Reduce one snapshot and publish ZoneLedger rows/totals as current state."""
     legacy_rows = snapshot.get("zone_states")
     legacy_totals = snapshot.get("totals")
     if not isinstance(legacy_rows, list) or not isinstance(legacy_totals, dict):
@@ -232,7 +232,7 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
     if not isinstance(active_session, dict):
         active_session = None
 
-    previous_state = getattr(owner, "_zone_ledger_shadow_state", None)
+    previous_state = getattr(owner, "_zone_ledger_state", None)
     cycle_diagnostics = (
         history.cycle_diagnostics()
         if history is not None and hasattr(history, "cycle_diagnostics")
@@ -250,11 +250,11 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         active_session=active_session,
         observed_at_ms=int(time.time() * 1000),
     )
-    owner._zone_ledger_shadow_state = state  # noqa: SLF001
+    owner._zone_ledger_state = state  # noqa: SLF001
     accept = getattr(owner, "_accept_vendor_observations", None)
     if accept is not None:
         accept(snapshot)
-    diagnostics = build_shadow_diagnostics(
+    diagnostics = build_cutover_diagnostics(
         legacy_rows=legacy_rows,
         legacy_totals=legacy_totals,
         ledger_rows=rows,
@@ -263,20 +263,30 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         ledger_state=state,
         events=events,
     )
-    owner._zone_ledger_shadow_diagnostics = diagnostics  # noqa: SLF001
+    owner._zone_ledger_diagnostics = diagnostics  # noqa: SLF001
     diagnostics["cycle_owner"] = "ZoneLedger"
     diagnostics["trail_owner"] = "VendorTrailStore"
-    snapshot["zone_ledger_shadow"] = diagnostics
-    # Download diagnostics already includes ``totals``. Keeping the comparison
-    # beneath a clearly private key makes the first shadow beta observable
-    # without changing any sensor state or replacing the public totals values.
-    legacy_totals[_SHADOW_TOTALS_KEY] = diagnostics
+    snapshot["zone_ledger"] = diagnostics
+    # Publish the CycleEngine result. Legacy values survive only inside the
+    # cutover diagnostics above.
+    snapshot["zone_states"] = deepcopy(rows)
+    snapshot["zone_states_revision"] = as_int(state.get("revision")) or 0
+    public_totals = deepcopy(totals)
+    public_totals[_CUTOVER_TOTALS_KEY] = diagnostics
+    snapshot["totals"] = public_totals
+    snapshot["mowing_progress"] = task.get("progress_pct")
+    snapshot["mowing_progress_source"] = task.get("progress_source") or "cycle_engine"
+    snapshot["task_progress"] = task.get("progress_pct")
+    snapshot["session_area"] = task.get("mowed_area_m2")
+    snapshot["session_area_source"] = task.get("mowed_area_source") or "cycle_engine"
+    snapshot["task_mowed_area"] = task.get("mowed_area_m2")
+    snapshot["cycle_engine_owner"] = "ZoneLedger"
 
 
-def install_zone_ledger_shadow_semantics() -> None:
-    """Install ZoneLedger after the final legacy numeric semantics wrapper."""
+def install_zone_ledger_semantics() -> None:
+    """Install ZoneLedger as the final public zone/task resolver."""
     coordinator_cls = _coordinator.NavimowCoordinator
-    if getattr(coordinator_cls, "_zone_ledger_shadow_semantics_installed", False):
+    if getattr(coordinator_cls, "_zone_ledger_semantics_installed", False):
         return
 
     original_refresh_zone_model = coordinator_cls._refresh_zone_model
@@ -284,21 +294,23 @@ def install_zone_ledger_shadow_semantics() -> None:
     def refresh_zone_model(self: Any, snapshot: dict[str, Any]) -> None:
         original_refresh_zone_model(self, snapshot)
         try:
-            _run_shadow(self, snapshot)
+            _run_authority(self, snapshot)
         except Exception as err:  # noqa: BLE001
-            # Shadow mode must never alter availability or the public model.
             diagnostics = {
-                "mode": "shadow",
-                "public_owner": "legacy_zone_model",
+                "mode": "authority_cutover",
+                "public_owner": "ZoneLedger",
                 "match": None,
                 "error": f"{type(err).__name__}: {err}",
             }
-            self._zone_ledger_shadow_diagnostics = diagnostics  # noqa: SLF001
-            snapshot["zone_ledger_shadow"] = diagnostics
+            self._zone_ledger_diagnostics = diagnostics  # noqa: SLF001
+            snapshot["zone_ledger"] = diagnostics
             totals = snapshot.get("totals")
             if isinstance(totals, dict):
-                totals[_SHADOW_TOTALS_KEY] = diagnostics
-            _LOGGER.debug("ZoneLedger shadow reduction failed", exc_info=True)
+                totals[_CUTOVER_TOTALS_KEY] = diagnostics
+            # Fail open to the already-resolved legacy snapshot for one cycle;
+            # diagnostics make the fallback explicit instead of making HA
+            # unavailable.
+            _LOGGER.exception("ZoneLedger authority reduction failed")
 
     coordinator_cls._refresh_zone_model = refresh_zone_model
-    coordinator_cls._zone_ledger_shadow_semantics_installed = True
+    coordinator_cls._zone_ledger_semantics_installed = True
