@@ -17,7 +17,7 @@ def test_beta3_version_and_notes() -> None:
     for marker in (
         "Vendor-current-state alignment",
         "100% or 69% to 0%",
-        "current trail",
+        "Current trail",
         "cutting",
         "0.4.0-beta3",
         "shadow-only",
