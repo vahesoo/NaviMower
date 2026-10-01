@@ -6,7 +6,7 @@ import sys
 import types
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = "navimower_shadow_diag_test"
+PKG = "navimower_cutover_diag_test"
 pkg = types.ModuleType(PKG)
 pkg.__path__ = [str(ROOT / "custom_components" / "navimower")]
 sys.modules[PKG] = pkg
@@ -27,7 +27,7 @@ semantics = sys.modules[f"{PKG}.zone_ledger_semantics"]
 
 
 def test_task_area_only_addition_is_classified_as_enrichment() -> None:
-    report = semantics.build_shadow_diagnostics(
+    report = semantics.build_cutover_diagnostics(
         legacy_rows=[{"id": 36, "coverage_pct": 74.0, "mowed_area_m2": 1222.52}],
         legacy_totals={
             "map_area_m2": 1733.8,
@@ -58,7 +58,7 @@ def test_task_area_only_addition_is_classified_as_enrichment() -> None:
 
 
 def test_real_zone_regression_still_fails_compatibility_parity() -> None:
-    report = semantics.build_shadow_diagnostics(
+    report = semantics.build_cutover_diagnostics(
         legacy_rows=[{"id": 140, "coverage_pct": 100.0, "mowed_area_m2": 281.29}],
         legacy_totals={
             "map_area_m2": 281.29,

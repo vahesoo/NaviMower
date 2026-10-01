@@ -77,7 +77,7 @@ def test_sparse_h1_mqtt_falls_back_to_private_cloud_without_losing_cycle() -> No
     snapshot["mqtt_pose_age"] = 3600
     snapshot["position"] = {"x": 7.5, "y": -0.4, "heading": 1.2}
     ledger_state, ledger_diagnostics = _ledger()
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
@@ -98,7 +98,7 @@ def test_dense_mqtt_position_wins_over_cloud() -> None:
     snapshot["mqtt_pose_age"] = 0.4
     snapshot["position"] = {"x": 9.0, "y": 3.0, "heading": 0.3}
     ledger_state, ledger_diagnostics = _ledger()
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
@@ -116,7 +116,7 @@ def test_diagnostics_never_export_exact_position_coordinates() -> None:
     snapshot["mqtt_pose_age"] = 1.0
     snapshot["position"] = {"x": 123.456, "y": -987.654, "heading": 0.3}
     ledger_state, ledger_diagnostics = _ledger()
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
@@ -130,12 +130,12 @@ def test_diagnostics_never_export_exact_position_coordinates() -> None:
     assert "987.654" not in repr(report)
 
 
-def test_task_shadow_uses_zone_ledger_task_candidate() -> None:
+def test_task_authority_uses_zone_ledger_task() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = 1
     snapshot["position"] = {"x": 0, "y": 0}
     ledger_state, ledger_diagnostics = _ledger()
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
@@ -151,7 +151,7 @@ def test_missing_mqtt_pose_reports_private_cloud_fallback_reason() -> None:
     snapshot["mqtt_pose_age"] = None
     snapshot["position"] = {"x": 7.5, "y": -0.4, "heading": 1.2}
     ledger_state, ledger_diagnostics = _ledger()
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
@@ -178,7 +178,7 @@ def test_ledger_enrichment_does_not_fail_compatibility_parity() -> None:
             "classification": "canonical_enrichment",
         }
     }
-    state = canonical.build_canonical_shadow(
+    state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
         ledger_diagnostics=ledger_diagnostics,
