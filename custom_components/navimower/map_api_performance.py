@@ -15,7 +15,7 @@ from aiohttp import web
 from homeassistant.util import dt as dt_util
 
 from . import map_api as _map_api
-from .const import MAP_API_SCHEMA_VERSION
+from .const import MAP_API_SCHEMA_VERSION, MAP_RESOURCE_CONTRACT_VERSION
 from .map_artifacts import MapArtifactUnavailable
 
 
@@ -154,6 +154,12 @@ async def _async_current_cycle_only(coordinator: Any) -> dict[str, Any]:
     map_data = data.get("map") or {}
     return {
         "schema_version": MAP_API_SCHEMA_VERSION,
+        "contract": {
+            "version": MAP_RESOURCE_CONTRACT_VERSION,
+            "authority": "canonical_mower_state",
+            "cycle_owner": "ZoneLedger",
+            "history_owner": "History",
+        },
         "entry_id": coordinator.entry.entry_id,
         "map_revision": map_data.get("revision"),
         "map_version": map_data.get("map_version"),
