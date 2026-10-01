@@ -10,7 +10,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, MAP_API_SCHEMA_VERSION
+from .const import DOMAIN, MAP_API_SCHEMA_VERSION, MAP_RESOURCE_CONTRACT_VERSION
 from .current_cycle_render import CurrentCycleRenderManager
 from .custom_area import OPT_CUSTOM_AREAS, parse_custom_areas
 from .map_underlay import (
@@ -168,11 +168,11 @@ def _canonical_frontend_state(coordinator: Any) -> dict[str, Any]:
 def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach the paired resource contract and persistent Custom Area geometry."""
     frontend = _frontend_metadata(coordinator)
-    frontend["resource_contract_version"] = 2
+    frontend["resource_contract_version"] = MAP_RESOURCE_CONTRACT_VERSION
     return {
         **payload,
         "contract": {
-            "version": 2,
+            "version": MAP_RESOURCE_CONTRACT_VERSION,
             "authority": "canonical_mower_state",
             "cycle_owner": "ZoneLedger",
             "history_owner": "History",
