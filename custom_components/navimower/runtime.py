@@ -9,6 +9,7 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
+from .canonical_shadow_semantics import install_canonical_shadow_semantics
 from .completion_semantics import install_completion_semantics
 from .gate_area_polygon_semantics import install_gate_area_polygon_semantics
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
@@ -118,6 +119,9 @@ def install_runtime_extensions() -> None:
     # VendorTrailStore is sticky per zone/cycle, independently of task state.
     install_vendor_trail_render_semantics()
     install_vendor_tail_semantics()
+    # 0.5 beta1: build the new canonical state in shadow mode after the final
+    # zone/cycle source owners have run. It is diagnostic-only until beta2.
+    install_canonical_shadow_semantics()
     install_map_api_performance()
     # OSM binary mode wraps the final phased map-view handler, so install it only
     # after the Map API performance layer has replaced NavimowerMapView.get.

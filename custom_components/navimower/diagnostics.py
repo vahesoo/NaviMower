@@ -227,6 +227,7 @@ async def async_get_config_entry_diagnostics(
         if mqtt_bridge is not None and hasattr(mqtt_bridge, "diagnostic_inventory") else None
     )
     private_polling = coordinator.polling_diagnostics() if hasattr(coordinator, "polling_diagnostics") else None
+    canonical_v2 = deepcopy(getattr(coordinator, "_canonical_shadow_diagnostics", None))
     prepared_render = getattr(coordinator, "prepared_render_model", None)
     prepared_render_diagnostics = (
         prepared_render.diagnostics()
@@ -322,6 +323,7 @@ async def async_get_config_entry_diagnostics(
         )),
         "private_cloud_region": private_cloud_region_diagnostics(coordinator),
         "capabilities": capabilities,
+        "canonical_v2": canonical_v2,
         "positioning": _selected(data, (
             "heading", "pose_source", "mqtt_pose_age",
             "current_physical_zone_id", "current_physical_zone_source",
@@ -436,6 +438,7 @@ async def async_get_config_entry_diagnostics(
             "Georeference diagnostics retain local transform/validation context; geographic coordinates are redacted.",
             "Map underlay diagnostics retain availability/session status, not Google keys or session tokens.",
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
+        "Canonical v2 is shadow-only in 0.5.0-beta1; diagnostics expose source/parity summaries but never exact position coordinates.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "History performance diagnostics include only point counts and timing/counter statistics; route geometry is not exported.",
             "Vendor trail recovery diagnostics expose only bootstrap/checkpoint/backfill counts and timings; route geometry is not exported.",

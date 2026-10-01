@@ -56,4 +56,8 @@ def pytest_ignore_collect(collection_path, config) -> bool:  # noqa: ARG001
         beta_name = name.removeprefix("test_v047_").removesuffix(".py")
         if version != f"0.4.7-{beta_name}":
             return True
+    if name.startswith("test_v050_beta") and name.endswith(".py"):
+        beta_name = name.removeprefix("test_v050_").removesuffix(".py")
+        if version != f"0.5.0-{beta_name}":
+            return True
     return False
