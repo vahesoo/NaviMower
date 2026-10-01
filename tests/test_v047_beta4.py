@@ -51,7 +51,7 @@ def test_beta4_probe_never_persists_signed_vendor_url() -> None:
     assert '_REDACTED_SIGNED_URL = "**REDACTED_SIGNED_URL**"' in probe
     assert "row.pop(\"_signed_url_runtime\", None)" in probe
     assert "Signed download URLs are never persisted" in probe
-    assert 're.sub(r"https?://\\\\S+", "<redacted-url>", str(err))' in probe
+    assert 're.sub(r"https?://\\S+", "<redacted-url>", str(err))' in probe
 
 
 def test_beta4_keeps_arbitrary_probe_retired() -> None:
