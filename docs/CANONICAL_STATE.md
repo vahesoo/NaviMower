@@ -21,9 +21,9 @@ The backend remains authoritative for vendor semantics, cycle identity, georefer
 
 ## Beta 1
 
-0.5.0-beta1 is intentionally **shadow-only**.
+0.5.0-beta1 introduced the first **shadow-only** canonical reducer and field parity diagnostics.
 
-The new reducer currently proves these boundaries without replacing public state:
+The new reducer proved these boundaries without replacing public state:
 
 - position source arbitration is one resolver;
 - task state is projected once;
@@ -35,7 +35,25 @@ The sparse-MQTT H1 regression is a required case: private-cloud position may tak
 
 No entity or service reads Canonical v2 as its authority in beta1.
 
+## Beta 2
+
+0.5.0-beta2 deliberately remains shadow-only after the first field pass exposed
+two migration-specific gaps:
+
+- X390 retained same-cycle progress needed a stronger vendor-start identity rule
+  plus a one-way History peak migration seed;
+- H215 task area is a canonical enrichment when legacy does not publish a value,
+  not a compatibility failure.
+
+Beta2 also makes sparse/missing/stale MQTT pose fallback reasons explicit in
+canonical diagnostics. Public entities and the existing Map API remain on the
+legacy runtime while these fixes are verified on real mowers.
+
 ## Planned next steps
 
-- beta2: move public consumers to Canonical Mower State / Cycle Engine and introduce the paired Map API v2 contract;
-- beta3: delete superseded wrappers, legacy Map API/render fallbacks and split Map Card source into maintainable modules while keeping one production bundle.
+- beta3: if compatibility parity is clean across the field fixtures, move public
+  consumers to Canonical Mower State / Cycle Engine and introduce the paired
+  Map API v2 contract;
+- following beta: delete superseded wrappers and legacy Map API/render fallbacks,
+  then split Map Card source into maintainable modules while keeping one
+  production bundle.

@@ -1,4 +1,4 @@
-"""Temporary beta1 hook that runs Canonical v2 beside the public runtime."""
+"""Temporary beta2 hook that runs Canonical v2 beside the public runtime."""
 from __future__ import annotations
 
 from typing import Any

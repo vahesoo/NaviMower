@@ -119,8 +119,8 @@ def install_runtime_extensions() -> None:
     # VendorTrailStore is sticky per zone/cycle, independently of task state.
     install_vendor_trail_render_semantics()
     install_vendor_tail_semantics()
-    # 0.5 beta1: build the new canonical state in shadow mode after the final
-    # zone/cycle source owners have run. It is diagnostic-only until beta2.
+    # 0.5 beta2: keep Canonical v2 in shadow mode while field parity hardens.
+    # Public authority cutover is intentionally deferred to the next beta.
     install_canonical_shadow_semantics()
     install_map_api_performance()
     # OSM binary mode wraps the final phased map-view handler, so install it only

@@ -443,6 +443,34 @@ def reduce_zone_ledger(
         previous_geometry = previous.get("geometry_signature")
         sequence = as_int(previous.get("cycle_sequence")) or 0
         pending_vendor_cycle = bool(previous.get("pending_vendor_cycle"))
+
+        # Beta2 migration repair: History already persisted the accepted peak
+        # together with the vendor start timestamp. Adopt that peak only when it
+        # refers to this exact vendor cycle. This repairs beta1 ledgers created
+        # after a vendor regression without making legacy publication a
+        # permanent input to CycleEngine.
+        migration_peak = clamp_pct(history.get("migration_peak_progress_pct"))
+        migration_start = as_int(history.get("migration_vendor_start_time"))
+        migration_seeded = bool(
+            not pending_vendor_cycle
+            and migration_peak is not None
+            and vendor_start is not None
+            and migration_start is not None
+            and vendor_start == migration_start
+            and (previous_peak is None or migration_peak > previous_peak)
+        )
+        if migration_seeded:
+            previous_progress = max(previous_progress or 0.0, migration_peak)
+            previous_peak = max(previous_peak or 0.0, migration_peak)
+            previous_start = vendor_start
+            record["progress_pct"] = previous_progress
+            record["progress_peak_pct"] = previous_peak
+            record["vendor_start_time"] = vendor_start
+            if area is not None:
+                record["mowed_area_m2"] = round(area * previous_progress / 100.0, 2)
+            record["migration_seeded_from_history_peak"] = True
+            record["migration_seeded_progress_pct"] = round(migration_peak, 1)
+
         confirmed_reset = False
         reset_reason: str | None = None
 
@@ -504,43 +532,53 @@ def reduce_zone_ledger(
                 confirmed_reset = True
                 reset_reason = "zone_geometry_changed"
             elif previous and _hard_reset_drop(previous_peak, raw_pct):
-                live_contradicts = bool(
-                    active_zone_id == zone_id
-                    and live_work_progress is not None
-                    and live_work_progress > RESET_LIVE_CONTRADICTION_MIN
+                same_known_vendor_cycle = bool(
+                    vendor_start is not None
+                    and previous_start is not None
+                    and vendor_start == previous_start
                 )
-                candidate = dict(candidates.get(key) or {})
-                first_ms = as_int(candidate.get("first_ms"))
-                recent = bool(
-                    first_ms is not None
-                    and 0 <= observed_at_ms - first_ms <= RESET_CANDIDATE_MAX_AGE_MS
-                )
-                same_start = candidate.get("start_time") == vendor_start
-                count = as_int(candidate.get("count")) or 0
-                if live_contradicts:
-                    count = 0
-                elif recent and same_start:
-                    observation = snapshot.get("coverage_observation_id")
-                    if observation is None or observation != candidate.get("observation_id"):
-                        count += 1
-                else:
-                    count = 1
-                    first_ms = observed_at_ms
-                candidates[key] = {
-                    "observation_id": snapshot.get("coverage_observation_id"),
-                    "first_ms": first_ms,
-                    "last_ms": observed_at_ms,
-                    "count": count,
-                    "start_time": vendor_start,
-                    "progress": raw_pct,
-                    "previous_peak": previous_peak,
-                    "live_progress": live_work_progress,
-                    "live_contradicts": live_contradicts,
-                }
-                if count >= RESET_CONFIRMATIONS_REQUIRED and not live_contradicts:
-                    confirmed_reset = True
-                    reset_reason = "confirmed_vendor_low_drop"
+                if same_known_vendor_cycle:
+                    # Same explicit vendor start means same cycle. Repeated low
+                    # samples are regression evidence, not a reset boundary.
                     candidates.pop(key, None)
+                else:
+                    live_contradicts = bool(
+                        active_zone_id == zone_id
+                        and live_work_progress is not None
+                        and live_work_progress > RESET_LIVE_CONTRADICTION_MIN
+                    )
+                    candidate = dict(candidates.get(key) or {})
+                    first_ms = as_int(candidate.get("first_ms"))
+                    recent = bool(
+                        first_ms is not None
+                        and 0 <= observed_at_ms - first_ms <= RESET_CANDIDATE_MAX_AGE_MS
+                    )
+                    same_start = candidate.get("start_time") == vendor_start
+                    count = as_int(candidate.get("count")) or 0
+                    if live_contradicts:
+                        count = 0
+                    elif recent and same_start:
+                        observation = snapshot.get("coverage_observation_id")
+                        if observation is None or observation != candidate.get("observation_id"):
+                            count += 1
+                    else:
+                        count = 1
+                        first_ms = observed_at_ms
+                    candidates[key] = {
+                        "observation_id": snapshot.get("coverage_observation_id"),
+                        "first_ms": first_ms,
+                        "last_ms": observed_at_ms,
+                        "count": count,
+                        "start_time": vendor_start,
+                        "progress": raw_pct,
+                        "previous_peak": previous_peak,
+                        "live_progress": live_work_progress,
+                        "live_contradicts": live_contradicts,
+                    }
+                    if count >= RESET_CONFIRMATIONS_REQUIRED and not live_contradicts:
+                        confirmed_reset = True
+                        reset_reason = "confirmed_vendor_low_drop"
+                        candidates.pop(key, None)
             else:
                 candidates.pop(key, None)
 
@@ -621,6 +659,13 @@ def reduce_zone_ledger(
                 events.append(event)
                 state["last_event"] = event
 
+            verified_completion_hold = bool(
+                held
+                and accepted >= COMPLETION_THRESHOLD
+                and as_int(record.get("last_completed_progress")) == 100
+                and str(record.get("last_completed_source") or "") == "private_zone_coverage"
+                and str(record.get("last_completed_confirmation") or "").startswith("coverage_100_")
+            )
             record.update(
                 {
                     "cycle_sequence": max(1, sequence),
@@ -635,6 +680,16 @@ def reduce_zone_ledger(
                     "progress_source": progress_source,
                     "progress_guard": held,
                     "progress_guard_reason": "same_cycle_vendor_regression" if held else None,
+                    "progress_guard_vendor_pct": round(raw_pct, 1) if held else None,
+                    "completion_hold": verified_completion_hold,
+                    "completion_hold_reason": (
+                        "verified_100_same_vendor_cycle"
+                        if verified_completion_hold
+                        else None
+                    ),
+                    "completion_hold_vendor_pct": (
+                        round(raw_pct, 1) if verified_completion_hold else None
+                    ),
                     "stale": False,
                     "updated_at": iso_from_ms(observed_at_ms),
                 }
@@ -704,6 +759,10 @@ def reduce_zone_ledger(
                 "progress_source": record.get("progress_source"),
                 "progress_guard": bool(record.get("progress_guard")),
                 "progress_guard_reason": record.get("progress_guard_reason"),
+                "progress_guard_vendor_pct": record.get("progress_guard_vendor_pct"),
+                "completion_hold": bool(record.get("completion_hold")),
+                "completion_hold_reason": record.get("completion_hold_reason"),
+                "completion_hold_vendor_pct": record.get("completion_hold_vendor_pct"),
                 "pending_vendor_cycle": bool(record.get("pending_vendor_cycle")),
                 "cutting_height_mm": record.get("cutting_height_mm"),
                 "stale": bool(record.get("stale")),
