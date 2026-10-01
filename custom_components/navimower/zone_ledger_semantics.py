@@ -38,8 +38,11 @@ def _rows_by_id(rows: Any) -> dict[int, dict[str, Any]]:
     return result
 
 
-def _zone_history_seed(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Build migration/backfill facts without feeding legacy live percentages back in."""
+def _zone_history_seed(
+    snapshot: dict[str, Any],
+    cycle_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build migration/backfill facts without making legacy publication authoritative."""
     result: dict[str, dict[str, Any]] = {}
     for row in snapshot.get("zone_details") or []:
         if not isinstance(row, dict):
@@ -61,6 +64,22 @@ def _zone_history_seed(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "last_completed_confirmation": row.get("last_completed_confirmation"),
             "last_completed_cycle_id": row.get("last_completed_cycle_id"),
         }
+    progress_state = (
+        cycle_diagnostics.get("zone_progress_state")
+        if isinstance(cycle_diagnostics, dict)
+        else None
+    )
+    for key, state in (progress_state or {}).items():
+        if not isinstance(state, dict):
+            continue
+        zone_id = as_int(key)
+        if zone_id is None or zone_id <= 0:
+            continue
+        row = result.setdefault(str(zone_id), {"id": zone_id})
+        row["migration_progress_pct"] = state.get("progress")
+        row["migration_peak_progress_pct"] = state.get("peak_progress")
+        row["migration_vendor_start_time"] = state.get("start_time")
+
     return result
 
 
@@ -141,6 +160,7 @@ def build_shadow_diagnostics(
         )
 
     metric_differences: dict[str, Any] = {}
+    enrichments: dict[str, Any] = {}
     for key, tolerance in (
         ("map_area_m2", 0.05),
         ("map_mowed_area_m2", 0.05),
@@ -152,17 +172,27 @@ def build_shadow_diagnostics(
         difference = _metric_diff(
             legacy_totals, ledger_totals, key, tolerance=tolerance
         )
-        if difference is not None:
+        if difference is None:
+            continue
+        if legacy_totals.get(key) is None and as_float(ledger_totals.get(key)) is not None:
+            enrichments[key] = {
+                **difference,
+                "classification": "canonical_enrichment",
+            }
+        else:
             metric_differences[key] = difference
 
     match = not zone_differences and not metric_differences
+    strict_match = match and not enrichments
     return {
         "mode": "shadow",
         "public_owner": "legacy_zone_model",
         "ledger_revision": as_int(ledger_state.get("revision")) or 0,
         "match": match,
+        "strict_match": strict_match,
         "zone_match": not zone_differences,
         "metric_match": not metric_differences,
+        "enrichments": enrichments,
         "legacy": {
             "zone_count": len(legacy_by_id),
             "map_coverage_pct": legacy_totals.get("map_coverage_pct"),
@@ -203,6 +233,11 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         active_session = None
 
     previous_state = getattr(owner, "_zone_ledger_shadow_state", None)
+    cycle_diagnostics = (
+        history.cycle_diagnostics()
+        if history is not None and hasattr(history, "cycle_diagnostics")
+        else None
+    )
     snapshot["coverage_observation_id"] = (getattr(owner, "_endpoint_status", {}).get("path_info_time") or {}).get("last_success_mono")
     state, rows, totals, task, events = reduce_zone_ledger(
         previous_state,
@@ -211,7 +246,7 @@ def _run_shadow(owner: Any, snapshot: dict[str, Any]) -> None:
         zone_details=[
             dict(row) for row in snapshot.get("zone_details") or [] if isinstance(row, dict)
         ],
-        zone_history=_zone_history_seed(snapshot),
+        zone_history=_zone_history_seed(snapshot, cycle_diagnostics),
         active_session=active_session,
         observed_at_ms=int(time.time() * 1000),
     )
