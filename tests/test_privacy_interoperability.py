@@ -23,21 +23,30 @@ def test_development_capture_surfaces_follow_release_channel() -> None:
     services_yaml = _source("services.yaml")
     runtime = _source("runtime.py")
 
-    # Private-cloud raw export is allowed only on prerelease builds for explicit
-    # maintainer field work. Stable releases must remove it again.
+    # Explicit maintainer development surfaces are allowed only on prerelease
+    # builds. Stable promotion must remove them again.
     if prerelease:
         assert (COMPONENT / "raw_export.py").exists()
         assert "SERVICE_EXPORT_RAW_DATA" in services
         assert "async_export_raw_data" in services
         assert "export_raw_data:" in services_yaml
+        assert (COMPONENT / "iot_file_probe.py").exists()
+        assert "SERVICE_PROBE_IOT_FILE" in services
+        assert "async_probe_iot_file" in services
+        assert "probe_iot_file:" in services_yaml
     else:
         assert not (COMPONENT / "raw_export.py").exists()
         assert "SERVICE_EXPORT_RAW_DATA" not in services
         assert "async_export_raw_data" not in services
         assert "export_raw_data" not in services_yaml
+        assert not (COMPONENT / "iot_file_probe.py").exists()
+        assert "SERVICE_PROBE_IOT_FILE" not in services
+        assert "async_probe_iot_file" not in services
+        assert "probe_iot_file" not in services_yaml
 
     # Arbitrary endpoint probing, passive discovery and exact MQTT-payload
-    # retention stay retired on every release channel.
+    # retention stay retired on every release channel. The prerelease IoT-file
+    # probe above is intentionally fixed to one read-only endpoint.
     assert not (COMPONENT / "private_api_probe.py").exists()
     assert not (COMPONENT / "raw_mqtt_semantics.py").exists()
     for token in (
