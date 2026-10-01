@@ -162,13 +162,20 @@ def test_map_edit_same_coverage_retains_but_zero_resets_only_one_zone(store):
     assert result["zone_ids"] == [91]
 
 
-def test_repeated_mqtt_reads_are_not_two_vendor_reset_confirmations(store):
+def test_repeated_same_start_low_reads_do_not_reset_vendor_cycle(store):
     observe(store)
     store.accept(geometry())
     observe(store, pct=0, observation=2)
     observe(store, pct=0, observation=2)
-    assert 92 in store.records
     observe(store, pct=0, observation=3)
+    assert 92 in store.records
+
+    _, events = observe(store, pct=0, start=200, observation=4)
+    assert any(
+        event["type"] == "zone_cycle_reset"
+        and event["reason"] == "vendor_start_time"
+        for event in events
+    )
     assert 92 not in store.records
 
 
