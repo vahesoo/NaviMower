@@ -310,3 +310,40 @@ export_raw_data:
       selector:
         device:
           integration: navimower
+
+probe_iot_file:
+  name: Probe get-iot-file resources (development)
+  description: >-
+    Prerelease maintainer/development action. Query only the fixed read-only
+    /mowerbot/vehicle/common/get-iot-file endpoint for a bounded list of integer
+    file types and write the results under /config/navimower_diagnostics/probes/.
+    The default probe checks types 0 through 5. Signed vendor download URLs are
+    never persisted. Optional artifact download is size-limited and writes a
+    local bundle for private analysis. Remove this action before stable promotion.
+  fields:
+    device_id:
+      name: Mower
+      description: Target mower (only required if more than one is configured).
+      required: false
+      selector:
+        device:
+          integration: navimower
+    file_types:
+      name: File types
+      description: >-
+        Integer get-iot-file types to probe. Use a list such as [0,1,2,3,4,5].
+        The action accepts at most 8 values in the bounded range 0..15.
+      required: false
+      default: [0, 1, 2, 3, 4, 5]
+      selector:
+        object:
+    download_artifacts:
+      name: Download returned artifacts
+      description: >-
+        If enabled, download each returned signed resource under a 16 MiB
+        per-file limit and include magic/hash/ZIP-entry inspection in the probe.
+        Leave disabled for metadata-only discovery.
+      required: false
+      default: false
+      selector:
+        boolean:
