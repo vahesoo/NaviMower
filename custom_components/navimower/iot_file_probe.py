@@ -113,7 +113,7 @@ def _normalize_types(values: Any) -> list[int]:
 
 
 def _safe_error(err: Exception) -> dict[str, Any]:
-    message = re.sub(r"https?://\\S+", "<redacted-url>", str(err))
+    message = re.sub(r"https?://\S+", "<redacted-url>", str(err))
     return {
         "type": type(err).__name__,
         "message": message[:500],
