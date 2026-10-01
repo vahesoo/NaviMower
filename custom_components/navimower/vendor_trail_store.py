@@ -167,13 +167,48 @@ class VendorTrailStore:
         await self.storage.async_save(self.export())
 
     def reconcile(self, ledger: dict[str, Any]) -> None:
-        """Only a changed ledger cycle may revoke ownership and its old SVG."""
+        """Mirror vendor-current cycle ownership into retained trail geometry.
+
+        A confirmed cycle change still revokes the old geometry. In addition,
+        fresh vendor current-state reset to 0% revokes the visible trail even if
+        the vendor start timestamp has not changed yet. A small reset baseline
+        prevents a lagging compressed endpoint from resurrecting the pre-reset
+        prefix when mowing resumes.
+        """
         for zone_id, row in list(self.records.items()):
             current = (ledger.get("zones") or {}).get(str(zone_id)) or {}
             cycle_id = current.get("cycle_key")
-            if cycle_id and cycle_id != row.get("cycle_id"):
-                del self.records[zone_id]
-                self.revision += 1
+            progress = current.get("progress_pct")
+            reset_to_zero = (
+                progress is not None
+                and float(progress) <= 0.0
+                and not bool(current.get("stale"))
+            )
+            cycle_changed = bool(cycle_id and cycle_id != row.get("cycle_id"))
+            if not (cycle_changed or reset_to_zero):
+                continue
+
+            if reset_to_zero and cycle_id:
+                points = row.get("points") or []
+                source_count = as_int(row.get("bootstrap_source_point_count"))
+                if source_count is None:
+                    source_count = len(points)
+                anchor = row.get("artifact_anchor_xy")
+                if not anchor and points:
+                    anchor = deepcopy(points[-1][:2])
+                self.install_baselines[zone_id] = {
+                    "cycle_id": cycle_id,
+                    "geometry_start_time": as_int(
+                        row.get("geometry_start_time", row.get("start_time"))
+                    ),
+                    "source_point_offset": max(0, source_count or 0),
+                    "anchor_xy": deepcopy(anchor),
+                    "reason": "vendor_current_reset",
+                }
+
+            del self.records[zone_id]
+            self.revision += 1
+
         for zone_id, baseline in list(self.install_baselines.items()):
             current = (ledger.get("zones") or {}).get(str(zone_id)) or {}
             cycle_id = current.get("cycle_key")
@@ -273,15 +308,26 @@ class VendorTrailStore:
                         break
 
             if anchor_index is None:
-                # Vendor geometry was rewritten instead of appended. Never fall
-                # back to importing the unknown prefix: move the baseline forward.
-                baseline["source_point_offset"] = source_count
-                baseline["anchor_xy"] = deepcopy(points[-1][:2]) if points else None
-                self.baseline_reanchor_count += 1
-                self.recovery_checkpoint_at_ms = observed_at_ms
-                return None
+                if baseline.get("reason") == "vendor_current_reset":
+                    # A reset followed by a rewritten vendor geometry is exactly
+                    # the new current route. Drop the old reset anchor and adopt
+                    # the rewritten geometry instead of waiting for another poll.
+                    self.install_baselines.pop(zone_id, None)
+                    baseline = None
+                else:
+                    # Fresh-install vendor geometry was rewritten instead of
+                    # appended. Never import the unknown pre-install prefix:
+                    # move the baseline forward.
+                    baseline["source_point_offset"] = source_count
+                    baseline["anchor_xy"] = deepcopy(points[-1][:2]) if points else None
+                    self.baseline_reanchor_count += 1
+                    self.recovery_checkpoint_at_ms = observed_at_ms
+                    return None
 
-            trimmed = deepcopy(points[anchor_index:])
+            if baseline is None:
+                trimmed = deepcopy(points)
+            else:
+                trimmed = deepcopy(points[anchor_index:])
             if len(trimmed) < 2:
                 self.recovery_checkpoint_at_ms = observed_at_ms
                 return None
