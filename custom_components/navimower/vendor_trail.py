@@ -341,7 +341,13 @@ def build_vendor_render_source(
             _as_int(row.get("start_time")) or (1_700_000_000 + row_index)
         ) * 1000
         starts.append(base_ms + sequence)
-        for raw in raw_points:
+        break_indices = {
+            int(index)
+            for index in (row.get("future_gap_break_indices") or [])
+            if isinstance(index, int) and index > 0
+        }
+        row_has_point = False
+        for raw_index, raw in enumerate(raw_points):
             if not isinstance(raw, (list, tuple)) or len(raw) < 2:
                 continue
             x = _as_float(raw[0])
@@ -349,8 +355,11 @@ def build_vendor_render_source(
             if x is None or y is None or not math.isfinite(x) or not math.isfinite(y):
                 continue
             stamp = base_ms + sequence
+            if row_has_point and raw_index in break_indices:
+                starts.append(stamp)
             sequence += 1
             points.append([stamp, x, y, 0.0, "mowing", 4, 5, zone_id])
+            row_has_point = True
     return {
         "id": "vendor-trail-debug",
         "active": False,
