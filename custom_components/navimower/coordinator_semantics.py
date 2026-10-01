@@ -65,7 +65,7 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
     async def async_load_persistent_state(self) -> None:
         """Restore state and force one map refresh for pre-georeference caches."""
         await self.vendor_trail_store.async_load()
-        self._zone_ledger_shadow_state = self.vendor_trail_store.ledger
+        self._zone_ledger_state = self.vendor_trail_store.ledger
         self._vendor_trail_cache = self.vendor_trail_store.records
         await super().async_load_persistent_state()
         if (
@@ -106,14 +106,14 @@ class NavimowCoordinator(_BaseNavimowCoordinator):
             self.vendor_trail_store.ledger, selected,
             observed_at_ms=int(time.time() * 1000), reason=source,
         )
-        self._zone_ledger_shadow_state = state
+        self._zone_ledger_state = state
         self.vendor_trail_store.reconcile(state)
         self.vendor_trail_store.schedule_save()
         return super().start_new_mowing_cycle(zone_ids, source=source)
 
     def _accept_vendor_observations(self, snapshot: dict[str, Any]) -> None:
         store = self.vendor_trail_store
-        store.reconcile(self._zone_ledger_shadow_state)
+        store.reconcile(self._zone_ledger_state)
         observations = snapshot.pop("_vendor_trail_observations", [])
         observed_at_ms = int(time.time() * 1000)
         if observations:
