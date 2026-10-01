@@ -31,6 +31,7 @@ def test_beta4_gap_guard_is_forward_only() -> None:
     assert "FUTURE_VENDOR_GAP_SPLIT_M = 5.0" in store
     assert "gap_guard_scanned_point_count" in store
     assert "future_gap_break_indices" in store
-    assert "scan_from = len(previous_points)" in store
+    assert "known_scan_count = as_int(previous.get(\"gap_guard_scanned_point_count\"))" in store
+    assert "else len(previous_points)" in store
     assert "future_gap_break_indices" in vendor
     assert 'CANONICAL_MODE = "shadow_beta3"' in (COMPONENT / "canonical_state.py").read_text(encoding="utf-8")
