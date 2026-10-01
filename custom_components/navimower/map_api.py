@@ -167,8 +167,6 @@ def _canonical_frontend_state(coordinator: Any) -> dict[str, Any]:
 
 def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach the paired resource contract and persistent Custom Area geometry."""
-    frontend = _frontend_metadata(coordinator)
-    frontend["resource_contract_version"] = MAP_RESOURCE_CONTRACT_VERSION
     return {
         **payload,
         "contract": {
@@ -181,7 +179,8 @@ def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, 
             "compatibility_aliases": True,
         },
         "canonical": _canonical_frontend_state(coordinator),
-        "frontend": frontend,
+        "frontend": _frontend_metadata(coordinator)
+        | {"resource_contract_version": MAP_RESOURCE_CONTRACT_VERSION},
         "custom_areas": [
             area.as_dict()
             for area in parse_custom_areas(
