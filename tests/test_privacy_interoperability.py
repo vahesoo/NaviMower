@@ -96,8 +96,10 @@ def test_home_assistant_download_is_the_only_shipped_support_export() -> None:
     assert "def sanitize" in sanitizer
     assert "REDACTION_VERSION" in sanitizer
     assert "Home Assistant **Download diagnostics** is the supported public troubleshooting path" in privacy_doc
-    assert "Stable releases do not expose raw-data export or arbitrary endpoint-probe actions" in privacy_doc
+    assert "Stable releases do not expose development capture or endpoint-probe actions" in privacy_doc
     assert "navimower.export_raw_data" in privacy_doc
+    assert "navimower.probe_iot_file" in privacy_doc
+    assert "It never accepts an arbitrary endpoint or payload" in privacy_doc
     assert "must be removed again before stable promotion" in privacy_doc
 
 
