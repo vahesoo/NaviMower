@@ -1,8 +1,8 @@
-"""Pure canonical-v2 shadow model for the 0.5 architecture migration.
+"""Canonical Mower State for the 0.5 architecture.
 
-Beta3 keeps this model read-only while current-map semantics align to vendor state. It receives already captured
-observations plus the current ZoneLedger state and resolves a compact canonical
-view without mutating Home Assistant entities, History, Schedule or rendering.
+This module resolves transport observations and CycleEngine state into one
+authoritative model consumed by public entities and the paired Map API contract.
+History remains a separate archive owner.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 CANONICAL_SCHEMA_VERSION = 1
-CANONICAL_MODE = "shadow_beta3"
+CANONICAL_MODE = "authoritative_v2"
 DEFAULT_MQTT_POSE_MAX_AGE_S = 20.0
 DEFAULT_CLOUD_POSITION_MAX_AGE_S = 90.0
 
@@ -156,7 +156,7 @@ def _canonical_cycles(
     return sorted(rows, key=lambda row: int(row["zone_id"]))
 
 
-def build_canonical_shadow(
+def build_canonical_state(
     snapshot: dict[str, Any],
     *,
     ledger_state: dict[str, Any] | None = None,
@@ -168,7 +168,7 @@ def build_canonical_shadow(
     cloud_position_age_s: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
 ) -> dict[str, Any]:
-    """Build the beta3 canonical candidate without changing public authority."""
+    """Build the authoritative canonical state from resolved observations."""
     owned = set(vendor_owned_zone_ids or set())
     mqtt_age = _as_float(snapshot.get("mqtt_pose_age"))
     position = resolve_position(
@@ -218,15 +218,15 @@ def build_canonical_shadow(
     return {
         "schema_version": CANONICAL_SCHEMA_VERSION,
         "mode": CANONICAL_MODE,
-        "public_owner": "legacy_runtime",
+        "public_owner": "canonical_mower_state",
         "owners": {
-            "position": "PositionResolverShadow",
-            "device_state": "legacy_bridge",
-            "navigation": "legacy_bridge",
-            "task": "TaskResolverShadow",
-            "cycles": "CycleEngineShadow",
+            "position": "PositionResolver",
+            "device_state": "CanonicalDeviceState",
+            "navigation": "NavigationResolver",
+            "task": "TaskResolver",
+            "cycles": "CycleEngine",
             "history": "History",
-            "vendor_geometry": "CycleEngineShadow",
+            "vendor_geometry": "CycleEngine",
         },
         "device": {
             "activity": snapshot.get("activity"),
@@ -234,7 +234,7 @@ def build_canonical_shadow(
             "state_code": snapshot.get("state_code"),
             "docked": snapshot.get("docked"),
             "error": snapshot.get("error"),
-            "source": "legacy_bridge",
+            "source": "canonical_bridge",
         },
         "connectivity": {
             "private_cloud_connected": snapshot.get("private_cloud_connected"),
