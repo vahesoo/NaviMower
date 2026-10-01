@@ -616,10 +616,10 @@ def test_beta4_gap_guard_splits_only_newly_appended_large_jump(store):
 
     # The newly rendered cutting geometry must contain two route fragments,
     # so no edge from x=10 directly to x=100 is rasterized.
-    archive = svg.build_session_svg_archive(source)
-    assert len(archive["route"]["cutting_segments"]) == 2
-    assert archive["route"]["cutting_segments"][0][-1] == [10.0, 0.0]
-    assert archive["route"]["cutting_segments"][1][0] == [100.0, 0.0]
+    _all, cutting, _travel = svg.split_session_route_segments(source)
+    assert len(cutting) == 2
+    assert cutting[0][-1] == [10.0, 0.0]
+    assert cutting[1][0] == [100.0, 0.0]
 
 
 def test_beta4_gap_guard_metadata_survives_restart(store):
