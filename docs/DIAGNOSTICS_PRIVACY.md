@@ -44,9 +44,13 @@ Redaction tests cannot prove that every future service payload is safe. When in 
 
 Home Assistant **Download diagnostics** is the supported public troubleshooting path and remains sanitized on every release channel.
 
-Stable releases do not expose raw-data export or arbitrary endpoint-probe actions. A prerelease development line may temporarily expose the explicit maintainer-only `navimower.export_raw_data` action for controlled field investigations. That action is unredacted by design, writes locally under `/config/navimower_diagnostics/raw/`, and must be removed again before stable promotion.
+Stable releases do not expose development capture or endpoint-probe actions. A prerelease development line may temporarily expose explicit maintainer-only research surfaces for controlled field investigations.
 
-Raw development captures may contain exact map/location values or identifiers and must not be attached to a public GitHub issue or forum post. Arbitrary endpoint probing, passive discovery and exact MQTT-payload retention remain outside the shipped integration.
+The `navimower.export_raw_data` action writes a local full-value capture under `/config/navimower_diagnostics/raw/`. The `navimower.probe_iot_file` action is narrower: it can call only the read-only `/mowerbot/vehicle/common/get-iot-file` endpoint for a bounded list of integer file types. It never accepts an arbitrary endpoint or payload. Signed download URLs are not stored in the probe JSON, and optional artifact downloads use a hard size limit.
+
+Both prerelease research surfaces must be removed again before stable promotion.
+
+Development captures may contain exact map/location values or identifiers and must not be attached to a public GitHub issue or forum post. Arbitrary endpoint probing, passive discovery and exact MQTT-payload retention remain outside the shipped integration.
 
 Only synthetic fixtures belong in the public test suite. Private field captures used during development are not committed or published by the tests.
 
