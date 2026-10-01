@@ -9,7 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .const import SWATH_WIDTH_M
+from .const import MQTT_CUTTING_ACTIONS, SWATH_WIDTH_M
 from .current_cycle_render import (
     build_current_cycle_render_source,
 )
@@ -106,6 +106,16 @@ async def _current_cycle_source(
     )
 
 
+def _point_is_cutting(point: Any) -> bool:
+    """Return whether a retained History point belongs to the mowed layer."""
+    if not isinstance(point, list):
+        return False
+    action = as_int(point[6]) if len(point) > 6 else None
+    if action is not None:
+        return action in MQTT_CUTTING_ACTIONS
+    return bool(len(point) > 4 and str(point[4] or "").lower() in {"mowing", "edge_mowing"})
+
+
 def _point_zone_id(point: Any, map_zones: list[dict[str, Any]]) -> int | None:
     if not isinstance(point, list) or len(point) < 3:
         return None
@@ -157,7 +167,7 @@ def filter_current_cycle_source(
             flush()
             current_zone = None
 
-        if zone_id in excluded_zone_ids:
+        if zone_id in excluded_zone_ids or not _point_is_cutting(point):
             flush()
             current_zone = None
             continue
@@ -219,10 +229,20 @@ async def _render_current_snapshot(self, map_zones):
     width = _mowing_width(self.coordinator.data or {})
     rows = await store.async_artifacts(width, build=False)
     owned = store.owned_zone_ids()
-    # Loading every historical point only to discard it is unnecessary once all
-    # mapped zones have a vendor owner. History selection remains independent.
+    zeroed = {
+        zone_id
+        for key, row in (store.ledger.get("zones") or {}).items()
+        if isinstance(row, dict)
+        and (zone_id := as_int(row.get("id")) or as_int(key)) is not None
+        and as_float(row.get("progress_pct")) == 0
+        and not bool(row.get("stale"))
+    }
+    current_suppressed = owned | zeroed
+    # Loading historical points for a vendor-reset zone would immediately
+    # resurrect the old current trail. Zeroed zones are therefore suppressed
+    # from the current-cycle History fallback just like vendor-owned zones.
     map_ids = {zone_id for row in map_zones if (zone_id := as_int(row.get("id"))) is not None}
-    all_vendor = bool(map_ids) and map_ids <= owned
+    all_vendor = bool(map_ids) and map_ids <= current_suppressed
     summaries = [] if all_vendor else self.history.session_summaries(include_points=False)
     artifact_manager = getattr(self.coordinator, "map_artifacts", None)
     fallback_checkpoint_revision = getattr(
@@ -243,8 +263,9 @@ async def _render_current_snapshot(self, map_zones):
     )
     fallback_key = (
         fallback_checkpoint_revision,
-        tuple(sorted(map_ids - owned)),
+        tuple(sorted(map_ids - current_suppressed)),
         tuple(sorted(owned)),
+        tuple(sorted(zeroed)),
         repr([(key, row.get("cycle_key")) for key, row in store.ledger["zones"].items()]),
         map_revision,
         width,
@@ -254,7 +275,7 @@ async def _render_current_snapshot(self, map_zones):
         if all_vendor:
             source = {"points": [], "segment_starts_ms": [], "zone_ids": [], "current_cycle_zones": []}
         else:
-            source = await _current_cycle_source(self, map_zones, owned)
+            source = await _current_cycle_source(self, map_zones, current_suppressed)
         source["mowing_path_width_m"] = width
         artifact = None
         if len(source.get("points") or []) >= 2:
@@ -286,6 +307,7 @@ async def _render_current_snapshot(self, map_zones):
         "vendor_trail_debug": {
             "enabled": True, "authoritative": True,
             "mqtt_base_suppressed_for_zone_ids": sorted(owned),
+            "vendor_zero_suppressed_zone_ids": sorted(zeroed),
             "mqtt_fallback_zone_ids": fallback_ids,
             "fallback_checkpoint_revision": fallback_checkpoint_revision,
             "revision": store.revision,

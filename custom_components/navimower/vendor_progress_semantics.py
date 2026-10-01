@@ -1,10 +1,10 @@
-"""Vendor-first per-zone progress publication with narrow reset protection.
+"""Vendor-current per-zone progress publication.
 
-Private ``get-path-info-time`` coverage is the canonical per-zone numeric state.
-The integration may retain a newer value when an older/stale vendor snapshot
-regresses inside the same mowing cycle, but it must not derive a competing
-percentage from MQTT/session bookkeeping. MQTT work progress remains useful for
-active-zone context and reset corroboration only.
+Private ``get-path-info-time`` coverage is the canonical current-map numeric
+state. Fresh vendor decreases, including 100/69 -> 0 resets, are published as-is
+instead of being held by local monotonic completion/progress state. Historical
+completion/session facts remain owned by History and are not projected back onto
+the current map.
 """
 from __future__ import annotations
 
@@ -180,13 +180,11 @@ def _filtered_reset_snapshot(
 
 
 def _apply_vendor_first_zone_state(owner: Any, snapshot: dict[str, Any]) -> None:
-    """Publish canonical vendor coverage, holding only stale same-cycle drops."""
+    """Publish fresh vendor coverage exactly as the current map state."""
     rows = snapshot.get("zone_states")
     if not isinstance(rows, list):
         return
     coverage_by_id = _coverage_rows(snapshot)
-    diagnostics = owner.history.cycle_diagnostics()
-    progress_state = diagnostics.get("zone_progress_state") or {}
     changed = False
 
     for row in rows:
@@ -202,38 +200,27 @@ def _apply_vendor_first_zone_state(owner: Any, snapshot: dict[str, Any]) -> None
         if raw_pct is None or not 0 <= raw_pct <= 100:
             continue
 
-        state = progress_state.get(str(zone_id)) or {}
-        peak = _history._as_float(state.get("peak_progress"))  # noqa: SLF001
-        accepted = raw_pct
-        held = bool(peak is not None and peak > raw_pct)
-        if held:
-            accepted = min(100.0, peak)
-
         row["vendor_coverage_pct"] = round(raw_pct, 1)
-        row["coverage_pct"] = round(accepted, 1)
+        row["coverage_pct"] = round(raw_pct, 1)
         area = _history._as_float(row.get("area_m2"))  # noqa: SLF001
         vendor_finished = _history._as_float(vendor.get("finished"))  # noqa: SLF001
-        if held:
+        if vendor_finished is not None and vendor_finished >= 0:
             row["mowed_area_m2"] = (
-                round(area * accepted / 100.0, 2) if area is not None else None
+                round(min(area, vendor_finished), 2)
+                if area is not None
+                else round(vendor_finished, 2)
             )
-            row["progress_source"] = "vendor_coverage_monotonic_hold"
-            row["progress_guard"] = True
-            row["progress_guard_reason"] = "same_cycle_vendor_regression"
-            row["progress_guard_vendor_pct"] = round(raw_pct, 1)
+        elif area is not None:
+            row["mowed_area_m2"] = round(area * raw_pct / 100.0, 2)
         else:
-            if vendor_finished is not None and vendor_finished >= 0:
-                row["mowed_area_m2"] = (
-                    round(min(area, vendor_finished), 2)
-                    if area is not None
-                    else round(vendor_finished, 2)
-                )
-            elif area is not None:
-                row["mowed_area_m2"] = round(area * accepted / 100.0, 2)
-            row["progress_source"] = "vendor_coverage"
-            row.pop("progress_guard", None)
-            row.pop("progress_guard_reason", None)
-            row.pop("progress_guard_vendor_pct", None)
+            row["mowed_area_m2"] = None
+        row["progress_source"] = "vendor_current_coverage"
+        row.pop("progress_guard", None)
+        row.pop("progress_guard_reason", None)
+        row.pop("progress_guard_vendor_pct", None)
+        row.pop("completion_hold", None)
+        row.pop("completion_hold_reason", None)
+        row.pop("completion_hold_vendor_pct", None)
         changed = True
 
     if not changed:
@@ -258,7 +245,7 @@ def _apply_vendor_first_zone_state(owner: Any, snapshot: dict[str, Any]) -> None
             for row in rows
             if (_history._as_float((row or {}).get("coverage_pct")) or 0) >= 95  # noqa: SLF001
         )
-    snapshot["zone_progress_policy"] = "vendor_first_monotonic_with_confirmed_reset"
+    snapshot["zone_progress_policy"] = "vendor_current_state"
 
 
 def install_vendor_progress_semantics() -> None:

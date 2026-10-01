@@ -162,14 +162,25 @@ def test_map_edit_same_coverage_retains_but_zero_resets_only_one_zone(store):
     assert result["zone_ids"] == [91]
 
 
-def test_repeated_same_start_low_reads_do_not_reset_vendor_cycle(store):
+def test_same_start_vendor_zero_clears_current_trail_without_inventing_cycle(store):
     observe(store)
     store.accept(geometry())
-    observe(store, pct=0, observation=2)
-    observe(store, pct=0, observation=2)
-    observe(store, pct=0, observation=3)
-    assert 92 in store.records
+    old_cycle = store.records[92]["cycle_id"]
 
+    _, events = observe(store, pct=0, observation=2)
+    assert not any(event["type"] == "zone_cycle_reset" for event in events)
+    assert 92 not in store.records
+    assert store.ledger["zones"]["92"]["cycle_key"] == old_cycle
+    assert store.install_baselines[92]["reason"] == "vendor_current_reset"
+    assert store.install_baselines[92]["cycle_id"] == old_cycle
+
+    # Repeated vendor zero remains empty and History fallback stays suppressed.
+    observe(store, pct=0, observation=3)
+    result = get_render(store, [session(active=False, stamp=NOW-100_000)])
+    assert 92 not in result["zone_ids"]
+    assert result["vendor_trail_debug"]["vendor_zero_suppressed_zone_ids"] == [92]
+
+    # A genuinely newer vendor start still advances cycle identity.
     _, events = observe(store, pct=0, start=200, observation=4)
     assert any(
         event["type"] == "zone_cycle_reset"
@@ -512,3 +523,58 @@ def test_existing_install_vendor_fetch_filter_remains_unrestricted(tmp_path):
         [91, 92],
         {91: {"start_time": 100}, 92: {"start_time": 100}},
     ) == [91, 92]
+
+
+def test_reset_baseline_blocks_old_vendor_prefix_and_keeps_only_new_suffix(store):
+    observe(store)
+    assert store.accept(geometry(end=10))
+    observe(store, pct=0, observation=2)
+    assert 92 not in store.records
+    assert store.install_baselines[92]["anchor_xy"] == [10.0, 0.0]
+
+    # Mowing resumes but the compressed endpoint is still the old prefix.
+    observe(store, pct=5, observation=3)
+    prepared = store.prepare_observation(geometry(end=10), observed_at_ms=NOW + 3_000)
+    assert prepared is None
+    assert 92 not in store.records
+
+    # Once vendor appends new current-cycle points, only the suffix from the
+    # reset anchor forward becomes visible.
+    prepared = store.prepare_observation(geometry(end=13), observed_at_ms=NOW + 4_000)
+    assert prepared is not None
+    assert [point[:2] for point in prepared["points"]] == [
+        [10.0, 0.0], [11.0, 0.0], [12.0, 0.0], [13.0, 0.0]
+    ]
+    assert store.accept(prepared)
+    assert [point[:2] for point in store.records[92]["points"]] == [
+        [10.0, 0.0], [11.0, 0.0], [12.0, 0.0], [13.0, 0.0]
+    ]
+
+
+def test_reset_baseline_accepts_rewritten_vendor_geometry(store):
+    observe(store)
+    assert store.accept(geometry(end=10))
+    observe(store, pct=0, observation=2)
+    observe(store, pct=5, observation=3)
+
+    rewritten = geometry(end=3)
+    rewritten["points"] = [[100.0 + index, 0.0] for index in range(4)]
+    prepared = store.prepare_observation(rewritten, observed_at_ms=NOW + 4_000)
+    assert prepared is not None
+    assert prepared["points"] == rewritten["points"]
+    assert 92 not in store.install_baselines
+    assert store.accept(prepared)
+
+
+def test_current_cycle_history_fallback_drops_non_cutting_travel_points(store):
+    observe(store, task=[92])
+    travel = session("mixed", zone=91, start=0, end=5, active=False)
+    # Keep two cutting points, then a travel-to-dock run that would otherwise
+    # create the long straight line reported by users.
+    for index, point in enumerate(travel["points"]):
+        if index >= 2:
+            point[4] = "returning"
+            point[6] = 1
+    result = get_render(store, [travel])
+    assert result["source_point_count"] == 2
+    assert result["vendor_trail_debug"]["mqtt_fallback_zone_ids"] == [91]

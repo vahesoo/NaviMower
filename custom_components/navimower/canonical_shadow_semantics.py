@@ -1,4 +1,4 @@
-"""Temporary beta2 hook that runs Canonical v2 beside the public runtime."""
+"""Temporary beta3 hook that runs Canonical v2 beside the public runtime."""
 from __future__ import annotations
 
 from typing import Any
@@ -49,7 +49,7 @@ def install_canonical_shadow_semantics() -> None:
             self._canonical_shadow_state = None
             self._canonical_shadow_diagnostics = {
                 "schema_version": 1,
-                "mode": "shadow",
+                "mode": "shadow_beta3",
                 "public_owner": "legacy_runtime",
                 "error": f"{type(err).__name__}: {err}",
             }

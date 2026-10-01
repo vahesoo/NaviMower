@@ -162,11 +162,15 @@ def _task_zone_ids(
     active_session: dict[str, Any] | None,
     all_zone_ids: list[int],
 ) -> list[int]:
+    activity = str(snapshot.get("activity") or "").strip().lower()
+    docked = bool(snapshot.get("docked")) or activity == "docked" or "charg" in activity
+    if docked:
+        return []
+
     session_ids = _unique_zone_ids((active_session or {}).get("zone_ids"))
     target_ids = _unique_zone_ids(snapshot.get("target_zone_ids"))
     current_ids = _unique_zone_ids(snapshot.get("current_zone_ids"))
     selected = session_ids or target_ids or current_ids
-    activity = str(snapshot.get("activity") or "").lower()
     if not selected and activity in {"mowing", "paused", "returning"}:
         if str(snapshot.get("current_zone") or "").lower() == "all":
             selected = list(all_zone_ids)
@@ -444,32 +448,8 @@ def reduce_zone_ledger(
         sequence = as_int(previous.get("cycle_sequence")) or 0
         pending_vendor_cycle = bool(previous.get("pending_vendor_cycle"))
 
-        # Beta2 migration repair: History already persisted the accepted peak
-        # together with the vendor start timestamp. Adopt that peak only when it
-        # refers to this exact vendor cycle. This repairs beta1 ledgers created
-        # after a vendor regression without making legacy publication a
-        # permanent input to CycleEngine.
-        migration_peak = clamp_pct(history.get("migration_peak_progress_pct"))
-        migration_start = as_int(history.get("migration_vendor_start_time"))
-        migration_seeded = bool(
-            not pending_vendor_cycle
-            and migration_peak is not None
-            and vendor_start is not None
-            and migration_start is not None
-            and vendor_start == migration_start
-            and (previous_peak is None or migration_peak > previous_peak)
-        )
-        if migration_seeded:
-            previous_progress = max(previous_progress or 0.0, migration_peak)
-            previous_peak = max(previous_peak or 0.0, migration_peak)
-            previous_start = vendor_start
-            record["progress_pct"] = previous_progress
-            record["progress_peak_pct"] = previous_peak
-            record["vendor_start_time"] = vendor_start
-            if area is not None:
-                record["mowed_area_m2"] = round(area * previous_progress / 100.0, 2)
-            record["migration_seeded_from_history_peak"] = True
-            record["migration_seeded_progress_pct"] = round(migration_peak, 1)
+        # Historical peaks remain available on the record for diagnostics/history,
+        # but fresh vendor coverage is the only current progress authority.
 
         confirmed_reset = False
         reset_reason: str | None = None
@@ -606,19 +586,19 @@ def reduce_zone_ledger(
                 )
                 if str(cycle_key).startswith("local-reset:") and vendor_start is not None:
                     cycle_key = _vendor_cycle_key(zone_id, vendor_start, max(1, sequence))
-                accepted = raw_pct if previous_progress is None else max(previous_progress, raw_pct)
-                peak = accepted if previous_peak is None else max(previous_peak, accepted)
+                accepted = raw_pct
+                peak = raw_pct if previous_peak is None else max(previous_peak, raw_pct)
 
-            held = bool(raw_pct < accepted)
-            if held:
-                mowed_area = area * accepted / 100.0 if area is not None else previous.get("mowed_area_m2")
-                progress_source = "vendor_coverage_monotonic_hold"
-            elif raw_finished is not None and raw_finished >= 0:
+            # Current-map progress follows fresh vendor state exactly. The peak
+            # remains historical diagnostic evidence only and never overrides
+            # the value shown for the current vendor cycle.
+            held = False
+            if raw_finished is not None and raw_finished >= 0:
                 mowed_area = raw_finished
-                progress_source = "vendor_coverage"
+                progress_source = "vendor_current_coverage"
             else:
                 mowed_area = area * accepted / 100.0 if area is not None else None
-                progress_source = "vendor_coverage_calculated_area"
+                progress_source = "vendor_current_coverage_calculated_area"
             if area is not None and mowed_area is not None:
                 mowed_area = max(0.0, min(area, float(mowed_area)))
 
@@ -659,13 +639,6 @@ def reduce_zone_ledger(
                 events.append(event)
                 state["last_event"] = event
 
-            verified_completion_hold = bool(
-                held
-                and accepted >= COMPLETION_THRESHOLD
-                and as_int(record.get("last_completed_progress")) == 100
-                and str(record.get("last_completed_source") or "") == "private_zone_coverage"
-                and str(record.get("last_completed_confirmation") or "").startswith("coverage_100_")
-            )
             record.update(
                 {
                     "cycle_sequence": max(1, sequence),
@@ -678,18 +651,12 @@ def reduce_zone_ledger(
                     "completed_current_cycle": bool(accepted >= COMPLETION_THRESHOLD),
                     "pending_vendor_cycle": pending_vendor_cycle,
                     "progress_source": progress_source,
-                    "progress_guard": held,
-                    "progress_guard_reason": "same_cycle_vendor_regression" if held else None,
-                    "progress_guard_vendor_pct": round(raw_pct, 1) if held else None,
-                    "completion_hold": verified_completion_hold,
-                    "completion_hold_reason": (
-                        "verified_100_same_vendor_cycle"
-                        if verified_completion_hold
-                        else None
-                    ),
-                    "completion_hold_vendor_pct": (
-                        round(raw_pct, 1) if verified_completion_hold else None
-                    ),
+                    "progress_guard": False,
+                    "progress_guard_reason": None,
+                    "progress_guard_vendor_pct": None,
+                    "completion_hold": False,
+                    "completion_hold_reason": None,
+                    "completion_hold_vendor_pct": None,
                     "stale": False,
                     "updated_at": iso_from_ms(observed_at_ms),
                 }

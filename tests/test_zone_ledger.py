@@ -93,21 +93,21 @@ def reduce(
 @pytest.mark.parametrize(
     ("initial", "next_pct", "next_start", "age", "live", "expected_pct", "expected_source", "reset"),
     [
-        (None, 0, 100, 1, None, 0.0, "vendor_coverage", False),
-        (None, 37, 100, 1, None, 37.0, "vendor_coverage", False),
-        (None, 100, 100, 1, None, 100.0, "vendor_coverage", False),
-        (20, 21, 100, 1, None, 21.0, "vendor_coverage", False),
-        (60, 55, 100, 1, None, 60.0, "vendor_coverage_monotonic_hold", False),
-        (60, 61, 100, 1, None, 61.0, "vendor_coverage", False),
-        (100, 99, 100, 1, None, 100.0, "vendor_coverage_monotonic_hold", False),
-        (100, 100, 100, 1, None, 100.0, "vendor_coverage", False),
-        (80, 10, 200, 1, None, 10.0, "vendor_coverage", True),
-        (80, 10, 100, 1, 80, 80.0, "vendor_coverage_monotonic_hold", False),
-        (80, 10, 100, 120, None, 80.0, "vendor_coverage", False),
-        (25, 24, 100, 1, None, 25.0, "vendor_coverage_monotonic_hold", False),
-        (25, 26, 100, 1, None, 26.0, "vendor_coverage", False),
-        (95, 94, 100, 1, None, 95.0, "vendor_coverage_monotonic_hold", False),
-        (99, 100, 100, 1, None, 100.0, "vendor_coverage", False),
+        (None, 0, 100, 1, None, 0.0, "vendor_current_coverage", False),
+        (None, 37, 100, 1, None, 37.0, "vendor_current_coverage", False),
+        (None, 100, 100, 1, None, 100.0, "vendor_current_coverage", False),
+        (20, 21, 100, 1, None, 21.0, "vendor_current_coverage", False),
+        (60, 55, 100, 1, None, 55.0, "vendor_current_coverage", False),
+        (60, 61, 100, 1, None, 61.0, "vendor_current_coverage", False),
+        (100, 99, 100, 1, None, 99.0, "vendor_current_coverage", False),
+        (100, 100, 100, 1, None, 100.0, "vendor_current_coverage", False),
+        (80, 10, 200, 1, None, 10.0, "vendor_current_coverage", True),
+        (80, 10, 100, 1, 80, 10.0, "vendor_current_coverage", False),
+        (80, 10, 100, 120, None, 80.0, "vendor_current_coverage", False),
+        (25, 24, 100, 1, None, 24.0, "vendor_current_coverage", False),
+        (25, 26, 100, 1, None, 26.0, "vendor_current_coverage", False),
+        (95, 94, 100, 1, None, 94.0, "vendor_current_coverage", False),
+        (99, 100, 100, 1, None, 100.0, "vendor_current_coverage", False),
     ],
 )
 def test_zone_ledger_transition_table(
@@ -145,7 +145,7 @@ def test_hard_drop_requires_two_confirmations_without_strong_reset_signal() -> N
     state, rows, _totals, _task, first_events = reduce(
         state, pct=10, start=None, observed_at_ms=NOW + 10_000
     )
-    assert rows[0]["coverage_pct"] == 80.0
+    assert rows[0]["coverage_pct"] == 10.0
     assert not any(event["type"] == "zone_cycle_reset" for event in first_events)
 
     state, rows, _totals, _task, second_events = reduce(
@@ -169,7 +169,8 @@ def test_active_live_progress_blocks_false_low_drop_confirmation() -> None:
             live=75,
             observed_at_ms=NOW + offset,
         )
-        assert rows[0]["coverage_pct"] == 80.0
+        assert rows[0]["coverage_pct"] == 10.0
+        assert rows[0]["progress_source"] == "vendor_current_coverage"
         assert not any(event["type"] == "zone_cycle_reset" for event in events)
 
 
@@ -319,7 +320,7 @@ def test_geometry_signature_is_rotation_and_direction_invariant() -> None:
     assert ledger.zone_geometry_signature(reversed_polygon) == first
 
 
-def test_known_same_vendor_start_never_confirms_regression_as_new_cycle() -> None:
+def test_same_vendor_start_zero_is_visible_without_inventing_new_cycle() -> None:
     state, *_ = reduce(pct=80, start=100)
     for offset in (10_000, 20_000, 30_000, 70_000):
         state, rows, _totals, _task, events = reduce(
@@ -328,12 +329,12 @@ def test_known_same_vendor_start_never_confirms_regression_as_new_cycle() -> Non
             start=100,
             observed_at_ms=NOW + offset,
         )
-        assert rows[0]["coverage_pct"] == 80.0
-        assert rows[0]["progress_source"] == "vendor_coverage_monotonic_hold"
+        assert rows[0]["coverage_pct"] == 0.0
+        assert rows[0]["progress_source"] == "vendor_current_coverage"
         assert not any(event["type"] == "zone_cycle_reset" for event in events)
 
 
-def test_beta1_zero_ledger_is_repaired_from_same_cycle_history_peak() -> None:
+def test_history_peak_never_overrides_fresh_vendor_zero() -> None:
     signature = ledger.zone_geometry_signature(ZONE)
     state = {
         "version": 1,
@@ -345,44 +346,43 @@ def test_beta1_zero_ledger_is_repaired_from_same_cycle_history_peak() -> None:
                 "cycle_key": "vendor:5:100",
                 "vendor_start_time": 100,
                 "geometry_signature": signature,
-                "progress_pct": 0.0,
-                "progress_peak_pct": 0.0,
-                "mowed_area_m2": 0.0,
+                "progress_pct": 100.0,
+                "progress_peak_pct": 100.0,
+                "mowed_area_m2": 100.0,
                 "pending_vendor_cycle": False,
             }
         },
         "reset_candidates": {},
         "last_event": None,
     }
-    snapshot_value = snapshot(0, start=100)
-    for offset in (10_000, 20_000, 30_000):
-        state, rows, totals, _task, events = ledger.reduce_zone_ledger(
-            state,
-            snapshot=snapshot_value,
-            map_zones=[ZONE],
-            zone_details=[{"id": 5, "name": "Plats 1", "area_m2": 100.0}],
-            zone_history={
-                "5": {
-                    "id": 5,
-                    "migration_progress_pct": 0,
-                    "migration_peak_progress_pct": 100,
-                    "migration_vendor_start_time": 100,
-                    "last_completed_at": "2026-09-28T12:00:00+00:00",
-                    "last_completed_progress": 100,
-                    "last_completed_source": "private_zone_coverage",
-                    "last_completed_confirmation": "coverage_100_after_incomplete",
-                }
-            },
-            active_session={"id": "legacy-session", "zone_ids": [5], "visited_zone_ids": [5]},
-            observed_at_ms=NOW + offset,
-        )
-        assert rows[0]["coverage_pct"] == 100.0
-        assert totals["map_coverage_pct"] == 100.0
-        assert rows[0]["completion_hold"] is True
-        assert not any(event["type"] == "zone_cycle_reset" for event in events)
+    state, rows, totals, _task, events = ledger.reduce_zone_ledger(
+        state,
+        snapshot=snapshot(0, start=100),
+        map_zones=[ZONE],
+        zone_details=[{"id": 5, "name": "Plats 1", "area_m2": 100.0}],
+        zone_history={
+            "5": {
+                "id": 5,
+                "migration_progress_pct": 100,
+                "migration_peak_progress_pct": 100,
+                "migration_vendor_start_time": 100,
+                "last_completed_at": "2026-09-28T12:00:00+00:00",
+                "last_completed_progress": 100,
+                "last_completed_source": "private_zone_coverage",
+                "last_completed_confirmation": "coverage_100_after_incomplete",
+            }
+        },
+        active_session={"id": "legacy-session", "zone_ids": [5], "visited_zone_ids": [5]},
+        observed_at_ms=NOW + 10_000,
+    )
+    assert rows[0]["coverage_pct"] == 0.0
+    assert totals["map_coverage_pct"] == 0.0
+    assert rows[0]["completion_hold"] is False
+    assert rows[0]["last_completed_progress"] == 100
+    assert not any(event["type"] == "zone_cycle_reset" for event in events)
 
 
-def test_new_vendor_start_still_resets_after_migration_peak_seed() -> None:
+def test_new_vendor_start_still_resets_current_cycle() -> None:
     state, *_ = reduce(pct=100, start=100)
     state, rows, _totals, _task, events = reduce(
         state,
@@ -395,3 +395,31 @@ def test_new_vendor_start_still_resets_after_migration_peak_seed() -> None:
         event["type"] == "zone_cycle_reset" and event["reason"] == "vendor_start_time"
         for event in events
     )
+
+
+def test_docked_task_does_not_retain_session_zone_membership() -> None:
+    state, rows, totals, task, _events = ledger.reduce_zone_ledger(
+        None,
+        snapshot={
+            "coverage": {
+                "zones": [
+                    {"id": 5, "area": 100.0, "finished": 77.0, "pct": 77, "start_time": 100},
+                ]
+            },
+            "coverage_source_age": 1,
+            "activity": "charging",
+            "docked": True,
+            "current_zone_ids": [5],
+            "mowing_progress": 77,
+            "session_area": 77,
+        },
+        map_zones=[ZONE],
+        zone_details=[],
+        zone_history={},
+        active_session={"id": "retained", "zone_ids": [5], "visited_zone_ids": [5]},
+        observed_at_ms=NOW,
+    )
+    assert rows[0]["coverage_pct"] == 77.0
+    assert task["zone_ids"] == []
+    assert task["area_m2"] is None
+    assert totals["task_area_m2"] is None

@@ -438,7 +438,7 @@ async def async_get_config_entry_diagnostics(
             "Georeference diagnostics retain local transform/validation context; geographic coordinates are redacted.",
             "Map underlay diagnostics retain availability/session status, not Google keys or session tokens.",
             "Prepared render diagnostics are cached-only counters/summaries; SVG paths and local point arrays are not duplicated into diagnostics.",
-        "Canonical v2 is shadow-only in 0.5.0-beta1; diagnostics expose source/parity summaries but never exact position coordinates.",
+        "Canonical v2 is shadow-only in 0.5.0-beta3; diagnostics expose source/parity summaries but never exact position coordinates.",
             "Prepared History diagnostics are cached-only readiness/transport/build counters and never load session Stores.",
             "History performance diagnostics include only point counts and timing/counter statistics; route geometry is not exported.",
             "Vendor trail recovery diagnostics expose only bootstrap/checkpoint/backfill counts and timings; route geometry is not exported.",

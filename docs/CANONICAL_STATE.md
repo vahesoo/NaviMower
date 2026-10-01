@@ -57,3 +57,27 @@ legacy runtime while these fixes are verified on real mowers.
 - following beta: delete superseded wrappers and legacy Map API/render fallbacks,
   then split Map Card source into maintainable modules while keeping one
   production bundle.
+
+
+## Beta 3
+
+0.5.0-beta3 remains shadow-only for Canonical v2 but intentionally aligns the
+existing current-map publication with fresh vendor state before authority
+cutover.
+
+- fresh vendor per-zone percentage is the visible current percentage, including
+  vendor resets back to 0%;
+- historical completion remains History metadata and does not repaint the
+  current map;
+- VendorTrailStore current geometry is revoked when the vendor resets that zone;
+- reset checkpoints prevent lagging compressed geometry from resurrecting an
+  old prefix;
+- current mowed fallback geometry is cutting-only;
+- docked/charging retained sessions do not define a current task zone set.
+
+The matching Map Card 0.4.0-beta3 also renders semantic live **cutting** segments
+only in the Mowed layer. Travel/return data may still exist in the backend
+session model, but it is not current mowing geometry.
+
+The next authority/API cutover is conditional on field validation of these
+vendor-current semantics.
