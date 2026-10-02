@@ -587,7 +587,14 @@ def test_gap_guard_v2_tolerates_sparse_vendor_compression(store):
     assert store.accept(row)
 
     record = store.records[92]
-    assert record["gap_guard_version"] == 2
+    assert record["gap_guard_version"] == 3
+    assert record["gap_guard_mode"] == "zone_polygon_pending"
+    assert record["future_gap_break_indices"] == []
+
+    # Map-unavailable callers retain the old adaptive guard only as a fallback.
+    asyncio.run(store.async_artifacts(0.25, build=True))
+    record = store.records[92]
+    assert record["gap_guard_mode"] == "adaptive_distance_fallback"
     assert record["gap_guard_threshold_m"] == 30.0
     assert record["future_gap_break_indices"] == []
     source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
@@ -604,7 +611,10 @@ def test_gap_guard_v2_splits_only_large_outlier_jump(store):
     appended["points"] = [*row["points"], [100.0, 0.0], [102.0, 0.0]]
     assert store.accept(appended)
 
+    asyncio.run(store.async_artifacts(0.25, build=True))
     record = store.records[92]
+    assert record["gap_guard_version"] == 3
+    assert record["gap_guard_mode"] == "adaptive_distance_fallback"
     assert record["gap_guard_threshold_m"] == 15.0
     assert record["future_gap_break_indices"] == [11]
     source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
@@ -626,7 +636,7 @@ def test_gap_guard_v1_metadata_migrates_and_rebuilds_same_geometry(store):
     same = deepcopy(row)
     assert store.accept(same)
     migrated = store.records[92]
-    assert migrated["gap_guard_version"] == 2
+    assert migrated["gap_guard_version"] == 3
     assert migrated["future_gap_break_indices"] == []
     assert migrated["artifact"] is None
     assert migrated["artifact_revision"] is None
@@ -637,5 +647,5 @@ def test_gap_guard_v1_metadata_migrates_and_rebuilds_same_geometry(store):
     diag = restored.recovery_diagnostics()
     assert diag["future_gap_guard_threshold_m"] == 15.0
     assert diag["future_gap_guard_max_threshold_m"] == 30.0
-    assert diag["future_gap_guard_version"] == 2
+    assert diag["future_gap_guard_version"] == 3
     assert diag["future_gap_guard_break_count"] == 0
