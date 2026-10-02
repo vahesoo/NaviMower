@@ -166,9 +166,12 @@ def _canonical_frontend_state(coordinator: Any) -> dict[str, Any]:
 
 
 def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach the paired resource contract and persistent Custom Area geometry."""
+    """Publish the canonical resource contract without superseded current-state aliases."""
+    clean_payload = dict(payload)
+    for key in ("zone_states", "zone_states_revision", "totals"):
+        clean_payload.pop(key, None)
     return {
-        **payload,
+        **clean_payload,
         "contract": {
             "version": MAP_RESOURCE_CONTRACT_VERSION,
             "authority": "canonical_mower_state",
@@ -176,7 +179,7 @@ def _with_card_metadata(coordinator: Any, payload: dict[str, Any]) -> dict[str, 
             "history_owner": "History",
             "current_cycle_resource": "map_artifacts",
             "live_route_resource": "prepared_render_model",
-            "compatibility_aliases": True,
+            "compatibility_aliases": False,
         },
         "canonical": _canonical_frontend_state(coordinator),
         "frontend": _frontend_metadata(coordinator)
