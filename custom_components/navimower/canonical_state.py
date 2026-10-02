@@ -47,7 +47,6 @@ def resolve_position(
     mqtt_pose_age_s: Any,
     cloud_position: Any,
     cloud_position_age_s: Any,
-    public_position: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
     cloud_position_max_age_s: float = DEFAULT_CLOUD_POSITION_MAX_AGE_S,
 ) -> dict[str, Any]:
@@ -202,16 +201,6 @@ def build_canonical_state(
             "ledger_revision": _as_int((ledger_state or {}).get("revision")) or 0,
             "vendor_store_revision": vendor_store_revision,
             "rows": cycles,
-        },
-        "parity": {
-            "match": all(checks) if checks else None,
-            "position_match": position_match,
-            "task_progress_match": task_progress_match,
-            "task_mowed_area_match": task_area_match,
-            "zone_count_match": zone_count_match,
-            "zone_ledger_match": ledger_match,
-            "zone_ledger_strict_match": ledger_strict_match,
-            "zone_ledger_enrichments": ledger_enrichments,
         },
         "health": {
             "mqtt_pose_age_s": round(mqtt_age, 3) if mqtt_age is not None else None,
