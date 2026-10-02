@@ -396,7 +396,15 @@ async def _send_continue(
         source="navimower_schedule_v2_continue",
         queue_slot=slot,
     )
+    runtime["resume_pending"] = False
     runtime["continue_attempted_at"] = _utc_now()
+    if not isinstance(runtime.get("pending_command"), dict):
+        if runtime.get("suspended_reason") == "interrupted_task_continue_failed":
+            runtime["suspended_reason"] = None
+        _set_retry(runtime)
+        await controller._save()
+        return
+    runtime["suspended_reason"] = None
     runtime["last_command"] = f"continue:{zone_id}"
     runtime["last_command_at"] = _utc_now()
     await controller._save()
@@ -441,7 +449,23 @@ async def _confirm_pending(
         return
 
     if controller._vendor_mowing(data):
+        if kind == "mow":
+            zone_id = _as_int(pending.get("zone_id"))
+            if zone_id is not None:
+                controller.coordinator.start_new_mowing_cycle(
+                    [zone_id],
+                    source=str(
+                        pending.get("source")
+                        or "navimower_schedule_v2_next_zone"
+                    ),
+                )
+                runtime["active_zone_id"] = zone_id
+                runtime["active_queue_slot"] = pending.get("queue_slot")
+                runtime["unfinished"] = True
         runtime["pending_command"] = None
+        # The legacy base command helper still writes this compatibility flag for
+        # reset=False. Scheduler V2 does not use it as state.
+        runtime["resume_pending"] = False
         runtime["interrupted_reason"] = None
         runtime["retry_not_before"] = None
         await controller._save()
