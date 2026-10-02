@@ -629,16 +629,23 @@ class VendorTrailStore:
                     width,
                     guard_key,
                 ]
+
+                # Guard diagnostics are part of retained trail state, not a
+                # by-product of a successful SVG. Persist them even when every
+                # candidate edge is rejected and the renderer has no area to
+                # publish yet.
+                row["future_gap_break_indices"] = sorted(breaks)
+                row["gap_guard_mode"] = guard_mode
+                row["gap_guard_tolerance_m"] = (
+                    ZONE_SEGMENT_TOLERANCE_M if polygon else None
+                )
+                row["gap_guard_threshold_m"] = (
+                    None if threshold is None else round(threshold, 3)
+                )
+                row["gap_guard_version"] = FUTURE_VENDOR_GAP_GUARD_VERSION
+                self.schedule_save()
+
                 if row.get("artifact_revision") == key and row.get("artifact") is not None:
-                    row["future_gap_break_indices"] = sorted(breaks)
-                    row["gap_guard_mode"] = guard_mode
-                    row["gap_guard_tolerance_m"] = (
-                        ZONE_SEGMENT_TOLERANCE_M if polygon else None
-                    )
-                    row["gap_guard_threshold_m"] = (
-                        None if threshold is None else round(threshold, 3)
-                    )
-                    row["gap_guard_version"] = FUTURE_VENDOR_GAP_GUARD_VERSION
                     continue
                 source = build_vendor_render_source(
                     [render_row],
