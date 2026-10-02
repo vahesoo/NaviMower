@@ -290,12 +290,49 @@ def _current_slot(
 
 
 def _weather_hold(controller: NavimowerScheduleController) -> str | None:
+    """Return a simple vendor weather/task-delay hold without task ownership."""
     data = controller.coordinator.data or {}
-    if (
-        data.get("weather_state_fresh") is True
-        and data.get("weather_hold_active") is True
-    ):
-        return str(data.get("weather_hold_reason") or "weather")
+    if data.get("weather_state_fresh") is True:
+        if data.get("weather_hold_active") is True:
+            return str(data.get("weather_hold_reason") or "weather")
+        # A fresh explicit clear wins over older taskDelay/notification evidence.
+        if data.get("weather_hold_active") is False:
+            return None
+
+    center = getattr(controller.coordinator, "notification_center", None)
+    interrupted = str(getattr(center, "interrupted_reason", None) or "").lower()
+    if interrupted in {
+        "rain",
+        "rain_delay",
+        "snow",
+        "wind",
+        "frost",
+        "high_temperature",
+        "vendor_weather_delay",
+        "vendor_task_delay",
+    }:
+        return interrupted
+
+    getter = getattr(center, "_mqtt_value", None)
+    delayed = None
+    if callable(getter):
+        try:
+            delayed = getter("task_delay")
+        except Exception:
+            delayed = None
+    if isinstance(delayed, bool):
+        active = delayed
+    else:
+        numeric = _as_int(delayed)
+        active = numeric != 0 if numeric is not None else False
+    if active:
+        age_getter = getattr(controller.coordinator, "mqtt_task_delay_age", None)
+        try:
+            age = age_getter() if callable(age_getter) else None
+        except Exception:
+            age = None
+        if age is None or float(age) <= 180.0:
+            return "vendor_task_delay"
     return None
 
 
