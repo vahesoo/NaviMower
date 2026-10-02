@@ -186,19 +186,93 @@ def _matching_custom_queue_slot(
 
 
 def _seed_started_slot_from_runtime(controller: NavimowerScheduleController) -> bool:
-    """Migrate an already-running pre-upgrade custom slot without guessing ahead."""
+    """Migrate an already-running custom slot and preserve positional identity.
+
+    A pre-upgrade or retained task may have active_zone_id without
+    active_queue_slot. Resolving the zone to a slot must restore both pieces of
+    runtime state. Otherwise completion can record the zone as finished while
+    leaving the positional slot permanently started-but-not-completed.
+    """
     if controller._order_mode != SCHEDULE_ORDER_CUSTOM:
         return False
+
+    changed = False
     started = _slot_set(controller._runtime.get("started_queue_slots"))
     slot = _as_int(controller._runtime.get("active_queue_slot"))
     if slot is None:
         zone_id = _as_int(controller._runtime.get("active_zone_id"))
         if zone_id is not None:
             slot = _matching_custom_queue_slot(controller, zone_id)
-    if slot is None or slot in started:
+            if slot is not None:
+                controller._runtime["active_queue_slot"] = slot
+                changed = True
+
+    if slot is None:
+        return changed
+    if slot not in started:
+        started.add(slot)
+        controller._runtime["started_queue_slots"] = sorted(started)
+        changed = True
+    return changed
+
+
+def _recover_completed_started_slot(
+    controller: NavimowerScheduleController,
+) -> bool:
+    """Repair the beta6 state where completion lost queue-slot identity.
+
+    Recovery is deliberately narrow and command-free. It requires positive
+    scheduler completion evidence, no active, pending or resumable work, and
+    exactly one unfinished started slot whose configured zone matches the
+    just-completed zone. Duplicate-zone ambiguity therefore remains fail-closed.
+    """
+    if controller._order_mode != SCHEDULE_ORDER_CUSTOM:
         return False
-    started.add(slot)
-    controller._runtime["started_queue_slots"] = sorted(started)
+    runtime = controller._runtime
+    if runtime.get("active_zone_id") is not None:
+        return False
+    if runtime.get("active_queue_slot") is not None:
+        return False
+    if isinstance(runtime.get("pending_command"), dict):
+        return False
+    if runtime.get("resume_pending"):
+        return False
+    if runtime.get("last_ownership_result") != "owned_zone_completed":
+        return False
+
+    zone_id = _as_int(runtime.get("just_completed_zone_id"))
+    if zone_id is None or zone_id <= 0:
+        return False
+    if str(runtime.get("last_command") or "") != f"zone_completed:{zone_id}":
+        return False
+    if not (runtime.get("scheduler_completed_at") or {}).get(str(zone_id)):
+        return False
+
+    started = _slot_set(runtime.get("started_queue_slots"))
+    completed = _slot_set(runtime.get("completed_queue_slots"))
+    unfinished = started - completed
+    matches = [
+        int(entry["slot"])
+        for entry in controller._custom_queue_entries()
+        if int(entry["slot"]) in unfinished
+        and _as_int(entry.get("zone_id")) == zone_id
+    ]
+    if len(matches) != 1:
+        return False
+
+    slot = matches[0]
+    completed.add(slot)
+    runtime["completed_queue_slots"] = sorted(completed)
+    completed_zones = {
+        value
+        for raw in runtime.get("completed_zone_ids_in_window") or []
+        if (value := _as_int(raw)) is not None and value > 0
+    }
+    completed_zones.add(zone_id)
+    runtime["completed_zone_ids_in_window"] = sorted(completed_zones)
+    runtime["last_command"] = f"queue_slot_recovered_completed:{slot}:{zone_id}"
+    runtime["last_command_at"] = _utc_now()
+    runtime["last_error"] = None
     return True
 
 
@@ -296,7 +370,9 @@ async def _evaluate_locked(self: NavimowerScheduleController) -> None:
     """Keep one immutable positional queue for the whole scheduler round."""
     if self._order_mode == SCHEDULE_ORDER_CUSTOM and not self._runtime.get("round_queue"):
         _set_round_snapshot(self, reset_progress=False)
-    if _seed_started_slot_from_runtime(self):
+    changed = _seed_started_slot_from_runtime(self)
+    changed = _recover_completed_started_slot(self) or changed
+    if changed:
         await self._save()
 
     before_round = _as_int(self._runtime.get("round_index"))
