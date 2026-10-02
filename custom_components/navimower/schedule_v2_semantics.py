@@ -184,7 +184,7 @@ def _start_round(
     runtime["suspended_reason"] = None
 
 
-def _migrate_beta7_runtime(controller: NavimowerScheduleController) -> bool:
+def _migrate_legacy_runtime(controller: NavimowerScheduleController) -> bool:
     """Collapse the beta7 slot/ownership state into the V2 queue pointer."""
     runtime = controller._runtime
     if runtime.get("v2_initialized") is True:
@@ -565,7 +565,7 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
         await controller.async_set_enabled(False, reason="native_schedule_enabled")
         return
 
-    changed = _migrate_beta7_runtime(controller)
+    changed = _migrate_legacy_runtime(controller)
     if not controller._runtime.get("round_queue"):
         _start_round(controller, increment=False, reason="initial")
         changed = True
