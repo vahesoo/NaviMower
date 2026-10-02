@@ -588,7 +588,8 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             runtime["outside_window_dock_at"] = None
             changed = True
 
-    if _complete_current_slot(controller):
+    completed_now = _complete_current_slot(controller)
+    if completed_now:
         changed = True
 
     activity = data.get("activity")
@@ -638,7 +639,10 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             return
     slot, zone_id = current
 
-    if controller._vendor_mowing(data):
+    # A completion can arrive in the same coordinator snapshot that still says
+    # Mowing for the just-finished zone. Do not adopt that stale activity as the
+    # newly advanced slot; dispatch the next slot/round below instead.
+    if controller._vendor_mowing(data) and not completed_now:
         runtime["unfinished"] = True
         runtime["interrupted_reason"] = None
         runtime["pending_command"] = None
