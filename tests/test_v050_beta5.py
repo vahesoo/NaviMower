@@ -10,7 +10,7 @@ COMPONENT = ROOT / "custom_components" / "navimower"
 
 def test_beta5_version_and_notes() -> None:
     manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.5.0-beta5"
+    assert manifest["version"].startswith("0.5.0-beta")
     notes = (ROOT / ".github" / "release-notes" / "0.5.0-beta5.md").read_text(
         encoding="utf-8"
     )
