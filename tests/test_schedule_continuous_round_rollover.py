@@ -21,14 +21,12 @@ def _function_source(name: str) -> str:
     raise AssertionError(f"Function {name} not found")
 
 
-def test_runtime_installs_continuous_round_semantics() -> None:
+def test_runtime_supersedes_legacy_round_wrapper_with_scheduler_v2() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
-    assert "from .schedule_round_semantics import install_schedule_round_semantics" in source
-    assert "install_schedule_pause_semantics()" in source
-    assert "install_schedule_round_semantics()" in source
-    assert source.index("install_schedule_pause_semantics()") < source.index(
-        "install_schedule_round_semantics()"
-    )
+    assert "from .schedule_v2_semantics import install_schedule_v2_semantics" in source
+    assert "install_schedule_v2_semantics()" in source
+    assert "install_schedule_round_semantics()" not in source
+    assert "install_schedule_pause_semantics()" not in source
 
 
 def test_round_completion_detects_custom_and_automatic_modes() -> None:

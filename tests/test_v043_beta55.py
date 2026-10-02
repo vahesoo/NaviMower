@@ -36,4 +36,6 @@ def test_reset_action_is_documented_and_runtime_extension_installed() -> None:
     services = (COMPONENT / "services.yaml").read_text(encoding="utf-8")
     runtime = (COMPONENT / "runtime.py").read_text(encoding="utf-8")
     assert "\nreset_schedule:\n" in services
-    assert "install_schedule_pause_semantics" in runtime
+    assert "install_schedule_v2_semantics" in runtime
+    v2 = (COMPONENT / "schedule_v2_semantics.py").read_text(encoding="utf-8")
+    assert "_register_reset_service(controller.hass)" in v2

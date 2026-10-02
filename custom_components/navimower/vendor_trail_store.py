@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import math
+import statistics
 import time
 from typing import Any
 
@@ -20,7 +21,10 @@ from .zone_ledger import as_int, normalize_ledger_state
 
 _LOGGER = logging.getLogger(__name__)
 STORE_VERSION = 1
-FUTURE_VENDOR_GAP_SPLIT_M = 5.0
+FUTURE_VENDOR_GAP_MIN_SPLIT_M = 15.0
+FUTURE_VENDOR_GAP_MAX_SPLIT_M = 30.0
+FUTURE_VENDOR_GAP_MEDIAN_MULTIPLIER = 6.0
+FUTURE_VENDOR_GAP_GUARD_VERSION = 2
 
 
 def trail_store(hass: Any, entry_id: str) -> Any:
@@ -431,7 +435,9 @@ class VendorTrailStore:
             "last_vendor_fetch_candidate_zone_count": self.last_vendor_fetch_candidate_zone_count,
             "last_vendor_fetch_requested_zone_count": self.last_vendor_fetch_requested_zone_count,
             "last_vendor_fetch_blocked_zone_count": self.last_vendor_fetch_blocked_zone_count,
-            "future_gap_guard_threshold_m": FUTURE_VENDOR_GAP_SPLIT_M,
+            "future_gap_guard_threshold_m": FUTURE_VENDOR_GAP_MIN_SPLIT_M,
+            "future_gap_guard_max_threshold_m": FUTURE_VENDOR_GAP_MAX_SPLIT_M,
+            "future_gap_guard_version": FUTURE_VENDOR_GAP_GUARD_VERSION,
             "future_gap_guard_break_count": sum(
                 len(row.get("future_gap_break_indices") or [])
                 for row in self.records.values()
@@ -444,90 +450,114 @@ class VendorTrailStore:
             ),
         }
 
+    @staticmethod
+    def _gap_guard_threshold(points: list[Any]) -> float:
+        """Return an outlier threshold that tolerates normal vendor compression."""
+        distances: list[float] = []
+        for first, second in zip(points, points[1:]):
+            if (
+                not isinstance(first, (list, tuple))
+                or not isinstance(second, (list, tuple))
+                or len(first) < 2
+                or len(second) < 2
+            ):
+                continue
+            try:
+                distance = math.hypot(
+                    float(second[0]) - float(first[0]),
+                    float(second[1]) - float(first[1]),
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(distance) and distance > 0:
+                distances.append(distance)
+        median = statistics.median(distances) if distances else 0.0
+        return min(
+            FUTURE_VENDOR_GAP_MAX_SPLIT_M,
+            max(
+                FUTURE_VENDOR_GAP_MIN_SPLIT_M,
+                median * FUTURE_VENDOR_GAP_MEDIAN_MULTIPLIER,
+            ),
+        )
+
+    @classmethod
+    def _gap_breaks(cls, points: list[Any]) -> tuple[set[int], float]:
+        threshold = cls._gap_guard_threshold(points)
+        breaks: set[int] = set()
+        for index in range(1, len(points)):
+            first = points[index - 1]
+            second = points[index]
+            if (
+                not isinstance(first, (list, tuple))
+                or not isinstance(second, (list, tuple))
+                or len(first) < 2
+                or len(second) < 2
+            ):
+                continue
+            try:
+                distance = math.hypot(
+                    float(second[0]) - float(first[0]),
+                    float(second[1]) - float(first[1]),
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(distance) and distance > threshold:
+                breaks.add(index)
+        return breaks, threshold
+
     def accept(self, row: dict[str, Any]) -> bool:
-        """Accept nonempty current-cycle geometry without revoking last-good data."""
+        """Accept current-cycle geometry and maintain the adaptive gap guard."""
         zone_id = as_int(row.get("zone_id"))
         ledger_row = self.ledger["zones"].get(str(zone_id)) or {}
         cycle_id = ledger_row.get("cycle_key")
         points = row.get("points") or []
         if not cycle_id or len(points) < 2 or ledger_row.get("pending_vendor_cycle"):
             return False
-        # A lagging compressed response is not an acknowledgement of a reset.
-        # Keep its own timestamp (normalization must not relabel stale geometry).
+
         expected_start = as_int(ledger_row.get("vendor_start_time"))
         observed_start = as_int(row.get("geometry_start_time", row.get("start_time")))
         if expected_start and observed_start and expected_start != observed_start:
             return False
         if ledger_row.get("progress_pct") == 0 or ledger_row.get("progress_guard"):
             return False
+
         previous = self.records.get(zone_id) or {}
         previous_points = previous.get("points") or []
         if len(points) < len(previous_points):
             return False
-        digest = hashlib.sha256(json.dumps(points, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-        if previous.get("geometry_revision") == digest:
+
+        digest = hashlib.sha256(
+            json.dumps(points, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
+
+        # Gap guard v2 fixes the field case where normal H-series compressed
+        # geometry often has >5 m point spacing. The old fixed threshold created
+        # hundreds of false segment breaks and visible white holes. Upgrade old
+        # retained records once by rescanning the same geometry with an adaptive
+        # 15..30 m outlier threshold, even when the geometry digest is unchanged.
+        previous_version = as_int(previous.get("gap_guard_version")) or 0
+        migrating_guard = bool(previous and previous_version < FUTURE_VENDOR_GAP_GUARD_VERSION)
+        if previous.get("geometry_revision") == digest and not migrating_guard:
             return False
 
-        # Beta4 forward-only gap guard. Existing retained geometry is never
-        # rescanned or rewritten on upgrade: the first observation establishes
-        # a scan cursor at the already-known point count. Only edges appended
-        # after that cursor can create a new segment break.
-        known_scan_count = as_int(previous.get("gap_guard_scanned_point_count"))
-        if previous:
-            scan_from = (
-                max(1, min(known_scan_count, len(points)))
-                if known_scan_count is not None
-                else len(previous_points)
-            )
-        else:
-            scan_from = len(points)
-
-        prefix_continues = True
-        if previous_points and len(points) >= len(previous_points):
-            prefix_continues = self._same_xy(
-                previous_points[-1],
-                points[len(previous_points) - 1],
-            )
-        breaks = {
-            int(index)
-            for index in (previous.get("future_gap_break_indices") or [])
-            if isinstance(index, int) and 0 < index < len(points)
-        } if prefix_continues else set()
-
-        if prefix_continues and scan_from < len(points):
-            for index in range(max(1, scan_from), len(points)):
-                first = points[index - 1]
-                second = points[index]
-                if (
-                    not isinstance(first, (list, tuple))
-                    or not isinstance(second, (list, tuple))
-                    or len(first) < 2
-                    or len(second) < 2
-                ):
-                    continue
-                try:
-                    distance = math.hypot(
-                        float(second[0]) - float(first[0]),
-                        float(second[1]) - float(first[1]),
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if math.isfinite(distance) and distance > FUTURE_VENDOR_GAP_SPLIT_M:
-                    breaks.add(index)
+        breaks, threshold = self._gap_breaks(points)
 
         record = deepcopy(row)
         record.update({
             "cycle_id": cycle_id,
             "vendor_owned": True,
             "geometry_revision": digest,
-            "artifact": previous.get("artifact"),
-            "artifact_revision": previous.get("artifact_revision"),
+            # Break changes alter the SVG topology, so a v1 -> v2 migration
+            # must invalidate the cached artifact even when points are unchanged.
+            "artifact": None if migrating_guard else previous.get("artifact"),
+            "artifact_revision": None if migrating_guard else previous.get("artifact_revision"),
             "artifact_anchor_xy": previous.get("artifact_anchor_xy"),
             "artifact_point_count": previous.get("artifact_point_count"),
             "tail": previous.get("tail", {}),
             "future_gap_break_indices": sorted(breaks),
             "gap_guard_scanned_point_count": len(points),
-            "gap_guard_version": 1,
+            "gap_guard_threshold_m": round(threshold, 3),
+            "gap_guard_version": FUTURE_VENDOR_GAP_GUARD_VERSION,
         })
         self.records[zone_id] = record
         self.revision += 1

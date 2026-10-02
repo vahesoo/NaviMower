@@ -53,13 +53,13 @@ def test_beta59_docs_drop_obsolete_multi_mower_beta_guide() -> None:
 def test_beta59_architecture_guard_lists_current_semantic_layers() -> None:
     source = (ROOT / "tests" / "test_runtime_architecture.py").read_text(encoding="utf-8")
     for filename in (
-        "schedule_pause_semantics.py",
+        "schedule_v2_semantics.py",
         "setup_flow_semantics.py",
         "zone_entity_cleanup.py",
     ):
         assert f'"{filename}"' in source
     for call in (
-        "install_schedule_pause_semantics()",
+        "install_schedule_v2_semantics()",
         "install_setup_flow_semantics()",
         "install_zone_entity_cleanup()",
     ):

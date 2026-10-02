@@ -580,62 +580,62 @@ def test_current_cycle_history_fallback_drops_non_cutting_travel_points(store):
     assert result["vendor_trail_debug"]["mqtt_fallback_zone_ids"] == [91]
 
 
-def test_beta4_gap_guard_does_not_retroactively_split_existing_geometry(store):
+def test_gap_guard_v2_tolerates_sparse_vendor_compression(store):
     observe(store)
     row = geometry(end=10)
-    # Synthetic old phantom edge inside geometry already present before beta4.
-    row["points"][5] = [50.0, 0.0]
+    row["points"] = [[float(index * 6), 0.0] for index in range(11)]
     assert store.accept(row)
 
     record = store.records[92]
+    assert record["gap_guard_version"] == 2
+    assert record["gap_guard_threshold_m"] == 30.0
     assert record["future_gap_break_indices"] == []
-    assert record["gap_guard_scanned_point_count"] == len(row["points"])
-
     source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
     assert len(source["segment_starts_ms"]) == 1
 
 
-def test_beta4_gap_guard_splits_only_newly_appended_large_jump(store):
+def test_gap_guard_v2_splits_only_large_outlier_jump(store):
     observe(store)
-    assert store.accept(geometry(end=10))
-    before = deepcopy(store.records[92])
-    assert before["future_gap_break_indices"] == []
-
     row = geometry(end=10)
-    row["points"] = [*row["points"], [100.0, 0.0], [101.0, 0.0]]
+    row["points"] = [[float(index * 2), 0.0] for index in range(11)]
+    assert store.accept(row)
+
+    appended = deepcopy(row)
+    appended["points"] = [*row["points"], [100.0, 0.0], [102.0, 0.0]]
+    assert store.accept(appended)
+
+    record = store.records[92]
+    assert record["gap_guard_threshold_m"] == 15.0
+    assert record["future_gap_break_indices"] == [11]
+    source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
+    assert len(source["segment_starts_ms"]) == 2
+
+
+def test_gap_guard_v1_metadata_migrates_and_rebuilds_same_geometry(store):
+    observe(store)
+    row = geometry(end=10)
+    row["points"] = [[float(index * 6), 0.0] for index in range(11)]
     assert store.accept(row)
 
     record = store.records[92]
-    assert record["future_gap_break_indices"] == [11]
-    assert record["gap_guard_scanned_point_count"] == 13
+    record["gap_guard_version"] = 1
+    record["future_gap_break_indices"] = [1, 2, 3, 4, 5]
+    record["artifact"] = {"mowed_area": {"path_d": "old"}}
+    record["artifact_revision"] = ["old"]
 
-    source = vendor.build_vendor_render_source([record], mowing_path_width_m=0.25)
-    assert len(source["segment_starts_ms"]) == 2
-    break_stamp = source["points"][11][0]
-    assert break_stamp in source["segment_starts_ms"]
-
-    # The newly rendered cutting geometry must contain two route fragments,
-    # so no edge from x=10 directly to x=100 is rasterized.
-    _all, cutting, _travel = svg.split_session_route_segments(source)
-    assert len(cutting) == 2
-    assert cutting[0][-1] == [10.0, 0.0]
-    assert cutting[1][0] == [100.0, 0.0]
-
-
-def test_beta4_gap_guard_metadata_survives_restart(store):
-    observe(store)
-    assert store.accept(geometry(end=10))
-    row = geometry(end=10)
-    row["points"] = [*row["points"], [50.0, 0.0]]
-    assert store.accept(row)
-    assert store.records[92]["future_gap_break_indices"] == [11]
+    same = deepcopy(row)
+    assert store.accept(same)
+    migrated = store.records[92]
+    assert migrated["gap_guard_version"] == 2
+    assert migrated["future_gap_break_indices"] == []
+    assert migrated["artifact"] is None
+    assert migrated["artifact_revision"] is None
 
     asyncio.run(store.async_flush())
     restored = store_module.VendorTrailStore(Hass(), "mower", storage=store.storage)
     asyncio.run(restored.async_load())
-    assert restored.records[92]["future_gap_break_indices"] == [11]
-    assert restored.records[92]["gap_guard_scanned_point_count"] == 12
     diag = restored.recovery_diagnostics()
-    assert diag["future_gap_guard_threshold_m"] == 5.0
-    assert diag["future_gap_guard_break_count"] == 1
-    assert diag["future_gap_guard_zone_count"] == 1
+    assert diag["future_gap_guard_threshold_m"] == 15.0
+    assert diag["future_gap_guard_max_threshold_m"] == 30.0
+    assert diag["future_gap_guard_version"] == 2
+    assert diag["future_gap_guard_break_count"] == 0
