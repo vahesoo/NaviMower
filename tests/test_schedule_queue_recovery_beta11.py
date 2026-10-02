@@ -108,11 +108,11 @@ def test_beta11_never_issues_a_reset_or_mow_command() -> None:
     assert "navimower.mow" not in source
 
 
-def test_beta11_installs_after_dispatch_weather_semantics() -> None:
+def test_legacy_queue_recovery_is_not_installed_after_v2_cutover() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
-    weather = runtime.index("install_schedule_dispatch_weather_semantics()")
-    recovery = runtime.index("install_schedule_queue_recovery_semantics()")
-    assert weather < recovery
+    assert "install_schedule_v2_semantics()" in runtime
+    assert "install_schedule_queue_recovery_semantics()" not in runtime
+    assert "install_schedule_dispatch_weather_semantics()" not in runtime
 
 
 def test_beta11_recovery_remains_in_later_release_lines() -> None:
