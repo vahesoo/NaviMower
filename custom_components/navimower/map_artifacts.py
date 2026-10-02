@@ -230,12 +230,15 @@ class MapArtifactManager:
                     for zone in selected
                 }
                 started = time.perf_counter()
-                width = _mowing_width(self.coordinator.data or {})
+                data = self.coordinator.data or {}
+                width = _mowing_width(data)
+                map_zones = ((data.get("map") or {}).get("zones") or [])
                 try:
                     await self.store.async_artifacts(
                         width,
                         build=True,
                         zone_ids=selected,
+                        map_zones=map_zones,
                     )
                 except asyncio.CancelledError:
                     raise
