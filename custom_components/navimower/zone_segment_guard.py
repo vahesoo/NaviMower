@@ -71,10 +71,11 @@ def polygon_signature(polygon: Any) -> str | None:
     return hashlib.sha256(payload.encode("ascii")).hexdigest()
 
 
-def point_in_polygon(x: float, y: float, polygon: Any) -> bool:
-    points = normalize_polygon(polygon)
-    if not points:
-        return False
+def _point_in_normalized_polygon(
+    x: float,
+    y: float,
+    points: list[list[float]],
+) -> bool:
     inside = False
     for index, first in enumerate(points):
         second = points[(index + 1) % len(points)]
@@ -91,6 +92,11 @@ def point_in_polygon(x: float, y: float, polygon: Any) -> bool:
             if x <= at_x:
                 inside = not inside
     return inside
+
+
+def point_in_polygon(x: float, y: float, polygon: Any) -> bool:
+    points = normalize_polygon(polygon)
+    return bool(points and _point_in_normalized_polygon(x, y, points))
 
 
 def _distance_to_segment(
@@ -111,11 +117,26 @@ def _distance_to_segment(
     return math.hypot(x - qx, y - qy)
 
 
+def _point_within_normalized_tolerance(
+    x: float,
+    y: float,
+    points: list[list[float]],
+    tolerance_m: float,
+) -> bool:
+    if _point_in_normalized_polygon(x, y, points):
+        return True
+    limit = max(0.0, float(tolerance_m))
+    return min(
+        _distance_to_segment(x, y, points[index], points[(index + 1) % len(points)])
+        for index in range(len(points))
+    ) <= limit
+
+
 def distance_to_polygon(x: float, y: float, polygon: Any) -> float | None:
     points = normalize_polygon(polygon)
     if not points:
         return None
-    if point_in_polygon(x, y, points):
+    if _point_in_normalized_polygon(x, y, points):
         return 0.0
     return min(
         _distance_to_segment(x, y, points[index], points[(index + 1) % len(points)])
@@ -130,8 +151,16 @@ def point_within_zone_tolerance(
     *,
     tolerance_m: float = ZONE_SEGMENT_TOLERANCE_M,
 ) -> bool:
-    distance = distance_to_polygon(x, y, polygon)
-    return distance is not None and distance <= max(0.0, float(tolerance_m))
+    points = normalize_polygon(polygon)
+    return bool(
+        points
+        and _point_within_normalized_tolerance(
+            x,
+            y,
+            points,
+            tolerance_m,
+        )
+    )
 
 
 def segment_within_zone_tolerance(
@@ -168,11 +197,11 @@ def segment_within_zone_tolerance(
         t = index / samples
         x = float(x1) + (float(x2) - float(x1)) * t
         y = float(y1) + (float(y2) - float(y1)) * t
-        if not point_within_zone_tolerance(
+        if not _point_within_normalized_tolerance(
             x,
             y,
             points,
-            tolerance_m=tolerance_m,
+            tolerance_m,
         ):
             return False
     return True
