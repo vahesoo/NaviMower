@@ -32,8 +32,6 @@ def _base_snapshot() -> dict:
         "current_channel_id": None,
         "current_channel_source": None,
         "map": {"revision": "1|2|3", "zones": [{"id": 5}]},
-        "zone_states": [{"id": 5, "coverage_pct": 43.0, "mowed_area_m2": 43.0}],
-        "totals": {"task_progress_pct": 43.0, "task_mowed_area_m2": 43.0},
     }
 
 
@@ -55,32 +53,26 @@ def _ledger() -> tuple[dict, dict]:
             }
         },
     }
-    diagnostics = {
-        "match": True,
-        "ledger": {
-            "task": {
-                "progress_pct": 43.0,
-                "mowed_area_m2": 43.0,
-                "area_m2": 100.0,
-                "zone_ids": [5],
-                "active_zone_id": 5,
-                "progress_source": "private_task_percentage",
-                "mowed_area_source": "private_cloud",
-            }
-        },
+    task = {
+        "progress_pct": 43.0,
+        "mowed_area_m2": 43.0,
+        "area_m2": 100.0,
+        "zone_ids": [5],
+        "active_zone_id": 5,
+        "progress_source": "private_task_percentage",
+        "mowed_area_source": "private_cloud",
     }
-    return state, diagnostics
+    return state, task
 
 
 def test_sparse_h1_mqtt_falls_back_to_private_cloud_without_losing_cycle() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = 3600
-    snapshot["position"] = {"x": 7.5, "y": -0.4, "heading": 1.2}
-    ledger_state, ledger_diagnostics = _ledger()
+    ledger_state, ledger_task = _ledger()
     state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
+        ledger_task=ledger_task,
         vendor_owned_zone_ids={5},
         vendor_store_revision=11,
         mqtt_position={"x": 1.0, "y": 1.0, "heading": 0.0},
@@ -90,37 +82,34 @@ def test_sparse_h1_mqtt_falls_back_to_private_cloud_without_losing_cycle() -> No
     assert state["navigation"]["position"]["source"] == "private_cloud"
     assert state["health"]["mqtt_pose_sparse_or_stale"] is True
     assert state["cycles"]["rows"][0]["vendor_geometry_owned"] is True
-    assert state["parity"]["match"] is True
+    assert "parity" not in state
 
 
 def test_dense_mqtt_position_wins_over_cloud() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = 0.4
-    snapshot["position"] = {"x": 9.0, "y": 3.0, "heading": 0.3}
-    ledger_state, ledger_diagnostics = _ledger()
+    ledger_state, ledger_task = _ledger()
     state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
+        ledger_task=ledger_task,
         mqtt_position={"x": 9.0, "y": 3.0, "heading": 0.3},
         cloud_position={"x": 8.0, "y": 2.0, "heading": 0.2},
         cloud_position_age_s=4.0,
     )
     assert state["navigation"]["position"]["source"] == "official_mqtt"
     assert state["health"]["mqtt_pose_sparse_or_stale"] is False
-    assert state["parity"]["position_match"] is True
 
 
 def test_diagnostics_never_export_exact_position_coordinates() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = 1.0
-    snapshot["position"] = {"x": 123.456, "y": -987.654, "heading": 0.3}
-    ledger_state, ledger_diagnostics = _ledger()
+    ledger_state, ledger_task = _ledger()
     state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
-        mqtt_position=snapshot["position"],
+        ledger_task=ledger_task,
+        mqtt_position={"x": 123.456, "y": -987.654, "heading": 0.3},
     )
     report = canonical.canonical_diagnostics(state)
     assert report is not None
@@ -133,12 +122,11 @@ def test_diagnostics_never_export_exact_position_coordinates() -> None:
 def test_task_authority_uses_zone_ledger_task() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = 1
-    snapshot["position"] = {"x": 0, "y": 0}
-    ledger_state, ledger_diagnostics = _ledger()
+    ledger_state, ledger_task = _ledger()
     state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
+        ledger_task=ledger_task,
         mqtt_position={"x": 0, "y": 0},
     )
     assert state["task"]["source"] == "zone_ledger_task"
@@ -149,42 +137,21 @@ def test_task_authority_uses_zone_ledger_task() -> None:
 def test_missing_mqtt_pose_reports_private_cloud_fallback_reason() -> None:
     snapshot = _base_snapshot()
     snapshot["mqtt_pose_age"] = None
-    snapshot["position"] = {"x": 7.5, "y": -0.4, "heading": 1.2}
-    ledger_state, ledger_diagnostics = _ledger()
+    ledger_state, ledger_task = _ledger()
     state = canonical.build_canonical_state(
         snapshot,
         ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
-        cloud_position=snapshot["position"],
+        ledger_task=ledger_task,
+        cloud_position={"x": 7.5, "y": -0.4, "heading": 1.2},
         cloud_position_age_s=8.0,
     )
     assert state["health"]["mqtt_pose_seen"] is False
     assert state["health"]["mqtt_pose_available"] is False
     assert state["health"]["position_fallback_reason"] == "mqtt_pose_missing"
-    assert state["parity"]["match"] is True
 
 
-def test_ledger_enrichment_does_not_fail_compatibility_parity() -> None:
-    snapshot = _base_snapshot()
-    snapshot["mqtt_pose_age"] = 1
-    snapshot["position"] = {"x": 0, "y": 0}
-    ledger_state, ledger_diagnostics = _ledger()
-    ledger_diagnostics["strict_match"] = False
-    ledger_diagnostics["enrichments"] = {
-        "task_area_m2": {
-            "legacy": None,
-            "ledger": 100.0,
-            "delta": None,
-            "classification": "canonical_enrichment",
-        }
-    }
-    state = canonical.build_canonical_state(
-        snapshot,
-        ledger_state=ledger_state,
-        ledger_diagnostics=ledger_diagnostics,
-        mqtt_position={"x": 0, "y": 0},
-    )
-    assert state["parity"]["match"] is True
-    assert state["parity"]["zone_ledger_match"] is True
-    assert state["parity"]["zone_ledger_strict_match"] is False
-    assert "task_area_m2" in state["parity"]["zone_ledger_enrichments"]
+def test_no_legacy_position_or_task_bridge_exists() -> None:
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    assert "legacy_resolved_fallback" not in source
+    assert "legacy_totals_bridge" not in source
+    assert "ledger_diagnostics" not in source
