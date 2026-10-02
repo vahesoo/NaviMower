@@ -37,13 +37,7 @@ from .navigation_intent import install_navigation_intent
 from .notification_feed import install_notification_feed
 from .osm_underlay_semantics import install_osm_underlay_semantics
 from .private_cloud_region import install_private_cloud_region
-from .schedule_dispatch_weather_semantics import install_schedule_dispatch_weather_semantics
-from .schedule_ownership_semantics import install_schedule_ownership_semantics
-from .schedule_pause_semantics import install_schedule_pause_semantics
-from .schedule_queue_boundary_semantics import install_schedule_queue_boundary_semantics
-from .schedule_queue_recovery_semantics import install_schedule_queue_recovery_semantics
-from .schedule_queue_semantics import install_schedule_queue_semantics
-from .schedule_round_semantics import install_schedule_round_semantics
+from .schedule_v2_semantics import install_schedule_v2_semantics
 from .setup_flow_semantics import install_setup_flow_semantics
 from .state_semantics import install_state_semantics
 from .vendor_progress_semantics import install_vendor_progress_semantics
@@ -125,26 +119,9 @@ def install_runtime_extensions() -> None:
     # interruption attribution and the normalized vendor Device feed. Install it
     # only after the notification transport has wrapped snapshot decoration.
     install_mowing_pause_status()
-    install_schedule_pause_semantics()
-    install_schedule_ownership_semantics()
-    install_schedule_round_semantics()
-    # Custom order is positional. Install after ownership/round wrappers so the
-    # active round can preserve exact slot identity, including duplicate zones.
-    install_schedule_queue_semantics()
-    # Apply editor changes only at a real round/window boundary, before slot 0 of
-    # the new round is allowed to dispatch.
-    install_schedule_queue_boundary_semantics()
-    # Final scheduler layer distinguishes managed acknowledgements from later
-    # manual mow commands, retries an unaccepted start, and parks accepted tasks
-    # through vendor weather delays without resetting the cycle.
-    install_schedule_dispatch_weather_semantics()
-    # Recover only a proven same-zone vendor auto-resume/completion after the
-    # queue's fail-closed ownership guard. This runs last in the scheduler chain
-    # and never issues a reset itself.
-    install_schedule_queue_recovery_semantics()
-    # Extend the existing legacy gate-area form only after all coordinator/runtime
-    # semantics are installed. The patch is UI-only; membership remains owned by
-    # channel.py and fresh MQTT pose safety semantics remain unchanged.
+    # Scheduler V2 is one explicit policy engine: time window, queue pointer,
+    # completion observation and exact commands. It does not prove/own vendor tasks.
+    install_schedule_v2_semantics()
     install_gate_area_polygon_semantics()
     install_setup_flow_semantics()
     install_zone_entity_cleanup()
