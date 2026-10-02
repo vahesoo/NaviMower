@@ -69,15 +69,18 @@ def test_staged_queue_applies_before_new_window_or_continuous_round_dispatch() -
     assert 'controller._runtime["round_index"]' in source
 
 
-def test_queue_semantics_install_after_ownership_and_round_semantics() -> None:
+def test_scheduler_v2_replaces_legacy_queue_wrapper_chain() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
 
-    pause = source.index("install_schedule_pause_semantics()")
-    ownership = source.index("install_schedule_ownership_semantics()")
-    round_semantics = source.index("install_schedule_round_semantics()")
-    queue = source.index("install_schedule_queue_semantics()")
-    boundary = source.index("install_schedule_queue_boundary_semantics()")
-    assert pause < ownership < round_semantics < queue < boundary
+    assert "install_schedule_v2_semantics()" in source
+    for legacy in (
+        "install_schedule_pause_semantics()",
+        "install_schedule_ownership_semantics()",
+        "install_schedule_round_semantics()",
+        "install_schedule_queue_semantics()",
+        "install_schedule_queue_boundary_semantics()",
+    ):
+        assert legacy not in source
 
 
 def test_runtime_seed_restores_active_slot_identity_not_only_started_flag() -> None:
