@@ -101,3 +101,16 @@ def test_v2_continue_does_not_keep_legacy_resume_or_ownership_suspension() -> No
     assert 'runtime["resume_pending"] = False' in block
     assert '"interrupted_task_continue_failed"' in block
     assert 'runtime["suspended_reason"] = None' in block
+
+
+def test_v2_keeps_vendor_weather_and_task_delay_as_simple_dispatch_holds() -> None:
+    source = V2.read_text(encoding="utf-8")
+    block = source[
+        source.index("def _weather_hold"):
+        source.index("def _night_hold")
+    ]
+    assert 'data.get("weather_state_fresh") is True' in block
+    assert 'data.get("weather_hold_active") is False' in block
+    assert 'getter("task_delay")' in block
+    assert "mqtt_task_delay_age" in block
+    assert '"vendor_task_delay"' in block
