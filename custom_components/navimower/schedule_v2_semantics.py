@@ -17,6 +17,7 @@ from .const import (
     ACTIVITY_MOWING,
     ACTIVITY_PAUSED,
     ACTIVITY_RETURNING,
+    VENDOR_COMPLETION_PROGRESS_MIN,
     OPT_SCHEDULE_CUSTOM_QUEUE,
     OPT_SCHEDULE_ORDER_MODE,
     SCHEDULE_ORDER_CUSTOM,
@@ -122,6 +123,105 @@ def _zone_completed_after(
         baseline,
         dispatched_at,
     )
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _interruption_reason(
+    controller: NavimowerScheduleController,
+    data: dict[str, Any],
+) -> str | None:
+    """Return positive interruption evidence that must block practical completion."""
+    if data.get("error") is True or data.get("problem_latched") is True:
+        return "error"
+
+    weather = _weather_hold(controller)
+    if weather:
+        return weather
+    if _night_hold(controller):
+        return "night"
+
+    center = getattr(controller.coordinator, "notification_center", None)
+    reason = str(getattr(center, "interrupted_reason", None) or "").strip().lower()
+    if reason in {
+        "charging",
+        "low_battery",
+        "night",
+        "rain",
+        "rain_delay",
+        "snow",
+        "wind",
+        "frost",
+        "high_temperature",
+        "vendor_weather_delay",
+        "vendor_task_delay",
+        "paused",
+        "manual_pause",
+    }:
+        return reason
+
+    battery = _float(data.get("battery"))
+    return_level = _float((data.get("settings") or {}).get("return_battery_level"))
+    if (
+        battery is not None
+        and return_level is not None
+        and battery <= return_level + 2.0
+    ):
+        return "low_battery"
+    return None
+
+
+def _practical_completion_evidence(
+    controller: NavimowerScheduleController,
+    zone_id: int,
+    data: dict[str, Any],
+    activity: Any,
+) -> tuple[bool, str | None]:
+    """Accept vendor practical completion only after cutting has actually ended.
+
+    Navimow may intentionally finish a zone at 95-99% when tiny inaccessible
+    remnants remain. This fallback is deliberately narrower than display
+    progress: it requires fresh current-cycle per-zone coverage, a non-cutting
+    terminal movement state, and no evidence of charging/weather/night/error
+    interruption.
+    """
+    if activity not in {ACTIVITY_RETURNING, ACTIVITY_DOCKED}:
+        return False, None
+    if controller._vendor_mowing(data):
+        return False, None
+    if _interruption_reason(controller, data):
+        return False, None
+
+    row = controller._zone(zone_id)
+    if not isinstance(row, dict) or row.get("stale") is True:
+        return False, None
+    source_age = _float(row.get("source_age_s"))
+    if source_age is not None and source_age > 90.0:
+        return False, None
+
+    progress = _float(row.get("coverage_pct"))
+    if progress is None:
+        progress = _float(row.get("vendor_coverage_pct"))
+    if (
+        progress is None
+        or progress < float(VENDOR_COMPLETION_PROGRESS_MIN)
+        or progress >= 100.0
+    ):
+        return False, None
+
+    dispatched = _stamp(controller._runtime.get("dispatch_started_at"))
+    vendor_start = _as_int(row.get("vendor_start_time"))
+    if dispatched is not None and vendor_start is not None:
+        vendor_started = datetime.fromtimestamp(vendor_start, tz=UTC)
+        if vendor_started + timedelta(seconds=5) < dispatched:
+            return False, None
+
+    return True, f"vendor_practical_completion:{progress:g}"
 
 
 def _build_round_queue(controller: NavimowerScheduleController) -> list[int]:
@@ -536,26 +636,43 @@ async def _confirm_pending(
         await controller._save()
 
 
-def _complete_current_slot(controller: NavimowerScheduleController) -> bool:
+def _complete_current_slot(
+    controller: NavimowerScheduleController,
+    data: dict[str, Any],
+    activity: Any,
+) -> bool:
     runtime = controller._runtime
     current = _current_slot(controller)
     if current is None or not runtime.get("unfinished"):
         return False
     slot, zone_id = current
-    if not _zone_completed_after(
+
+    strict = _zone_completed_after(
         controller,
         zone_id,
         runtime.get("active_zone_baseline_completed_at"),
         runtime.get("dispatch_started_at"),
-    ):
+    )
+    practical, practical_reason = _practical_completion_evidence(
+        controller,
+        zone_id,
+        data,
+        activity,
+    )
+    if not strict and not practical:
         return False
 
     row = controller._zone(zone_id) or {}
-    stamp = row.get("last_completed_at") or _utc_now()
+    stamp = row.get("last_completed_at") if strict else _utc_now()
+    stamp = stamp or _utc_now()
     confirmed = dict(runtime.get("scheduler_completed_at") or {})
     confirmed[str(zone_id)] = str(stamp)
     runtime["scheduler_completed_at"] = confirmed
-    runtime["last_command"] = f"zone_completed:{zone_id}:slot={slot}"
+    runtime["last_command"] = (
+        f"zone_completed:{zone_id}:slot={slot}"
+        if strict
+        else f"zone_completed_practical:{zone_id}:slot={slot}:{practical_reason}"
+    )
     runtime["last_command_at"] = _utc_now()
     runtime["last_error"] = None
     runtime["pending_command"] = None
@@ -649,11 +766,11 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             runtime["outside_window_dock_at"] = None
             changed = True
 
-    completed_now = _complete_current_slot(controller)
+    activity = data.get("activity")
+    completed_now = _complete_current_slot(controller, data, activity)
     if completed_now:
         changed = True
 
-    activity = data.get("activity")
     await _confirm_pending(controller, data, activity)
 
     if changed:
@@ -714,10 +831,24 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
         return
 
     if runtime.get("unfinished"):
+        # Never fight a mower that is already returning. Practical completion is
+        # resolved above; otherwise this is an interruption/return in progress
+        # and we wait for the dock/charging state before considering Resume.
+        if activity == ACTIVITY_RETURNING:
+            reason = _interruption_reason(controller, data)
+            if reason:
+                runtime["interrupted_reason"] = reason
+                await controller._save()
+            return
+
         # If charging is still below the user's configured threshold, let the
         # mower charge. At/above the threshold V2 may resume even if the vendor
         # still reports Charging.
         if not _charging_ready(controller, data):
+            reason = _interruption_reason(controller, data)
+            if reason:
+                runtime["interrupted_reason"] = reason
+                await controller._save()
             return
 
         pending = runtime.get("pending_command")
