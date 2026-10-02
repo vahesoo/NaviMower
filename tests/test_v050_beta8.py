@@ -80,3 +80,24 @@ def test_gap_guard_v2_rebuilds_old_false_break_artifacts() -> None:
     assert "FUTURE_VENDOR_GAP_GUARD_VERSION = 2" in source
     assert "migrating_guard" in source
     assert '"artifact": None if migrating_guard' in source
+
+
+def test_v2_confirmed_fresh_start_opens_backend_cycle_once() -> None:
+    source = V2.read_text(encoding="utf-8")
+    assert 'if kind == "mow":' in source
+    assert "controller.coordinator.start_new_mowing_cycle(" in source
+    assert 'pending.get("queue_slot")' in source
+    assert 'runtime["unfinished"] = True' in source
+    assert 'runtime["pending_command"] = None' in source
+
+
+def test_v2_continue_does_not_keep_legacy_resume_or_ownership_suspension() -> None:
+    source = V2.read_text(encoding="utf-8")
+    block = source[
+        source.index("async def _send_continue"):
+        source.index("async def _send_dock")
+    ]
+    assert 'reset=False' in block
+    assert 'runtime["resume_pending"] = False' in block
+    assert '"interrupted_task_continue_failed"' in block
+    assert 'runtime["suspended_reason"] = None' in block
