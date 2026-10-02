@@ -40,7 +40,8 @@ from .ordered_run import (
     supersede_last_ordered_run,
     update_last_ordered_run,
 )
-from .zone_state import build_zone_model, zone_model_signature
+from .zone_ledger_semantics import run_zone_ledger_authority
+from .canonical_authority_semantics import run_canonical_authority
 from .task_resume import guard_managed_schedule_resume, task_resume_decision
 from .const import (
     ACTIVE_STATES,
@@ -1488,55 +1489,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return result
 
     def _refresh_zone_model(self, snapshot: dict[str, Any]) -> None:
-        """Build the one authoritative zone/totals model used by HA and the card."""
-        map_data = snapshot.get("map") or self._map_snapshot(
-            self._map_geometry or {},
-            cutting_height_supported=snapshot.get("cutting_height_supported"),
-        )
-        map_zones = [
-            dict(item) for item in (map_data or {}).get("zones") or []
-            if isinstance(item, dict)
-        ]
-        active_zone_id = _as_int(snapshot.get("active_zone_progress_zone_id"))
-        if active_zone_id is None:
-            active_zone_id = _as_int(snapshot.get("current_physical_zone_id"))
-        if active_zone_id is None:
-            candidates = snapshot.get("current_zone_ids") or []
-            if len(candidates) == 1:
-                active_zone_id = _as_int(candidates[0])
+        """Resolve the authoritative CycleEngine and Canonical state once."""
+        run_zone_ledger_authority(self, snapshot)
+        run_canonical_authority(self, snapshot)
+
+        # Downstream backend domains consume the canonical projections only.
         active_session = self.history.active_session_metadata()
-        zone_states, totals = build_zone_model(
-            map_zones=map_zones,
-            zone_details=[
-                dict(item) for item in snapshot.get("zone_details") or []
-                if isinstance(item, dict)
-            ],
-            coverage=snapshot.get("coverage"),
-            zone_history=self.history.zone_history(),
-            active_session=active_session,
-            active_zone_id=active_zone_id,
-            task_progress_pct=snapshot.get("mowing_progress"),
-            task_mowed_area_m2=snapshot.get("session_area"),
-            task_progress_source=snapshot.get("mowing_progress_source"),
-            task_area_source=snapshot.get("session_area_source"),
-        )
-        signature = zone_model_signature(zone_states, totals)
-        if signature != self._zone_states_signature:
-            self._zone_states_signature = signature
-            self._zone_states_revision += 1
-        snapshot["zone_states"] = zone_states
-        snapshot["zone_states_revision"] = self._zone_states_revision
-        snapshot["totals"] = totals
-        # Named top-level aliases make diagnostics/templates readable while all
-        # public entities are still sourced from the same totals object.
-        snapshot["task_progress"] = totals.get("task_progress_pct")
-        snapshot["task_mowed_area"] = totals.get("task_mowed_area_m2")
-        snapshot["map_coverage"] = totals.get("map_coverage_pct")
-        snapshot["map_mowed_area"] = totals.get("map_mowed_area_m2")
-        snapshot["map_area"] = totals.get("map_area_m2")
-        snapshot["last_map_mowed_at"] = totals.get("last_map_mowed_at")
-        snapshot["last_map_completed_at"] = totals.get("last_map_completed_at")
-        snapshot["active_cycle_id"] = (active_session or {}).get("id")
         self._update_last_ordered_run(snapshot)
         snapshot["last_ordered_run"] = last_ordered_run_snapshot(
             self._last_ordered_run
@@ -1555,6 +1513,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             resume_decision,
             schedule_state,
         )
+
 
     def _session_completed(self, snapshot: dict[str, Any]) -> bool | None:
         """Return success only for zones confirmed inside this observed cycle."""
