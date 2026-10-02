@@ -78,3 +78,45 @@ def test_queue_semantics_install_after_ownership_and_round_semantics() -> None:
     queue = source.index("install_schedule_queue_semantics()")
     boundary = source.index("install_schedule_queue_boundary_semantics()")
     assert pause < ownership < round_semantics < queue < boundary
+
+
+def test_runtime_seed_restores_active_slot_identity_not_only_started_flag() -> None:
+    source = QUEUE.read_text(encoding="utf-8")
+    block = source[
+        source.index("def _seed_started_slot_from_runtime"):
+        source.index("def _recover_completed_started_slot")
+    ]
+
+    assert 'controller._runtime["active_queue_slot"] = slot' in block
+    assert 'controller._runtime["started_queue_slots"] = sorted(started)' in block
+    assert "changed = True" in block
+
+
+def test_beta6_completed_slot_recovery_is_positive_and_duplicate_safe() -> None:
+    source = QUEUE.read_text(encoding="utf-8")
+    block = source[
+        source.index("def _recover_completed_started_slot"):
+        source.index("def _round_has_progress")
+    ]
+
+    assert 'runtime.get("last_ownership_result") != "owned_zone_completed"' in block
+    assert 'runtime.get("just_completed_zone_id")' in block
+    assert 'f"zone_completed:{zone_id}"' in block
+    assert 'runtime.get("scheduler_completed_at")' in block
+    assert "unfinished = started - completed" in block
+    assert "if len(matches) != 1:" in block
+    assert 'runtime["completed_queue_slots"] = sorted(completed)' in block
+    assert "return True" in block
+
+
+def test_recovery_runs_before_normal_scheduler_dispatch() -> None:
+    source = QUEUE.read_text(encoding="utf-8")
+    block = source[
+        source.index("async def _evaluate_locked"):
+        source.index("def install_schedule_queue_semantics")
+    ]
+
+    seed = block.index("_seed_started_slot_from_runtime(self)")
+    recover = block.index("_recover_completed_started_slot(self)")
+    original = block.index("await _ORIGINAL_EVALUATE_LOCKED(self)")
+    assert seed < recover < original
