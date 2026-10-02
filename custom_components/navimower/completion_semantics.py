@@ -484,23 +484,4 @@ def install_completion_semantics() -> None:
     cls.update_from_snapshot = update_from_snapshot
     cls._async_repair_unverified_zone_completions = repair_unverified_zone_completions
 
-    # coordinator.py imported build_zone_model directly, so wrap that exact
-    # production reference rather than changing the generic zone_state helper.
-    # This keeps unit callers deterministic while every HA snapshot gets the
-    # completed-zone hold before sensor/map publication.
-    from . import coordinator as _coordinator
-
-    original_build_zone_model = _coordinator.build_zone_model
-
-    def guarded_build_zone_model(*args: Any, **kwargs: Any):
-        rows, totals = original_build_zone_model(*args, **kwargs)
-        return _apply_completed_coverage_hold(
-            rows,
-            totals,
-            map_zones=kwargs.get("map_zones") or [],
-            zone_history=kwargs.get("zone_history") or {},
-            active_session=kwargs.get("active_session"),
-        )
-
-    _coordinator.build_zone_model = guarded_build_zone_model
     cls._completion_semantics_installed = True

@@ -1,48 +1,23 @@
-"""Run ZoneLedger as the public CycleEngine zone/task owner.
+"""Authoritative ZoneLedger / CycleEngine projection.
 
-Legacy reduction is still compared for cutover diagnostics, but public
-zone_states/totals/task aliases are projected from the ledger result. The ledger
-and VendorTrailStore remain persisted together across restart recovery.
+The 0.5 cleanup runtime no longer computes a legacy zone model first. ZoneLedger
+consumes captured vendor observations directly, owns current per-zone/task
+state, and publishes the stable HA snapshot fields used by backend domains.
 """
 from __future__ import annotations
 
 from copy import deepcopy
-import logging
 import time
 from typing import Any
 
-from . import coordinator as _coordinator
-from .zone_ledger import as_float, as_int, reduce_zone_ledger
-
-_LOGGER = logging.getLogger(__name__)
-_CUTOVER_TOTALS_KEY = "_zone_ledger_cutover"
-
-
-def _close(left: Any, right: Any, *, tolerance: float) -> bool:
-    """Compare optional numeric values while treating two missing values as equal."""
-    first = as_float(left)
-    second = as_float(right)
-    if first is None or second is None:
-        return first is None and second is None
-    return abs(first - second) <= tolerance
-
-
-def _rows_by_id(rows: Any) -> dict[int, dict[str, Any]]:
-    result: dict[int, dict[str, Any]] = {}
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        zone_id = as_int(row.get("id"))
-        if zone_id is not None and zone_id > 0:
-            result[zone_id] = row
-    return result
+from .zone_ledger import as_int, reduce_zone_ledger
 
 
 def _zone_history_seed(
     snapshot: dict[str, Any],
     cycle_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Build migration/backfill facts without making legacy publication authoritative."""
+    """Build migration/history facts without making archived state authoritative."""
     result: dict[str, dict[str, Any]] = {}
     for row in snapshot.get("zone_details") or []:
         if not isinstance(row, dict):
@@ -64,6 +39,7 @@ def _zone_history_seed(
             "last_completed_confirmation": row.get("last_completed_confirmation"),
             "last_completed_cycle_id": row.get("last_completed_cycle_id"),
         }
+
     progress_state = (
         cycle_diagnostics.get("zone_progress_state")
         if isinstance(cycle_diagnostics, dict)
@@ -76,151 +52,15 @@ def _zone_history_seed(
         if zone_id is None or zone_id <= 0:
             continue
         row = result.setdefault(str(zone_id), {"id": zone_id})
+        # One-way upgrade seed for persisted History created before CycleEngine.
         row["migration_progress_pct"] = state.get("progress")
         row["migration_peak_progress_pct"] = state.get("peak_progress")
         row["migration_vendor_start_time"] = state.get("start_time")
-
     return result
 
 
-def _metric_diff(
-    legacy: dict[str, Any],
-    ledger: dict[str, Any],
-    key: str,
-    *,
-    tolerance: float,
-) -> dict[str, Any] | None:
-    left = legacy.get(key)
-    right = ledger.get(key)
-    if _close(left, right, tolerance=tolerance):
-        return None
-    left_num = as_float(left)
-    right_num = as_float(right)
-    return {
-        "legacy": left,
-        "ledger": right,
-        "delta": (
-            round(right_num - left_num, 3)
-            if left_num is not None and right_num is not None
-            else None
-        ),
-    }
-
-
-def build_cutover_diagnostics(
-    *,
-    legacy_rows: list[dict[str, Any]],
-    legacy_totals: dict[str, Any],
-    ledger_rows: list[dict[str, Any]],
-    ledger_totals: dict[str, Any],
-    ledger_task: dict[str, Any],
-    ledger_state: dict[str, Any],
-    events: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Return a compact legacy-vs-authority comparison during cutover."""
-    legacy_by_id = _rows_by_id(legacy_rows)
-    ledger_by_id = _rows_by_id(ledger_rows)
-    zone_differences: list[dict[str, Any]] = []
-
-    for zone_id in sorted(set(legacy_by_id) | set(ledger_by_id)):
-        legacy = legacy_by_id.get(zone_id) or {}
-        ledger = ledger_by_id.get(zone_id) or {}
-        progress_match = _close(
-            legacy.get("coverage_pct"), ledger.get("coverage_pct"), tolerance=0.1
-        )
-        area_match = _close(
-            legacy.get("mowed_area_m2"), ledger.get("mowed_area_m2"), tolerance=0.05
-        )
-        if progress_match and area_match:
-            continue
-        legacy_pct = as_float(legacy.get("coverage_pct"))
-        ledger_pct = as_float(ledger.get("coverage_pct"))
-        legacy_area = as_float(legacy.get("mowed_area_m2"))
-        ledger_area = as_float(ledger.get("mowed_area_m2"))
-        zone_differences.append(
-            {
-                "zone_id": zone_id,
-                "legacy_pct": legacy.get("coverage_pct"),
-                "ledger_pct": ledger.get("coverage_pct"),
-                "delta_pct": (
-                    round(ledger_pct - legacy_pct, 2)
-                    if legacy_pct is not None and ledger_pct is not None
-                    else None
-                ),
-                "legacy_mowed_area_m2": legacy.get("mowed_area_m2"),
-                "ledger_mowed_area_m2": ledger.get("mowed_area_m2"),
-                "delta_mowed_area_m2": (
-                    round(ledger_area - legacy_area, 2)
-                    if legacy_area is not None and ledger_area is not None
-                    else None
-                ),
-                "legacy_source": legacy.get("progress_source"),
-                "ledger_source": ledger.get("progress_source"),
-            }
-        )
-
-    metric_differences: dict[str, Any] = {}
-    enrichments: dict[str, Any] = {}
-    for key, tolerance in (
-        ("map_area_m2", 0.05),
-        ("map_mowed_area_m2", 0.05),
-        ("map_coverage_pct", 0.1),
-        ("task_area_m2", 0.05),
-        ("task_mowed_area_m2", 0.05),
-        ("task_progress_pct", 0.1),
-    ):
-        difference = _metric_diff(
-            legacy_totals, ledger_totals, key, tolerance=tolerance
-        )
-        if difference is None:
-            continue
-        if legacy_totals.get(key) is None and as_float(ledger_totals.get(key)) is not None:
-            enrichments[key] = {
-                **difference,
-                "classification": "canonical_enrichment",
-            }
-        else:
-            metric_differences[key] = difference
-
-    match = not zone_differences and not metric_differences
-    strict_match = match and not enrichments
-    return {
-        "mode": "authority_cutover",
-        "public_owner": "ZoneLedger",
-        "ledger_revision": as_int(ledger_state.get("revision")) or 0,
-        "match": match,
-        "strict_match": strict_match,
-        "zone_match": not zone_differences,
-        "metric_match": not metric_differences,
-        "enrichments": enrichments,
-        "legacy": {
-            "zone_count": len(legacy_by_id),
-            "map_coverage_pct": legacy_totals.get("map_coverage_pct"),
-            "map_mowed_area_m2": legacy_totals.get("map_mowed_area_m2"),
-            "task_progress_pct": legacy_totals.get("task_progress_pct"),
-            "task_mowed_area_m2": legacy_totals.get("task_mowed_area_m2"),
-        },
-        "ledger": {
-            "zone_count": len(ledger_by_id),
-            "map_coverage_pct": ledger_totals.get("map_coverage_pct"),
-            "map_mowed_area_m2": ledger_totals.get("map_mowed_area_m2"),
-            "task_progress_pct": ledger_totals.get("task_progress_pct"),
-            "task_mowed_area_m2": ledger_totals.get("task_mowed_area_m2"),
-            "task": deepcopy(ledger_task),
-        },
-        "zone_differences": zone_differences,
-        "metric_differences": metric_differences,
-        "recent_events": deepcopy(events[-8:]),
-    }
-
-
-def _run_authority(owner: Any, snapshot: dict[str, Any]) -> None:
-    """Reduce one snapshot and publish ZoneLedger rows/totals as current state."""
-    legacy_rows = snapshot.get("zone_states")
-    legacy_totals = snapshot.get("totals")
-    if not isinstance(legacy_rows, list) or not isinstance(legacy_totals, dict):
-        return
-
+def run_zone_ledger_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Reduce one captured snapshot and publish the sole current zone/task model."""
     map_payload = snapshot.get("map")
     map_zones = map_payload.get("zones") if isinstance(map_payload, dict) else []
     history = getattr(owner, "history", None)
@@ -232,85 +72,69 @@ def _run_authority(owner: Any, snapshot: dict[str, Any]) -> None:
     if not isinstance(active_session, dict):
         active_session = None
 
-    previous_state = getattr(owner, "_zone_ledger_state", None)
     cycle_diagnostics = (
         history.cycle_diagnostics()
         if history is not None and hasattr(history, "cycle_diagnostics")
         else None
     )
-    snapshot["coverage_observation_id"] = (getattr(owner, "_endpoint_status", {}).get("path_info_time") or {}).get("last_success_mono")
+    snapshot["coverage_observation_id"] = (
+        (getattr(owner, "_endpoint_status", {}).get("path_info_time") or {}).get(
+            "last_success_mono"
+        )
+    )
+
     state, rows, totals, task, events = reduce_zone_ledger(
-        previous_state,
+        getattr(owner, "_zone_ledger_state", None),
         snapshot=snapshot,
-        map_zones=[dict(row) for row in map_zones or [] if isinstance(row, dict)],
+        map_zones=[
+            dict(row) for row in map_zones or [] if isinstance(row, dict)
+        ],
         zone_details=[
-            dict(row) for row in snapshot.get("zone_details") or [] if isinstance(row, dict)
+            dict(row)
+            for row in snapshot.get("zone_details") or []
+            if isinstance(row, dict)
         ],
         zone_history=_zone_history_seed(snapshot, cycle_diagnostics),
         active_session=active_session,
         observed_at_ms=int(time.time() * 1000),
     )
+
     owner._zone_ledger_state = state  # noqa: SLF001
+    owner._zone_ledger_task = deepcopy(task)  # noqa: SLF001
+
     accept = getattr(owner, "_accept_vendor_observations", None)
     if accept is not None:
         accept(snapshot)
-    diagnostics = build_cutover_diagnostics(
-        legacy_rows=legacy_rows,
-        legacy_totals=legacy_totals,
-        ledger_rows=rows,
-        ledger_totals=totals,
-        ledger_task=task,
-        ledger_state=state,
-        events=events,
-    )
+
+    diagnostics = {
+        "mode": "authoritative",
+        "public_owner": "ZoneLedger",
+        "ledger_revision": as_int(state.get("revision")) or 0,
+        "zone_count": len(rows),
+        "task": deepcopy(task),
+        "recent_events": deepcopy(events[-8:]),
+        "cycle_owner": "ZoneLedger",
+        "trail_owner": "VendorTrailStore",
+    }
     owner._zone_ledger_diagnostics = diagnostics  # noqa: SLF001
-    diagnostics["cycle_owner"] = "ZoneLedger"
-    diagnostics["trail_owner"] = "VendorTrailStore"
     snapshot["zone_ledger"] = diagnostics
-    # Publish the CycleEngine result. Legacy values survive only inside the
-    # cutover diagnostics above.
+
     snapshot["zone_states"] = deepcopy(rows)
     snapshot["zone_states_revision"] = as_int(state.get("revision")) or 0
-    public_totals = deepcopy(totals)
-    public_totals[_CUTOVER_TOTALS_KEY] = diagnostics
-    snapshot["totals"] = public_totals
+    snapshot["totals"] = deepcopy(totals)
     snapshot["mowing_progress"] = task.get("progress_pct")
-    snapshot["mowing_progress_source"] = task.get("progress_source") or "cycle_engine"
-    snapshot["task_progress"] = task.get("progress_pct")
+    snapshot["mowing_progress_source"] = (
+        task.get("progress_source") or "cycle_engine"
+    )
     snapshot["session_area"] = task.get("mowed_area_m2")
-    snapshot["session_area_source"] = task.get("mowed_area_source") or "cycle_engine"
-    snapshot["task_mowed_area"] = task.get("mowed_area_m2")
+    snapshot["session_area_source"] = (
+        task.get("mowed_area_source") or "cycle_engine"
+    )
     snapshot["cycle_engine_owner"] = "ZoneLedger"
 
-
-def install_zone_ledger_semantics() -> None:
-    """Install ZoneLedger as the final public zone/task resolver."""
-    coordinator_cls = _coordinator.NavimowCoordinator
-    if getattr(coordinator_cls, "_zone_ledger_semantics_installed", False):
-        return
-
-    original_refresh_zone_model = coordinator_cls._refresh_zone_model
-
-    def refresh_zone_model(self: Any, snapshot: dict[str, Any]) -> None:
-        original_refresh_zone_model(self, snapshot)
-        try:
-            _run_authority(self, snapshot)
-        except Exception as err:  # noqa: BLE001
-            diagnostics = {
-                "mode": "authority_cutover",
-                "public_owner": "ZoneLedger",
-                "match": None,
-                "error": f"{type(err).__name__}: {err}",
-            }
-            self._zone_ledger_diagnostics = diagnostics  # noqa: SLF001
-            snapshot["zone_ledger"] = diagnostics
-            totals = snapshot.get("totals")
-            if isinstance(totals, dict):
-                totals[_CUTOVER_TOTALS_KEY] = diagnostics
-            # Fail open to the already-resolved legacy snapshot for one cycle;
-            # diagnostics make the fallback explicit instead of making HA
-            # unavailable.
-            _LOGGER.exception("ZoneLedger authority reduction failed")
-
-    coordinator_cls._refresh_zone_model = refresh_zone_model
-    coordinator_cls._zone_ledger_semantics_installed = True
+    return {
+        "state": state,
+        "rows": rows,
+        "totals": totals,
+        "task": task,
+    }

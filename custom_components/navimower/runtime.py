@@ -9,7 +9,6 @@ from __future__ import annotations
 from .capability_extensions import install_capability_extensions
 from .capability_profile import install_capability_profile
 from .capability_semantics import install_capability_semantics
-from .canonical_authority_semantics import install_canonical_authority_semantics
 from .completion_semantics import install_completion_semantics
 from .gate_area_polygon_semantics import install_gate_area_polygon_semantics
 from .georeference_cartographic_semantics import install_georeference_cartographic_semantics
@@ -52,7 +51,6 @@ from .vendor_tail_semantics import install_vendor_tail_semantics
 from .vendor_trail_render_semantics import install_vendor_trail_render_semantics
 from .weather_state_semantics import install_weather_state_semantics
 from .zone_entity_cleanup import install_zone_entity_cleanup
-from .zone_ledger_semantics import install_zone_ledger_semantics
 
 
 def install_runtime_extensions() -> None:
@@ -113,15 +111,11 @@ def install_runtime_extensions() -> None:
     # installed after completion semantics so historical completion protection
     # cannot overwrite the current vendor-first numeric state.
     install_vendor_progress_semantics()
-    # ZoneLedger owns persistent trail cycle identity; numeric sensors retain
-    # their existing public resolver while its comparison diagnostics run.
-    install_zone_ledger_semantics()
+    # ZoneLedger/CycleEngine is called directly by coordinator._refresh_zone_model.
     # VendorTrailStore is sticky per zone/cycle, independently of task state.
     install_vendor_trail_render_semantics()
     install_vendor_tail_semantics()
-    # 0.5 beta5: Canonical Mower State is now the public resolved-state owner.
-    # CycleEngine/ZoneLedger already published current zone/task state above.
-    install_canonical_authority_semantics()
+    # Canonical Mower State is resolved directly after CycleEngine by the coordinator.
     install_map_api_performance()
     # OSM binary mode wraps the final phased map-view handler, so install it only
     # after the Map API performance layer has replaced NavimowerMapView.get.

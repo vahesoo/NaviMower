@@ -41,39 +41,18 @@ def _position(value: Any) -> dict[str, float | None] | None:
     return {"x": x, "y": y, "heading": _as_float(value.get("heading"))}
 
 
-def _close(left: Any, right: Any, tolerance: float) -> bool | None:
-    first = _as_float(left)
-    second = _as_float(right)
-    if first is None or second is None:
-        return True if first is None and second is None else None
-    return abs(first - second) <= tolerance
-
-
-def _position_equal(left: Any, right: Any) -> bool | None:
-    first = _position(left)
-    second = _position(right)
-    if first is None or second is None:
-        return True if first is None and second is None else None
-    return (
-        abs(float(first["x"]) - float(second["x"])) <= 0.001
-        and abs(float(first["y"]) - float(second["y"])) <= 0.001
-    )
-
-
 def resolve_position(
     *,
     mqtt_position: Any,
     mqtt_pose_age_s: Any,
     cloud_position: Any,
     cloud_position_age_s: Any,
-    public_position: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
     cloud_position_max_age_s: float = DEFAULT_CLOUD_POSITION_MAX_AGE_S,
 ) -> dict[str, Any]:
     """Resolve position once, keeping source/freshness beside the value."""
     mqtt = _position(mqtt_position)
     cloud = _position(cloud_position)
-    public = _position(public_position)
     mqtt_age = _as_float(mqtt_pose_age_s)
     cloud_age = _as_float(cloud_position_age_s)
 
@@ -82,8 +61,6 @@ def resolve_position(
     elif cloud is not None:
         value, source, age = cloud, "private_cloud", cloud_age
         stale = bool(cloud_age is not None and cloud_age > cloud_position_max_age_s)
-    elif public is not None:
-        value, source, age, stale = public, "legacy_resolved_fallback", None, True
     else:
         value, source, age, stale = None, "unavailable", None, True
 
@@ -96,34 +73,18 @@ def resolve_position(
     }
 
 
-def _canonical_task(
-    snapshot: dict[str, Any],
-    ledger_diagnostics: dict[str, Any] | None,
-) -> dict[str, Any]:
-    ledger = ledger_diagnostics.get("ledger") if isinstance(ledger_diagnostics, dict) else None
-    task = ledger.get("task") if isinstance(ledger, dict) else None
-    if isinstance(task, dict):
-        return {
-            "progress_pct": task.get("progress_pct"),
-            "mowed_area_m2": task.get("mowed_area_m2"),
-            "area_m2": task.get("area_m2"),
-            "zone_ids": deepcopy(task.get("zone_ids") or []),
-            "active_zone_id": task.get("active_zone_id"),
-            "progress_source": task.get("progress_source"),
-            "mowed_area_source": task.get("mowed_area_source"),
-            "source": "zone_ledger_task",
-        }
-
-    totals = snapshot.get("totals") if isinstance(snapshot.get("totals"), dict) else {}
+def _canonical_task(ledger_task: dict[str, Any] | None) -> dict[str, Any]:
+    """Project the task owned by ZoneLedger; there is no legacy totals bridge."""
+    task = ledger_task if isinstance(ledger_task, dict) else {}
     return {
-        "progress_pct": totals.get("task_progress_pct"),
-        "mowed_area_m2": totals.get("task_mowed_area_m2"),
-        "area_m2": totals.get("task_area_m2"),
-        "zone_ids": deepcopy(totals.get("task_zone_ids") or []),
-        "active_zone_id": totals.get("active_zone_id"),
-        "progress_source": totals.get("task_progress_source"),
-        "mowed_area_source": totals.get("task_mowed_area_source"),
-        "source": "legacy_totals_bridge",
+        "progress_pct": task.get("progress_pct"),
+        "mowed_area_m2": task.get("mowed_area_m2"),
+        "area_m2": task.get("area_m2"),
+        "zone_ids": deepcopy(task.get("zone_ids") or []),
+        "active_zone_id": task.get("active_zone_id"),
+        "progress_source": task.get("progress_source"),
+        "mowed_area_source": task.get("mowed_area_source"),
+        "source": "zone_ledger_task",
     }
 
 
@@ -160,7 +121,7 @@ def build_canonical_state(
     snapshot: dict[str, Any],
     *,
     ledger_state: dict[str, Any] | None = None,
-    ledger_diagnostics: dict[str, Any] | None = None,
+    ledger_task: dict[str, Any] | None = None,
     vendor_owned_zone_ids: set[int] | None = None,
     vendor_store_revision: int | None = None,
     mqtt_position: Any = None,
@@ -176,31 +137,10 @@ def build_canonical_state(
         mqtt_pose_age_s=mqtt_age,
         cloud_position=cloud_position,
         cloud_position_age_s=cloud_position_age_s,
-        public_position=snapshot.get("position"),
         mqtt_pose_max_age_s=mqtt_pose_max_age_s,
     )
-    task = _canonical_task(snapshot, ledger_diagnostics)
+    task = _canonical_task(ledger_task)
     cycles = _canonical_cycles(ledger_state, owned)
-    totals = snapshot.get("totals") if isinstance(snapshot.get("totals"), dict) else {}
-    public_rows = snapshot.get("zone_states") if isinstance(snapshot.get("zone_states"), list) else []
-
-    position_match = _position_equal(position.get("value"), snapshot.get("position"))
-    task_progress_match = _close(task.get("progress_pct"), totals.get("task_progress_pct"), 0.1)
-    task_area_match = _close(task.get("mowed_area_m2"), totals.get("task_mowed_area_m2"), 0.05)
-    zone_count_match = len(cycles) == len(public_rows) if cycles or public_rows else True
-    ledger_match = ledger_diagnostics.get("match") if isinstance(ledger_diagnostics, dict) else None
-    ledger_strict_match = (
-        ledger_diagnostics.get("strict_match")
-        if isinstance(ledger_diagnostics, dict)
-        else None
-    )
-    ledger_enrichments = (
-        deepcopy(ledger_diagnostics.get("enrichments") or {})
-        if isinstance(ledger_diagnostics, dict)
-        else {}
-    )
-    checks = [v for v in (position_match, task_progress_match, task_area_match, zone_count_match, ledger_match) if isinstance(v, bool)]
-
     mqtt_pose_seen = mqtt_age is not None
     mqtt_pose_fresh = _position(mqtt_position) is not None and (
         mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s
@@ -262,16 +202,6 @@ def build_canonical_state(
             "vendor_store_revision": vendor_store_revision,
             "rows": cycles,
         },
-        "parity": {
-            "match": all(checks) if checks else None,
-            "position_match": position_match,
-            "task_progress_match": task_progress_match,
-            "task_mowed_area_match": task_area_match,
-            "zone_count_match": zone_count_match,
-            "zone_ledger_match": ledger_match,
-            "zone_ledger_strict_match": ledger_strict_match,
-            "zone_ledger_enrichments": ledger_enrichments,
-        },
         "health": {
             "mqtt_pose_age_s": round(mqtt_age, 3) if mqtt_age is not None else None,
             "mqtt_pose_seen": mqtt_pose_seen,
@@ -313,6 +243,5 @@ def canonical_diagnostics(state: dict[str, Any] | None) -> dict[str, Any] | None
             "vendor_geometry_owned_zone_ids": vendor_owned,
             "pending_vendor_cycle_zone_ids": pending,
         },
-        "parity": deepcopy(state.get("parity") or {}),
         "health": deepcopy(state.get("health") or {}),
     }

@@ -1,17 +1,13 @@
-"""Vendor-current per-zone progress publication.
+"""Vendor-current reset protection for History.
 
-Private ``get-path-info-time`` coverage is the canonical current-map numeric
-state. Fresh vendor decreases, including 100/69 -> 0 resets, are published as-is
-instead of being held by local monotonic completion/progress state. Historical
-completion/session facts remain owned by History and are not projected back onto
-the current map.
+CycleEngine owns current per-zone publication. This module only filters a single
+uncorroborated hard vendor drop before History decides that a new cycle began.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
 
-from . import coordinator as _coordinator
 from . import history as _history
 
 _RESET_CANDIDATE_MAX_AGE_MS = 60_000
@@ -179,84 +175,13 @@ def _filtered_reset_snapshot(
     return filtered or snapshot
 
 
-def _apply_vendor_first_zone_state(owner: Any, snapshot: dict[str, Any]) -> None:
-    """Publish fresh vendor coverage exactly as the current map state."""
-    rows = snapshot.get("zone_states")
-    if not isinstance(rows, list):
-        return
-    coverage_by_id = _coverage_rows(snapshot)
-    changed = False
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        zone_id = _history._as_int(row.get("id"))  # noqa: SLF001
-        if zone_id is None:
-            continue
-        vendor = coverage_by_id.get(zone_id)
-        if not isinstance(vendor, dict):
-            continue
-        raw_pct = _history._as_float(vendor.get("pct"))  # noqa: SLF001
-        if raw_pct is None or not 0 <= raw_pct <= 100:
-            continue
-
-        row["vendor_coverage_pct"] = round(raw_pct, 1)
-        row["coverage_pct"] = round(raw_pct, 1)
-        area = _history._as_float(row.get("area_m2"))  # noqa: SLF001
-        vendor_finished = _history._as_float(vendor.get("finished"))  # noqa: SLF001
-        if vendor_finished is not None and vendor_finished >= 0:
-            row["mowed_area_m2"] = (
-                round(min(area, vendor_finished), 2)
-                if area is not None
-                else round(vendor_finished, 2)
-            )
-        elif area is not None:
-            row["mowed_area_m2"] = round(area * raw_pct / 100.0, 2)
-        else:
-            row["mowed_area_m2"] = None
-        row["progress_source"] = "vendor_current_coverage"
-        row.pop("progress_guard", None)
-        row.pop("progress_guard_reason", None)
-        row.pop("progress_guard_vendor_pct", None)
-        row.pop("completion_hold", None)
-        row.pop("completion_hold_reason", None)
-        row.pop("completion_hold_vendor_pct", None)
-        changed = True
-
-    if not changed:
-        return
-
-    known = [
-        row
-        for row in rows
-        if isinstance(row, dict) and _history._as_float(row.get("area_m2")) is not None  # noqa: SLF001
-    ]
-    map_area = sum(float(row.get("area_m2") or 0.0) for row in known)
-    map_mowed = sum(float(row.get("mowed_area_m2") or 0.0) for row in known)
-    totals = snapshot.get("totals")
-    if isinstance(totals, dict):
-        totals["map_area_m2"] = round(map_area, 2) if map_area > 0 else None
-        totals["map_mowed_area_m2"] = round(map_mowed, 2) if map_area > 0 else None
-        totals["map_coverage_pct"] = (
-            round(100.0 * map_mowed / map_area, 1) if map_area > 0 else None
-        )
-        totals["completed_zone_count"] = sum(
-            1
-            for row in rows
-            if (_history._as_float((row or {}).get("coverage_pct")) or 0) >= 95  # noqa: SLF001
-        )
-    snapshot["zone_progress_policy"] = "vendor_current_state"
-
-
 def install_vendor_progress_semantics() -> None:
-    """Install vendor-first publication after completion semantics."""
+    """Install only the History reset guard used before CycleEngine reduction."""
     history_cls = _history.NavimowerHistory
-    coordinator_cls = _coordinator.NavimowCoordinator
     if getattr(history_cls, "_vendor_progress_semantics_installed", False):
         return
 
     original_prepare_cycle = history_cls.prepare_cycle
-    original_refresh_zone_model = coordinator_cls._refresh_zone_model
 
     def prepare_cycle(
         self: Any,
@@ -267,10 +192,5 @@ def install_vendor_progress_semantics() -> None:
         filtered = _filtered_reset_snapshot(self, snapshot, pose_time)
         return original_prepare_cycle(self, filtered, pose_time=pose_time)
 
-    def refresh_zone_model(self: Any, snapshot: dict[str, Any]) -> None:
-        original_refresh_zone_model(self, snapshot)
-        _apply_vendor_first_zone_state(self, snapshot)
-
     history_cls.prepare_cycle = prepare_cycle
-    coordinator_cls._refresh_zone_model = refresh_zone_model
     history_cls._vendor_progress_semantics_installed = True
