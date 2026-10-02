@@ -60,8 +60,8 @@ def test_concave_zone_rejects_shortcut_through_unmapped_notch() -> None:
     # Both endpoints are inside the U-shaped zone, but the straight line crosses
     # a 2 m deep outside notch. Endpoint-only checks would get this wrong.
     polygon = [
-        [0, 0], [10, 0], [10, 10], [6, 10],
-        [6, 4], [4, 4], [4, 10], [0, 10],
+        [0, 0], [10, 0], [10, 10], [7, 10],
+        [7, 4], [3, 4], [3, 10], [0, 10],
     ]
     assert guard.point_in_polygon(2, 8, polygon)
     assert guard.point_in_polygon(8, 8, polygon)
@@ -116,8 +116,8 @@ def test_polygon_invalid_edge_is_split_but_points_survive_restart(tmp_path) -> N
             "id": 92,
             "area": 80,
             "polygon": [
-                [0, 0], [10, 0], [10, 10], [6, 10],
-                [6, 4], [4, 4], [4, 10], [0, 10],
+                [0, 0], [10, 0], [10, 10], [7, 10],
+                [7, 4], [3, 4], [3, 10], [0, 10],
             ],
         }
     ]
