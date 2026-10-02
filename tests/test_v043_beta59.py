@@ -59,7 +59,7 @@ def test_beta59_architecture_guard_lists_current_semantic_layers() -> None:
     ):
         assert f'"{filename}"' in source
     for call in (
-        "install_schedule_pause_semantics()",
+        "install_schedule_v2_semantics()",
         "install_setup_flow_semantics()",
         "install_zone_entity_cleanup()",
     ):
