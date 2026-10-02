@@ -7,16 +7,19 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "custom_components" / "navimower"
 
 
-def test_vendor_progress_semantics_is_valid_python_and_wired_after_completion() -> None:
+def test_vendor_progress_module_is_history_reset_guard_only() -> None:
     source = (COMPONENT / "vendor_progress_semantics.py").read_text(encoding="utf-8")
     ast.parse(source)
-    assert '"vendor_current_coverage"' in source
-    assert '"vendor_current_state"' in source
-    assert '"vendor_coverage_monotonic_hold"' not in source
     assert "_RESET_CONFIRMATIONS_REQUIRED = 2" in source
     assert "new_start > old_start" in source
     assert "live_progress > _RESET_LIVE_CORROBORATION_MAX" in source
+    assert "def _filtered_reset_snapshot" in source
+    assert "def _apply_vendor_first_zone_state" not in source
+    assert "_refresh_zone_model" not in source
+    assert 'row["coverage_pct"]' not in source
 
+
+def test_reset_guard_stays_between_completion_and_map_pipeline() -> None:
     runtime = (COMPONENT / "runtime.py").read_text(encoding="utf-8")
     completion = runtime.index("install_completion_semantics()")
     vendor = runtime.index("install_vendor_progress_semantics()")
@@ -24,23 +27,13 @@ def test_vendor_progress_semantics_is_valid_python_and_wired_after_completion() 
     assert completion < vendor < map_api
 
 
-def test_vendor_current_layer_uses_path_info_finished_area_without_overwriting_raw_pct() -> None:
-    source = (COMPONENT / "vendor_progress_semantics.py").read_text(encoding="utf-8")
-    assert 'vendor.get("pct")' in source
-    assert 'vendor.get("finished")' in source
-    assert 'row["vendor_coverage_pct"]' in source
-    assert 'row["coverage_pct"]' in source
-    assert 'row["mowed_area_m2"]' in source
-    assert 'row["task_progress_pct"]' not in source
+def test_cycle_engine_is_the_only_current_zone_publisher() -> None:
+    coordinator = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")
+    ledger = (COMPONENT / "zone_ledger_semantics.py").read_text(encoding="utf-8")
+    vendor = (COMPONENT / "vendor_progress_semantics.py").read_text(encoding="utf-8")
 
-
-def test_vendor_current_layer_never_reapplies_completion_hold_to_current_map() -> None:
-    source = (COMPONENT / "vendor_progress_semantics.py").read_text(encoding="utf-8")
-    apply_start = source.index("def _apply_vendor_first_zone_state")
-    apply_end = source.index("\n\ndef install_vendor_progress_semantics", apply_start)
-    apply = source[apply_start:apply_end]
-    assert 'row["coverage_pct"] = round(raw_pct, 1)' in apply
-    assert 'row["progress_source"] = "vendor_current_coverage"' in apply
-    assert 'row.pop("completion_hold"' in apply
-    assert "max(previous" not in apply
-    assert "peak_progress" not in apply
+    assert "run_zone_ledger_authority(self, snapshot)" in coordinator
+    assert 'snapshot["zone_states"] = deepcopy(rows)' in ledger
+    assert 'snapshot["totals"] = deepcopy(totals)' in ledger
+    assert 'snapshot["zone_states"]' not in vendor
+    assert 'snapshot["totals"]' not in vendor
