@@ -50,6 +50,9 @@ def test_beta6_completion_recovery_is_narrow_and_command_free() -> None:
 
 def test_time_window_round_repeat_contract_remains_enabled() -> None:
     source = ROUND.read_text(encoding="utf-8")
-    assert "Time-window mode now does the same while the window remains open" in source
+    assert "SCHEDULE_MODE_WINDOW" in source
     assert "self._mode != SCHEDULE_MODE_WINDOW" in source
+    assert "if not in_window" in source
+    assert "_continuous_round_complete(self)" in source
+    assert 'self._runtime["completed_queue_slots"] = []' in source
     assert 'self._runtime["round_index"]' in source
