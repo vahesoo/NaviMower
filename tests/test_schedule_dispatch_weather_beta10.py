@@ -11,12 +11,14 @@ def _source() -> str:
     return SEMANTICS.read_text(encoding="utf-8")
 
 
-def test_beta10_runtime_installs_final_dispatch_weather_layer() -> None:
+def test_weather_semantics_remain_before_scheduler_v2_policy() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
-    assert "from .schedule_dispatch_weather_semantics import install_schedule_dispatch_weather_semantics" in runtime
-    queue_boundary = runtime.index("install_schedule_queue_boundary_semantics()")
-    dispatch = runtime.index("install_schedule_dispatch_weather_semantics()")
-    assert queue_boundary < dispatch
+    assert "install_weather_state_semantics()" in runtime
+    assert "install_schedule_v2_semantics()" in runtime
+    assert runtime.index("install_weather_state_semantics()") < runtime.index(
+        "install_schedule_v2_semantics()"
+    )
+    assert "install_schedule_dispatch_weather_semantics()" not in runtime
 
 
 def test_beta10_scheduler_pending_commands_are_tagged_with_attempt_and_cycle_baseline() -> None:
