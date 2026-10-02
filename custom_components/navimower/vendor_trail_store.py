@@ -18,13 +18,22 @@ from typing import Any
 
 from .const import MQTT_CUTTING_ACTIONS
 from .zone_ledger import as_int, normalize_ledger_state
+from .zone_segment_guard import (
+    ZONE_SEGMENT_GUARD_VERSION,
+    ZONE_SEGMENT_TOLERANCE_M,
+    polygon_for_zone,
+    polygon_signature,
+    segment_within_zone_tolerance,
+    zone_guard_break_indices,
+)
 
 _LOGGER = logging.getLogger(__name__)
 STORE_VERSION = 1
+# Retained only as a fallback when map geometry is temporarily unavailable.
 FUTURE_VENDOR_GAP_MIN_SPLIT_M = 15.0
 FUTURE_VENDOR_GAP_MAX_SPLIT_M = 30.0
 FUTURE_VENDOR_GAP_MEDIAN_MULTIPLIER = 6.0
-FUTURE_VENDOR_GAP_GUARD_VERSION = 2
+FUTURE_VENDOR_GAP_GUARD_VERSION = ZONE_SEGMENT_GUARD_VERSION
 
 
 def trail_store(hass: Any, entry_id: str) -> Any:
@@ -435,6 +444,8 @@ class VendorTrailStore:
             "last_vendor_fetch_candidate_zone_count": self.last_vendor_fetch_candidate_zone_count,
             "last_vendor_fetch_requested_zone_count": self.last_vendor_fetch_requested_zone_count,
             "last_vendor_fetch_blocked_zone_count": self.last_vendor_fetch_blocked_zone_count,
+            "future_gap_guard_mode": "zone_polygon",
+            "future_gap_guard_tolerance_m": ZONE_SEGMENT_TOLERANCE_M,
             "future_gap_guard_threshold_m": FUTURE_VENDOR_GAP_MIN_SPLIT_M,
             "future_gap_guard_max_threshold_m": FUTURE_VENDOR_GAP_MAX_SPLIT_M,
             "future_gap_guard_version": FUTURE_VENDOR_GAP_GUARD_VERSION,
@@ -506,7 +517,7 @@ class VendorTrailStore:
         return breaks, threshold
 
     def accept(self, row: dict[str, Any]) -> bool:
-        """Accept current-cycle geometry and maintain the adaptive gap guard."""
+        """Accept all current-cycle vendor points without distance-based trimming."""
         zone_id = as_int(row.get("zone_id"))
         ledger_row = self.ledger["zones"].get(str(zone_id)) or {}
         cycle_id = ledger_row.get("cycle_key")
@@ -530,33 +541,35 @@ class VendorTrailStore:
             json.dumps(points, separators=(",", ":"), allow_nan=False).encode()
         ).hexdigest()
 
-        # Gap guard v2 fixes the field case where normal H-series compressed
-        # geometry often has >5 m point spacing. The old fixed threshold created
-        # hundreds of false segment breaks and visible white holes. Upgrade old
-        # retained records once by rescanning the same geometry with an adaptive
-        # 15..30 m outlier threshold, even when the geometry digest is unchanged.
+        # v3 keeps the raw vendor sequence intact. Segment safety is evaluated
+        # against the actual zone polygon only when a render/checkpoint is built.
+        # This lets sparse compressed H-series geometry survive Dock/restart
+        # without turning normal point spacing into permanent white holes.
         previous_version = as_int(previous.get("gap_guard_version")) or 0
-        migrating_guard = bool(previous and previous_version < FUTURE_VENDOR_GAP_GUARD_VERSION)
+        migrating_guard = bool(
+            previous
+            and previous_version < FUTURE_VENDOR_GAP_GUARD_VERSION
+        )
         if previous.get("geometry_revision") == digest and not migrating_guard:
             return False
-
-        breaks, threshold = self._gap_breaks(points)
 
         record = deepcopy(row)
         record.update({
             "cycle_id": cycle_id,
             "vendor_owned": True,
             "geometry_revision": digest,
-            # Break changes alter the SVG topology, so a v1 -> v2 migration
-            # must invalidate the cached artifact even when points are unchanged.
             "artifact": None if migrating_guard else previous.get("artifact"),
             "artifact_revision": None if migrating_guard else previous.get("artifact_revision"),
             "artifact_anchor_xy": previous.get("artifact_anchor_xy"),
             "artifact_point_count": previous.get("artifact_point_count"),
             "tail": previous.get("tail", {}),
-            "future_gap_break_indices": sorted(breaks),
+            # Old distance-derived breaks are deliberately discarded. The next
+            # artifact checkpoint recomputes only polygon-invalid edges.
+            "future_gap_break_indices": [],
             "gap_guard_scanned_point_count": len(points),
-            "gap_guard_threshold_m": round(threshold, 3),
+            "gap_guard_threshold_m": None,
+            "gap_guard_mode": "zone_polygon_pending",
+            "gap_guard_tolerance_m": ZONE_SEGMENT_TOLERANCE_M,
             "gap_guard_version": FUTURE_VENDOR_GAP_GUARD_VERSION,
         })
         self.records[zone_id] = record
@@ -572,6 +585,7 @@ class VendorTrailStore:
         *,
         build: bool = True,
         zone_ids: set[int] | None = None,
+        map_zones: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         from .session_svg import SESSION_SVG_ARCHIVE_VERSION, build_session_svg_archive
         from .vendor_trail import build_vendor_render_source
@@ -583,10 +597,53 @@ class VendorTrailStore:
             for zone_id, row in list(self.records.items()):
                 if selected is not None and zone_id not in selected:
                     continue
-                key = [row["cycle_id"], row["geometry_revision"], width, SESSION_SVG_ARCHIVE_VERSION]
+
+                polygon = polygon_for_zone(map_zones or [], zone_id)
+                render_row = deepcopy(row)
+                if polygon:
+                    breaks = zone_guard_break_indices(
+                        row.get("points") or [],
+                        polygon,
+                        tolerance_m=ZONE_SEGMENT_TOLERANCE_M,
+                    )
+                    guard_mode = "zone_polygon"
+                    guard_signature = polygon_signature(polygon) or "zone"
+                    threshold = None
+                else:
+                    # Unit tests/cold startup without map geometry retain the
+                    # previous conservative fallback. Runtime checkpoints pass
+                    # map_zones and therefore do not use distance as policy.
+                    breaks, threshold = self._gap_breaks(row.get("points") or [])
+                    guard_mode = "adaptive_distance_fallback"
+                    guard_signature = f"fallback:{round(threshold, 3)}"
+
+                render_row["future_gap_break_indices"] = sorted(breaks)
+                guard_key = (
+                    f"{SESSION_SVG_ARCHIVE_VERSION}:"
+                    f"zone_guard_v{FUTURE_VENDOR_GAP_GUARD_VERSION}:"
+                    f"{guard_signature}"
+                )
+                key = [
+                    row["cycle_id"],
+                    row["geometry_revision"],
+                    width,
+                    guard_key,
+                ]
                 if row.get("artifact_revision") == key and row.get("artifact") is not None:
+                    row["future_gap_break_indices"] = sorted(breaks)
+                    row["gap_guard_mode"] = guard_mode
+                    row["gap_guard_tolerance_m"] = (
+                        ZONE_SEGMENT_TOLERANCE_M if polygon else None
+                    )
+                    row["gap_guard_threshold_m"] = (
+                        None if threshold is None else round(threshold, 3)
+                    )
+                    row["gap_guard_version"] = FUTURE_VENDOR_GAP_GUARD_VERSION
                     continue
-                source = build_vendor_render_source([row], mowing_path_width_m=width)
+                source = build_vendor_render_source(
+                    [render_row],
+                    mowing_path_width_m=width,
+                )
                 try:
                     artifact = await self.hass.async_add_executor_job(build_session_svg_archive, source)
                 except Exception:  # noqa: BLE001
@@ -616,6 +673,15 @@ class VendorTrailStore:
 
                 target["artifact"] = artifact
                 target["artifact_revision"] = key
+                target["future_gap_break_indices"] = sorted(breaks)
+                target["gap_guard_mode"] = guard_mode
+                target["gap_guard_tolerance_m"] = (
+                    ZONE_SEGMENT_TOLERANCE_M if polygon else None
+                )
+                target["gap_guard_threshold_m"] = (
+                    None if threshold is None else round(threshold, 3)
+                )
+                target["gap_guard_version"] = FUTURE_VENDOR_GAP_GUARD_VERSION
                 points = row.get("points") or []
                 target["artifact_anchor_xy"] = (
                     [float(points[-1][0]), float(points[-1][1])]
@@ -639,7 +705,9 @@ class VendorTrailStore:
         session_id = str(session.get("id") or session.get("sequence") or "")
         starts = set(session.get("segment_starts_ms") or [])
         points = session.get("points") or []
+        map_zones = ((snapshot.get("map") or {}).get("zones") or [])
         for zone_id, row in self.records.items():
+            polygon = polygon_for_zone(map_zones, zone_id)
             state = row.setdefault("tail", {})
             segments = state.setdefault("segments", [])
             last_stamp = as_int(state.get("last_stamp")) or 0
@@ -666,7 +734,17 @@ class VendorTrailStore:
                     split = True
                     continue
                 previous = segments[-1][-1] if segments else None
-                if split or stamp in starts or previous is None or math.hypot(point[1]-previous[1], point[2]-previous[2]) > 5:
+                polygon_break = bool(
+                    previous is not None
+                    and polygon
+                    and not segment_within_zone_tolerance(
+                        [previous[1], previous[2]],
+                        [point[1], point[2]],
+                        polygon,
+                        tolerance_m=ZONE_SEGMENT_TOLERANCE_M,
+                    )
+                )
+                if split or stamp in starts or previous is None or polygon_break:
                     segments.append([])
                 segments[-1].append(point)
                 split = False
