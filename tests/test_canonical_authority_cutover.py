@@ -95,7 +95,7 @@ class Owner:
     _endpoint_status = {"path_info_time": {"last_success_mono": 1.0}}
 
 
-def test_zone_ledger_authority_replaces_legacy_zone_and_totals() -> None:
+def test_zone_ledger_authority_publishes_current_zone_and_totals() -> None:
     owner = Owner()
     snapshot = {
         "activity": "mowing",
@@ -139,7 +139,7 @@ def test_zone_ledger_authority_replaces_legacy_zone_and_totals() -> None:
         },
     }
 
-    ledger_semantics._run_authority(owner, snapshot)
+    ledger_semantics.run_zone_ledger_authority(owner, snapshot)
 
     assert snapshot["zone_states"][0]["coverage_pct"] == 43.0
     assert snapshot["totals"]["map_coverage_pct"] == 43.0
