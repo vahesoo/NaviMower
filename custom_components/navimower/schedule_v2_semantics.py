@@ -329,10 +329,14 @@ def _register_fast_failed_return(
         and current_progress is not None
         and current_progress - start_progress >= _START_RETURN_MIN_PROGRESS_DELTA
     ):
-        runtime["dispatch_failure_count"] = 0
+        if runtime.get("dispatch_failure_count"):
+            runtime["dispatch_failure_count"] = 0
+            return True
         return False
     if start_progress is None and current_progress is not None and current_progress >= 1.0:
-        runtime["dispatch_failure_count"] = 0
+        if runtime.get("dispatch_failure_count"):
+            runtime["dispatch_failure_count"] = 0
+            return True
         return False
 
     failures = int(runtime.get("dispatch_failure_count") or 0) + 1
@@ -356,7 +360,7 @@ def _register_fast_failed_return(
         return True
 
     _set_retry(runtime, _COMMAND_RETRY_SECONDS)
-    return False
+    return True
 
 
 def _zone_completed_after(
@@ -1007,12 +1011,42 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
         await controller.async_set_enabled(False, reason="native_schedule_enabled")
         return
 
+    runtime = controller._runtime
     changed = _migrate_legacy_runtime(controller)
-    if not controller._runtime.get("round_queue"):
-        _start_round(controller, increment=False, reason="initial")
+
+    # The current map is the only dispatch authority. ZoneLedger/History may
+    # intentionally retain removed zone ids after a split or redraw.
+    current_ids = _current_map_zone_ids(controller)
+    if not current_ids:
+        runtime["current_map_zone_ids"] = []
+        runtime["suspended_reason"] = "current_map_unavailable"
+        runtime["last_error"] = "Scheduler is waiting for current map zones"
+        await controller._save()
+        return
+
+    if runtime.get("suspended_reason") == "current_map_unavailable":
+        runtime["suspended_reason"] = None
+        runtime["last_error"] = None
         changed = True
 
-    runtime = controller._runtime
+    if _prune_schedule_to_current_map(controller, current_ids):
+        changed = True
+
+    if not runtime.get("round_queue"):
+        _start_round(controller, increment=False, reason="initial")
+        changed = True
+    if not runtime.get("round_queue"):
+        runtime["suspended_reason"] = "schedule_queue_empty"
+        runtime["last_error"] = (
+            "No proven selected zones remain on the mower's current map"
+        )
+        await controller._save()
+        return
+    if runtime.get("suspended_reason") == "schedule_queue_empty":
+        runtime["suspended_reason"] = None
+        runtime["last_error"] = None
+        changed = True
+
     now = dt_util.now()
     in_window, token = controller._window_state(now)
     previous_window = runtime.get("last_window_open")
@@ -1028,14 +1062,35 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             runtime["resume_attempted_at"] = None
             runtime["continue_attempted_at"] = None
             runtime["outside_window_dock_at"] = None
+            if runtime.get("suspended_reason") == "zone_start_failed":
+                runtime["suspended_reason"] = None
+                runtime["loop_guard_tripped_at"] = None
+                runtime["dispatch_failure_count"] = 0
+                runtime["last_error"] = None
             changed = True
 
     activity = data.get("activity")
+    previous_activity = runtime.get("last_activity")
+    if activity != previous_activity:
+        runtime["last_activity"] = activity
+        changed = True
+
     completed_now = _complete_current_slot(controller, data, activity)
     if completed_now:
         changed = True
 
     await _confirm_pending(controller, data, activity)
+
+    if (
+        not completed_now
+        and _register_fast_failed_return(
+            controller,
+            data,
+            previous_activity=previous_activity,
+            activity=activity,
+        )
+    ):
+        changed = True
 
     if changed:
         await controller._save()
@@ -1047,6 +1102,22 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             activity,
             just_closed=just_closed,
         )
+        return
+
+    # A command to a zone removed by a map split may already have reached the
+    # mower. Do not immediately dispatch another slot while that failed command
+    # is still Mowing/Returning; wait until the mower settles first.
+    if runtime.get("wait_for_settle_after_prune"):
+        if controller._vendor_mowing(data) or activity == ACTIVITY_RETURNING:
+            await controller._save()
+            return
+        runtime["wait_for_settle_after_prune"] = False
+        if runtime.get("interrupted_reason") == "zone_removed_from_current_map":
+            runtime["interrupted_reason"] = None
+        changed = True
+
+    if runtime.get("suspended_reason") == "zone_start_failed":
+        await controller._save()
         return
 
     if data.get("error") is True or data.get("problem_latched") is True:
@@ -1080,6 +1151,14 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             await controller._save()
             return
     slot, zone_id = current
+    if zone_id not in current_ids:
+        # Defensive backstop for a map mutation between pruning and dispatch.
+        runtime["last_error"] = (
+            f"Refused scheduler command for zone {zone_id}: not on current map"
+        )
+        runtime["suspended_reason"] = "zone_removed_from_current_map"
+        await controller._save()
+        return
 
     # A completion can arrive in the same coordinator snapshot that still says
     # Mowing for the just-finished zone. Do not adopt that stale activity as the
