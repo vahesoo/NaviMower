@@ -156,6 +156,23 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def _decode_delayed_pile_set_wire(value: Any) -> int | None:
+    """Decode delayedPileSet quarter-hours without decimal/hex ambiguity.
+
+    Vendor set-list strings are hexadecimal wire values (for example "18" is
+    0x18 = 24 quarter-hours = 6 h). Numeric values are already decoded.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            return int(text, 16) if text else None
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _as_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -2443,18 +2460,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         weather_switch = _as_bool(_find(set_list, "weatherSwitch", "weather_switch"))
         weather_sensitivity = _as_int(_find(set_list, "weatherSensitivity", "weather_sensitivity"))
         rain_behavior = _as_bool(_find(set_list, "delayedPileSwitch", "delayed_pile_switch"))
-        # delayedPileSet: try decimal (set-list style) then hex; store the raw wire
-        # value (number.py divides by the per-entity scale to show hours).
+        # delayedPileSet strings are hexadecimal quarter-hour wire values.
+        # Numeric values are already decoded by the source layer.
         _rd = _find(set_list, "delayedPileSet", "delayed_pile_set")
-        rain_delay_wire: int | None = None
-        if _rd is not None:
-            try:
-                rain_delay_wire = int(str(_rd).strip(), 10)
-            except (TypeError, ValueError):
-                try:
-                    rain_delay_wire = int(str(_rd).strip(), 16)
-                except (TypeError, ValueError):
-                    rain_delay_wire = None
+        rain_delay_wire = _decode_delayed_pile_set_wire(_rd)
 
         raw_cut_height = _as_int(_find(set_list, "height"))
         normalized_cut_height = _normalize_cutting_height_mm(raw_cut_height)

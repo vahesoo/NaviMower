@@ -20,6 +20,7 @@ from .const import (
     VENDOR_COMPLETION_PROGRESS_MIN,
     OPT_SCHEDULE_CUSTOM_QUEUE,
     OPT_SCHEDULE_ORDER_MODE,
+    OPT_SCHEDULE_ZONE_IDS,
     SCHEDULE_ORDER_CUSTOM,
 )
 from .navimower_schedule import (
@@ -38,6 +39,9 @@ _CONTINUE_CONFIRM_SECONDS = 90.0
 _START_CONFIRM_SECONDS = 120.0
 _COMMAND_RETRY_SECONDS = 60.0
 _DOCK_RETRY_SECONDS = 60.0
+_START_RETURN_FAILURE_WINDOW_SECONDS = 300.0
+_START_RETURN_FAILURE_LIMIT = 2
+_START_RETURN_MIN_PROGRESS_DELTA = 1.0
 
 _OWNERSHIP_SUSPENSIONS = {
     "queue_slot_ownership_unverified",
@@ -74,6 +78,18 @@ def _empty_runtime() -> dict[str, Any]:
         "window_close_dock_probe_result": None,
         "outside_window_dock_at": None,
         "scheduler_completed_at": {},
+        "last_activity": None,
+        "attempt_zone_id": None,
+        "attempt_mowing_seen_at": None,
+        "attempt_progress_at_mowing": None,
+        "dispatch_failure_count": 0,
+        "last_failed_zone_id": None,
+        "last_failed_reason": None,
+        "last_failed_at": None,
+        "loop_guard_tripped_at": None,
+        "wait_for_settle_after_prune": False,
+        "pruned_zone_ids": [],
+        "current_map_zone_ids": [],
         "last_command": None,
         "last_command_at": None,
         "last_error": None,
@@ -107,6 +123,244 @@ def _set_retry(runtime: dict[str, Any], seconds: float = _COMMAND_RETRY_SECONDS)
     runtime["retry_not_before"] = (
         datetime.now(UTC) + timedelta(seconds=max(1.0, seconds))
     ).isoformat()
+
+
+def _current_map_zone_ids(
+    controller: NavimowerScheduleController,
+) -> set[int]:
+    """Return only zone ids present in the mower's current map geometry."""
+    data = controller.coordinator.data or {}
+    result: set[int] = set()
+    for row in ((data.get("map") or {}).get("zones") or []):
+        if not isinstance(row, dict):
+            continue
+        zone_id = _as_int(row.get("id"))
+        if zone_id is not None and zone_id > 0:
+            result.add(zone_id)
+    return result
+
+
+def _reset_attempt_tracking(
+    runtime: dict[str, Any],
+    *,
+    reset_failures: bool = False,
+) -> None:
+    runtime["attempt_zone_id"] = None
+    runtime["attempt_mowing_seen_at"] = None
+    runtime["attempt_progress_at_mowing"] = None
+    if reset_failures:
+        runtime["dispatch_failure_count"] = 0
+
+
+def _prune_schedule_to_current_map(
+    controller: NavimowerScheduleController,
+    current_ids: set[int],
+) -> bool:
+    """Remove deleted/split zone ids from config and the active round safely."""
+    if not current_ids:
+        return False
+
+    runtime = controller._runtime
+    changed = False
+    removed: set[int] = set()
+
+    old_selected = set(controller._selected_zone_ids)
+    removed.update(old_selected - current_ids)
+    new_selected = old_selected & current_ids
+    if new_selected != old_selected:
+        controller._selected_zone_ids = new_selected
+        changed = True
+
+    old_custom = list(controller._custom_queue)
+    new_custom = [zone_id for zone_id in old_custom if zone_id in current_ids]
+    removed.update(zone_id for zone_id in old_custom if zone_id not in current_ids)
+    if new_custom != old_custom:
+        controller._custom_queue = new_custom
+        changed = True
+
+    if changed:
+        controller._update_options(
+            **{
+                OPT_SCHEDULE_ZONE_IDS: [
+                    str(value) for value in sorted(controller._selected_zone_ids)
+                ],
+                OPT_SCHEDULE_CUSTOM_QUEUE: list(controller._custom_queue),
+            }
+        )
+
+    old_queue = [
+        int(value)
+        for value in runtime.get("round_queue") or []
+        if _as_int(value) is not None and int(value) > 0
+    ]
+    old_slot = _as_int(runtime.get("current_slot"))
+    kept = [
+        (index, zone_id)
+        for index, zone_id in enumerate(old_queue)
+        if zone_id in current_ids
+    ]
+    removed.update(zone_id for zone_id in old_queue if zone_id not in current_ids)
+
+    invalid_pending = False
+    pending = runtime.get("pending_command")
+    if isinstance(pending, dict):
+        pending_zone = _as_int(pending.get("zone_id"))
+        invalid_pending = (
+            pending_zone is not None
+            and pending_zone > 0
+            and pending_zone not in current_ids
+        )
+
+    current_invalid = bool(
+        old_slot is not None
+        and 0 <= old_slot < len(old_queue)
+        and old_queue[old_slot] not in current_ids
+    )
+
+    if old_queue and (len(kept) != len(old_queue) or current_invalid):
+        filtered_queue = [zone_id for _, zone_id in kept]
+        runtime["round_queue"] = filtered_queue
+
+        next_position: int | None = None
+        if current_invalid and old_slot is not None:
+            for position, (old_index, _zone_id) in enumerate(kept):
+                if old_index > old_slot:
+                    next_position = position
+                    break
+        elif old_slot is not None:
+            for position, (old_index, _zone_id) in enumerate(kept):
+                if old_index == old_slot:
+                    next_position = position
+                    break
+
+        if current_invalid:
+            runtime["pending_command"] = None
+            runtime["unfinished"] = False
+            runtime["interrupted_reason"] = "zone_removed_from_current_map"
+            runtime["active_zone_baseline_completed_at"] = None
+            runtime["dispatch_started_at"] = None
+            runtime["resume_attempted_window_token"] = None
+            runtime["resume_attempted_at"] = None
+            runtime["continue_attempted_at"] = None
+            runtime["wait_for_settle_after_prune"] = True
+            _reset_attempt_tracking(runtime, reset_failures=True)
+
+        if next_position is not None and filtered_queue:
+            runtime["current_slot"] = next_position
+            runtime["active_queue_slot"] = next_position
+            runtime["active_zone_id"] = filtered_queue[next_position]
+        elif current_invalid:
+            # The removed slot was at the end of this round. Start the next
+            # round from the now-sanitized configured queue.
+            _start_round(
+                controller,
+                increment=True,
+                reason="removed_zone_pruned",
+            )
+            runtime["wait_for_settle_after_prune"] = True
+            runtime["interrupted_reason"] = "zone_removed_from_current_map"
+
+        changed = True
+
+    if invalid_pending:
+        runtime["pending_command"] = None
+        runtime["wait_for_settle_after_prune"] = True
+        runtime["interrupted_reason"] = "zone_removed_from_current_map"
+        changed = True
+
+    runtime["current_map_zone_ids"] = sorted(current_ids)
+    if removed:
+        runtime["pruned_zone_ids"] = sorted(
+            set(runtime.get("pruned_zone_ids") or []) | removed
+        )
+        runtime["last_command"] = (
+            "pruned_removed_zones:" + ",".join(str(value) for value in sorted(removed))
+        )
+        runtime["last_command_at"] = _utc_now()
+        runtime["last_error"] = None
+        changed = True
+
+    return changed
+
+
+def _record_mowing_attempt(
+    controller: NavimowerScheduleController,
+    zone_id: int | None,
+) -> None:
+    if zone_id is None:
+        return
+    runtime = controller._runtime
+    runtime["attempt_zone_id"] = int(zone_id)
+    runtime["attempt_mowing_seen_at"] = _utc_now()
+    runtime["attempt_progress_at_mowing"] = controller._progress_for_zone(zone_id)
+
+
+def _register_fast_failed_return(
+    controller: NavimowerScheduleController,
+    data: dict[str, Any],
+    *,
+    previous_activity: Any,
+    activity: Any,
+) -> bool:
+    """Trip a circuit breaker on repeated start -> return loops with no progress."""
+    runtime = controller._runtime
+    if (
+        previous_activity != ACTIVITY_MOWING
+        or activity != ACTIVITY_RETURNING
+        or not runtime.get("unfinished")
+    ):
+        return False
+
+    zone_id = _as_int(runtime.get("active_zone_id"))
+    attempt_zone = _as_int(runtime.get("attempt_zone_id"))
+    if zone_id is None or attempt_zone != zone_id:
+        return False
+    if _interruption_reason(controller, data):
+        return False
+
+    age = _age_seconds(runtime.get("attempt_mowing_seen_at"))
+    if age is None or age > _START_RETURN_FAILURE_WINDOW_SECONDS:
+        return False
+
+    start_progress = _float(runtime.get("attempt_progress_at_mowing"))
+    current_progress = _float(controller._progress_for_zone(zone_id))
+    if (
+        start_progress is not None
+        and current_progress is not None
+        and current_progress - start_progress >= _START_RETURN_MIN_PROGRESS_DELTA
+    ):
+        if runtime.get("dispatch_failure_count"):
+            runtime["dispatch_failure_count"] = 0
+            return True
+        return False
+    if start_progress is None and current_progress is not None and current_progress >= 1.0:
+        if runtime.get("dispatch_failure_count"):
+            runtime["dispatch_failure_count"] = 0
+            return True
+        return False
+
+    failures = int(runtime.get("dispatch_failure_count") or 0) + 1
+    runtime["dispatch_failure_count"] = failures
+    runtime["last_failed_zone_id"] = zone_id
+    runtime["last_failed_reason"] = "rapid_return_without_progress"
+    runtime["last_failed_at"] = _utc_now()
+    runtime["pending_command"] = None
+    runtime["retry_not_before"] = None
+    runtime["resume_attempted_at"] = None
+    runtime["continue_attempted_at"] = None
+
+    if failures >= _START_RETURN_FAILURE_LIMIT:
+        runtime["suspended_reason"] = "zone_start_failed"
+        runtime["loop_guard_tripped_at"] = _utc_now()
+        runtime["last_command"] = f"loop_guard:{zone_id}:failures={failures}"
+        runtime["last_command_at"] = _utc_now()
+        runtime["last_error"] = (
+            f"Zone {zone_id} repeatedly returned without measurable mowing progress"
+        )
+        return True
+
+    _set_retry(runtime, _COMMAND_RETRY_SECONDS)
+    return True
 
 
 def _zone_completed_after(
@@ -225,11 +479,20 @@ def _practical_completion_evidence(
 
 
 def _build_round_queue(controller: NavimowerScheduleController) -> list[int]:
-    """Snapshot the configured queue for one round."""
+    """Snapshot the configured queue for one round using current-map zones only."""
+    current_ids = _current_map_zone_ids(controller)
     eligible = [
         row
         for row in controller._eligible_zones()
-        if isinstance(row, dict) and _as_int(row.get("id"))
+        if (
+            isinstance(row, dict)
+            and _as_int(row.get("id"))
+            and row.get("stale") is not True
+            and (
+                not current_ids
+                or int(row["id"]) in current_ids
+            )
+        )
     ]
     allowed = {
         int(row["id"]): row
@@ -277,6 +540,8 @@ def _start_round(
     runtime["resume_attempted_window_token"] = None
     runtime["resume_attempted_at"] = None
     runtime["continue_attempted_at"] = None
+    runtime["wait_for_settle_after_prune"] = False
+    _reset_attempt_tracking(runtime, reset_failures=True)
     runtime["round_started_at"] = _utc_now()
     runtime["last_command"] = f"round_ready:{runtime['round_index']}:{reason}"
     runtime["last_command_at"] = _utc_now()
@@ -505,6 +770,7 @@ async def _send_new_slot(
     runtime["resume_attempted_window_token"] = None
     runtime["resume_attempted_at"] = None
     runtime["continue_attempted_at"] = None
+    _reset_attempt_tracking(runtime, reset_failures=True)
     await controller._async_send_mow(
         zone_id,
         reset=True,
@@ -586,8 +852,9 @@ async def _confirm_pending(
         return
 
     if controller._vendor_mowing(data):
+        zone_id = _as_int(pending.get("zone_id")) or _as_int(runtime.get("active_zone_id"))
+        _record_mowing_attempt(controller, zone_id)
         if kind == "mow":
-            zone_id = _as_int(pending.get("zone_id"))
             if zone_id is not None:
                 controller.coordinator.start_new_mowing_cycle(
                     [zone_id],
@@ -683,6 +950,7 @@ def _complete_current_slot(
     runtime["resume_attempted_window_token"] = None
     runtime["resume_attempted_at"] = None
     runtime["continue_attempted_at"] = None
+    _reset_attempt_tracking(runtime, reset_failures=True)
 
     next_slot = slot + 1
     queue = runtime.get("round_queue") or []
@@ -743,12 +1011,42 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
         await controller.async_set_enabled(False, reason="native_schedule_enabled")
         return
 
+    runtime = controller._runtime
     changed = _migrate_legacy_runtime(controller)
-    if not controller._runtime.get("round_queue"):
-        _start_round(controller, increment=False, reason="initial")
+
+    # The current map is the only dispatch authority. ZoneLedger/History may
+    # intentionally retain removed zone ids after a split or redraw.
+    current_ids = _current_map_zone_ids(controller)
+    if not current_ids:
+        runtime["current_map_zone_ids"] = []
+        runtime["suspended_reason"] = "current_map_unavailable"
+        runtime["last_error"] = "Scheduler is waiting for current map zones"
+        await controller._save()
+        return
+
+    if runtime.get("suspended_reason") == "current_map_unavailable":
+        runtime["suspended_reason"] = None
+        runtime["last_error"] = None
         changed = True
 
-    runtime = controller._runtime
+    if _prune_schedule_to_current_map(controller, current_ids):
+        changed = True
+
+    if not runtime.get("round_queue"):
+        _start_round(controller, increment=False, reason="initial")
+        changed = True
+    if not runtime.get("round_queue"):
+        runtime["suspended_reason"] = "schedule_queue_empty"
+        runtime["last_error"] = (
+            "No proven selected zones remain on the mower's current map"
+        )
+        await controller._save()
+        return
+    if runtime.get("suspended_reason") == "schedule_queue_empty":
+        runtime["suspended_reason"] = None
+        runtime["last_error"] = None
+        changed = True
+
     now = dt_util.now()
     in_window, token = controller._window_state(now)
     previous_window = runtime.get("last_window_open")
@@ -764,14 +1062,35 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             runtime["resume_attempted_at"] = None
             runtime["continue_attempted_at"] = None
             runtime["outside_window_dock_at"] = None
+            if runtime.get("suspended_reason") == "zone_start_failed":
+                runtime["suspended_reason"] = None
+                runtime["loop_guard_tripped_at"] = None
+                runtime["dispatch_failure_count"] = 0
+                runtime["last_error"] = None
             changed = True
 
     activity = data.get("activity")
+    previous_activity = runtime.get("last_activity")
+    if activity != previous_activity:
+        runtime["last_activity"] = activity
+        changed = True
+
     completed_now = _complete_current_slot(controller, data, activity)
     if completed_now:
         changed = True
 
     await _confirm_pending(controller, data, activity)
+
+    if (
+        not completed_now
+        and _register_fast_failed_return(
+            controller,
+            data,
+            previous_activity=previous_activity,
+            activity=activity,
+        )
+    ):
+        changed = True
 
     if changed:
         await controller._save()
@@ -783,6 +1102,22 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             activity,
             just_closed=just_closed,
         )
+        return
+
+    # A command to a zone removed by a map split may already have reached the
+    # mower. Do not immediately dispatch another slot while that failed command
+    # is still Mowing/Returning; wait until the mower settles first.
+    if runtime.get("wait_for_settle_after_prune"):
+        if controller._vendor_mowing(data) or activity == ACTIVITY_RETURNING:
+            await controller._save()
+            return
+        runtime["wait_for_settle_after_prune"] = False
+        if runtime.get("interrupted_reason") == "zone_removed_from_current_map":
+            runtime["interrupted_reason"] = None
+        changed = True
+
+    if runtime.get("suspended_reason") == "zone_start_failed":
+        await controller._save()
         return
 
     if data.get("error") is True or data.get("problem_latched") is True:
@@ -816,6 +1151,14 @@ async def _evaluate_locked(controller: NavimowerScheduleController) -> None:
             await controller._save()
             return
     slot, zone_id = current
+    if zone_id not in current_ids:
+        # Defensive backstop for a map mutation between pruning and dispatch.
+        runtime["last_error"] = (
+            f"Refused scheduler command for zone {zone_id}: not on current map"
+        )
+        runtime["suspended_reason"] = "zone_removed_from_current_map"
+        await controller._save()
+        return
 
     # A completion can arrive in the same coordinator snapshot that still says
     # Mowing for the just-finished zone. Do not adopt that stale activity as the
@@ -925,10 +1268,24 @@ async def _async_set_custom_queue(
         raise ValueError(
             f"Queue contains zones outside the selected schedule allowlist: {unknown}"
         )
+    current_ids = _current_map_zone_ids(controller)
+    removed = [
+        zone_id for zone_id in queue
+        if current_ids and zone_id not in current_ids
+    ]
+    if removed:
+        raise ValueError(
+            f"Queue contains zones removed from the current mower map: {removed}"
+        )
+
     eligible = {
         int(row["id"])
         for row in controller._eligible_zones()
-        if row.get("id") is not None
+        if (
+            row.get("id") is not None
+            and row.get("stale") is not True
+            and (not current_ids or int(row["id"]) in current_ids)
+        )
     }
     unproven = [zone_id for zone_id in queue if zone_id not in eligible]
     if unproven:

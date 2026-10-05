@@ -563,11 +563,43 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
         coordinator = self._coordinator()
         data = getattr(coordinator, "data", None) or {}
         rows = data.get("zone_states") or []
-        return [row for row in rows if isinstance(row, dict) and row.get("id") is not None]
+        current_ids: set[int] = set()
+        for zone in ((data.get("map") or {}).get("zones") or []):
+            if not isinstance(zone, dict):
+                continue
+            try:
+                zone_id = int(zone.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if zone_id > 0:
+                current_ids.add(zone_id)
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or row.get("id") is None
+                or row.get("stale") is True
+            ):
+                continue
+            try:
+                zone_id = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if current_ids and zone_id not in current_ids:
+                continue
+            result.append(row)
+        return result
 
     def _schedule_zone_choices(self) -> dict[str, str]:
         choices: dict[str, str] = {}
-        for row in self._schedule_zone_rows():
+        current_rows = self._schedule_zone_rows()
+        current_ids = {
+            str(int(row["id"]))
+            for row in current_rows
+            if row.get("id") is not None
+        }
+        for row in current_rows:
             if not row.get("last_completed_at"):
                 continue
             try:
@@ -577,7 +609,7 @@ class NavimowOptionsFlow(OptionsFlowWithReload):
             choices[zone_id] = str(row.get("name") or f"Zone {zone_id}")
         for value in self._options().get(OPT_SCHEDULE_ZONE_IDS, []) or []:
             text = str(value)
-            if text.isdigit():
+            if text.isdigit() and (not current_ids or text in current_ids):
                 choices.setdefault(text, f"Zone {text} (saved)")
         return choices
 

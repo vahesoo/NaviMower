@@ -219,7 +219,7 @@ def filter_schedule_zones(
     confirmed = scheduler_completed_at or {}
     result: list[dict[str, Any]] = []
     for row in zones or []:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or row.get("stale") is True:
             continue
         try:
             zone_id = int(row.get("id"))
