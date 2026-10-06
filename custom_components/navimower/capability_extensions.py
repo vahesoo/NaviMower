@@ -290,7 +290,11 @@ def _install_number_capabilities() -> None:
             value_fn=lambda s: None,
             raw_read_key="height",
             write_key="height",
-            robot_hex=True,
+            # Cutting height is reported by the mower as a decimal string and
+            # independent community field tests show the device-side command
+            # must use the same decimal representation. The cloud copy remains
+            # the normal numeric iot_set value.
+            robot_hex=False,
         ),
         platform.NavimowNumberDescription(
             key="progress_retention_duration",
