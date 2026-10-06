@@ -376,6 +376,9 @@
       },
       "pose_valid": {
         "name": "Live position valid"
+      },
+      "gate_required": {
+        "name": "Gate required"
       }
     },
     "switch": {
