@@ -250,6 +250,36 @@ def _utc_iso_from_seconds(value: Any) -> str | None:
         return None
 
 
+def _aggregate_gate_required_state(
+    gate_states: dict[str, dict[str, Any]],
+) -> tuple[bool | None, list[str], list[str]]:
+    """Aggregate configured gate-pair requirements conservatively.
+
+    Any confirmed required gate wins. Only an all-false set is safely false.
+    If no gate is true but at least one state is unknown, the aggregate remains
+    unknown so a physical-gate automation cannot close on incomplete evidence.
+    """
+    active: list[str] = []
+    unknown: list[str] = []
+    values: list[bool | None] = []
+    for slug, state in gate_states.items():
+        value = state.get("required") if isinstance(state, dict) else None
+        if value is True:
+            active.append(str(slug))
+            values.append(True)
+        elif value is False:
+            values.append(False)
+        else:
+            unknown.append(str(slug))
+            values.append(None)
+
+    if any(value is True for value in values):
+        return True, active, unknown
+    if values and all(value is False for value in values):
+        return False, active, unknown
+    return None, active, unknown
+
+
 def _as_bool(value: Any) -> bool | None:
     """Interpret the mower's many truthy encodings ('01', 1, '1', True)."""
     if value is None:
@@ -3846,6 +3876,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         ):
             transition = True
 
+        gate_required, active_gate_slugs, unknown_gate_slugs = (
+            _aggregate_gate_required_state(gate_states)
+        )
+
         published_target_ids, published_target_source = _published_navigation_target(
             target_ids=target_ids,
             target_source=target_source,
@@ -3882,6 +3916,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "current_channel_pose_age": self.pose_age(),
             "dock_zone_id": dock_zone_id,
             "zone_transition": transition,
+            "gate_required": gate_required,
+            "gate_required_active_slugs": active_gate_slugs,
+            "gate_required_unknown_slugs": unknown_gate_slugs,
+            "gate_required_configured_count": len(gate_states),
             "gate_states": gate_states,
             "gate_arrival_guards": {
                 slug: {
@@ -3893,6 +3931,38 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
                 }
                 for slug, guard in self._gate_arrival_guards.items()
             },
+        }
+
+    def aggregate_gate_state(self) -> bool | None:
+        """Return whether any configured gate currently requires opening."""
+        value = (self.data or {}).get("gate_required")
+        return value if isinstance(value, bool) else None
+
+    def aggregate_gate_attributes(self) -> dict[str, Any]:
+        """Return summary diagnostics for the mower-level gate requirement."""
+        data = self.data or {}
+        gate_states = data.get("gate_states") or {}
+        return {
+            "configured_gate_count": int(
+                data.get("gate_required_configured_count") or len(gate_states)
+            ),
+            "active_gate_slugs": list(
+                data.get("gate_required_active_slugs") or []
+            ),
+            "unknown_gate_slugs": list(
+                data.get("gate_required_unknown_slugs") or []
+            ),
+            "configured_gates": [
+                {
+                    "slug": str(slug),
+                    "name": state.get("name"),
+                    "required": state.get("required"),
+                    "zones": list(state.get("zones") or []),
+                    "zone_names": list(state.get("zone_names") or []),
+                }
+                for slug, state in gate_states.items()
+                if isinstance(state, dict)
+            ],
         }
 
     def gate_state(self, gate: NavimowerGate) -> bool | None:

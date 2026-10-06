@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from dataclasses import dataclass
 
 from homeassistant.components.binary_sensor import (
+    DOMAIN as BINARY_SENSOR_DOMAIN,
     BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
@@ -12,6 +14,7 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .channel import NavimowerChannel
@@ -27,6 +30,65 @@ from .custom_area import (
 from .custom_area_fallback import resolve_custom_area_presence
 from .entity import NavimowEntity
 from . import navigation_fallback as _navigation_fallback
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _migrate_default_gate_required_to_aggregate(
+    hass: HomeAssistant,
+    coordinator: NavimowCoordinator,
+) -> None:
+    """Preserve the legacy default Gate entity id for the aggregate sensor.
+
+    The original default gate is normally slugged gate and historically
+    produced a user-facing entity like binary_sensor.<mower>_gate_required.
+    If that registry entry exists and the aggregate stable unique id does not,
+    migrate only the unique id. The entity id therefore stays unchanged and
+    existing physical-gate automations transparently consume the aggregate
+    mower-level state.
+
+    Non-default named gate sensors are never migrated automatically.
+    """
+    if not coordinator.gates:
+        return
+
+    registry = er.async_get(hass)
+    aggregate_unique_id = f"{coordinator.sn}_gate_required"
+    if registry.async_get_entity_id(
+        BINARY_SENSOR_DOMAIN,
+        DOMAIN,
+        aggregate_unique_id,
+    ):
+        return
+
+    default_gate = next(
+        (gate for gate in coordinator.gates if gate.slug == "gate"),
+        None,
+    )
+    if default_gate is None:
+        return
+
+    legacy_unique_id = f"{coordinator.sn}_gate_{default_gate.slug}_required"
+    entity_id = registry.async_get_entity_id(
+        BINARY_SENSOR_DOMAIN,
+        DOMAIN,
+        legacy_unique_id,
+    )
+    if entity_id is None:
+        return
+
+    try:
+        registry.async_update_entity(
+            entity_id,
+            new_unique_id=aggregate_unique_id,
+        )
+    except ValueError:
+        _LOGGER.debug(
+            "Gate aggregate entity registry migration skipped for %s",
+            entity_id,
+            exc_info=True,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -107,9 +169,13 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: NavimowCoordinator = hass.data[DOMAIN][entry.entry_id]
+    _migrate_default_gate_required_to_aggregate(hass, coordinator)
+
     entities: list[BinarySensorEntity] = [
         NavimowBinarySensor(coordinator, desc) for desc in BINARY_SENSORS
     ]
+    if coordinator.gates:
+        entities.append(NavimowerAggregateGateRequiredBinarySensor(coordinator))
     entities.extend(
         NavimowerChannelBinarySensor(coordinator, channel)
         for channel in coordinator.channels
@@ -247,6 +313,35 @@ class NavimowerCustomAreaBinarySensor(NavimowEntity, BinarySensorEntity):
         }
 
 
+class NavimowerAggregateGateRequiredBinarySensor(
+    NavimowEntity,
+    BinarySensorEntity,
+):
+    """On while any configured gate path requires the physical gate."""
+
+    _attr_icon = "mdi:gate-alert"
+    _attr_translation_key = "gate_required"
+
+    def __init__(self, coordinator: NavimowCoordinator) -> None:
+        super().__init__(coordinator, "gate_required")
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.coordinator.aggregate_gate_state()
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and bool(self.coordinator.gates)
+            and self.coordinator.aggregate_gate_state() is not None
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return self.coordinator.aggregate_gate_attributes()
+
+
 class NavimowerGateRequiredBinarySensor(NavimowEntity, BinarySensorEntity):
     """On while the mower intends to cross a configured zone-pair gate."""
 
@@ -255,7 +350,7 @@ class NavimowerGateRequiredBinarySensor(NavimowEntity, BinarySensorEntity):
     def __init__(self, coordinator: NavimowCoordinator, gate: NavimowerGate) -> None:
         super().__init__(coordinator, f"gate_{gate.slug}_required")
         self.gate = gate
-        self._attr_name = f"{gate.name} required"
+        self._attr_name = f"{gate.name} path required"
 
     @property
     def is_on(self) -> bool | None:
