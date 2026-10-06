@@ -6,6 +6,7 @@ from typing import Any
 
 from .canonical_state import build_canonical_state, canonical_diagnostics
 from .const import MQTT_POSE_STALE_SECONDS
+from .position_fallback import cloud_report_age
 
 
 def _apply_public_state(snapshot: dict[str, Any], state: dict[str, Any]) -> None:
@@ -74,6 +75,27 @@ def _apply_public_state(snapshot: dict[str, Any], state: dict[str, Any]) -> None
     snapshot["canonical_mode"] = state.get("mode")
 
 
+def _cloud_report_time(snapshot: dict[str, Any]) -> Any:
+    raw = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
+    location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    if location.get("report_time") is not None:
+        return location.get("report_time")
+    if snapshot.get("pose_source") == "private_cloud":
+        return snapshot.get("pose_time")
+    return None
+
+
+def _station_position(owner: Any, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    map_data = snapshot.get("map") if isinstance(snapshot.get("map"), dict) else {}
+    station = map_data.get("station")
+    if isinstance(station, dict):
+        return station
+    geometry = getattr(owner, "_map_geometry", None)
+    if isinstance(geometry, dict) and isinstance(geometry.get("station"), dict):
+        return geometry.get("station")
+    return None
+
+
 def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     """Resolve and publish Canonical state once after CycleEngine."""
     mqtt_position = (
@@ -82,9 +104,11 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
         else None
     )
     cloud_position = snapshot.get("cloud_position")
-    cloud_age = (
-        owner._private_endpoint_age("location")
-        if hasattr(owner, "_private_endpoint_age")
+    cloud_age = cloud_report_age(_cloud_report_time(snapshot))
+    station_position = _station_position(owner, snapshot)
+    pending_activity = (
+        owner._pending_activity_value()
+        if hasattr(owner, "_pending_activity_value")
         else None
     )
     store = getattr(owner, "vendor_trail_store", None)
@@ -104,6 +128,8 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
         mqtt_position=mqtt_position,
         cloud_position=cloud_position,
         cloud_position_age_s=cloud_age,
+        station_position=station_position,
+        pending_activity=pending_activity,
         mqtt_pose_max_age_s=float(MQTT_POSE_STALE_SECONDS),
     )
     _apply_public_state(snapshot, state)
