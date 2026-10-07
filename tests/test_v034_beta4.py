@@ -52,9 +52,9 @@ def test_work_mode_mapping_and_dual_write() -> None:
     source = (COMPONENT / "select.py").read_text()
     assert 'key="work_mode"' in source
     assert 'raw_read_key="mode"' in source
-    assert '"standard": "02"' in source
-    assert '"efficient": "03"' in source
-    assert '"precision": "04"' in source
+    assert '"standard": 2' in source
+    assert '"efficient": 3' in source
+    assert '"precision": 4' in source
     assert "send_setting_device" in source
     assert "save_setting_iot" in source
 
