@@ -23,6 +23,7 @@ from typing import Any
 _LOGGER = logging.getLogger(__name__)
 
 SETTING_READBACK_DELAY_SECONDS = 15.0
+SETTING_PERSISTENCE_DELAY_SECONDS = 75.0
 
 SettingOperation = tuple[Callable[..., Any], tuple[Any, ...]]
 
@@ -43,6 +44,89 @@ def _set_list_status(coordinator: Any) -> dict[str, Any]:
             "last_error_utc": None,
         },
     )
+
+
+def _value_kind(value: Any) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "mapping"
+    if isinstance(value, (list, tuple)):
+        return "sequence"
+    return type(value).__name__
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _values_equivalent(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _values_equivalent(value, actual.get(key))
+            for key, value in expected.items()
+        )
+    if isinstance(expected, (list, tuple)):
+        return (
+            isinstance(actual, (list, tuple))
+            and len(expected) == len(actual)
+            and all(_values_equivalent(a, b) for a, b in zip(expected, actual))
+        )
+    if isinstance(expected, str) and isinstance(actual, str):
+        if expected.strip().casefold() == actual.strip().casefold():
+            return True
+    left = _numeric_value(expected)
+    right = _numeric_value(actual)
+    if left is not None and right is not None:
+        return left == right
+    return expected == actual
+
+
+def _finish_verification(coordinator: Any, cache_values: dict[str, Any]) -> None:
+    set_list = dict(getattr(coordinator, "_raw_cache", {}).get("set_list") or {})
+    rows: dict[str, Any] = {}
+    failed: list[str] = []
+    for key, expected in cache_values.items():
+        present = key in set_list
+        actual = set_list.get(key)
+        confirmed = present and _values_equivalent(expected, actual)
+        status = "confirmed" if confirmed else ("missing" if not present else "reverted")
+        if not confirmed:
+            failed.append(str(key))
+        rows[str(key)] = {
+            "status": status,
+            "requested_type": _value_kind(expected),
+            "readback_type": _value_kind(actual) if present else None,
+        }
+    previous = getattr(coordinator, "_setting_write_verification", {}) or {}
+    coordinator._setting_write_verification = {  # noqa: SLF001
+        "status": "confirmed" if not failed else "reverted",
+        "requested_at_utc": previous.get("requested_at_utc"),
+        "checked_at_utc": datetime.now(UTC).isoformat(),
+        "keys": rows,
+    }
+    if failed:
+        _LOGGER.warning(
+            "Navimow setting persistence check failed for %s",
+            ", ".join(failed),
+        )
 
 
 async def _publish_write_through_cache(
@@ -79,25 +163,38 @@ async def _publish_write_through_cache(
     coordinator.async_set_updated_data(snapshot)
 
 
-def _schedule_readback(coordinator: Any, delay: float) -> None:
-    """Force one fresh ``set_list`` read after cloud propagation time."""
+def _schedule_readback(
+    coordinator: Any,
+    delay: float,
+    cache_values: dict[str, Any],
+) -> None:
+    """Refresh once for propagation, then verify persistence later."""
     previous = getattr(coordinator, "_setting_readback_task", None)
     if previous is not None and not previous.done():
         previous.cancel()
+
+    async def _refresh_settings() -> None:
+        status = _set_list_status(coordinator)
+        status["last_attempt_mono"] = None
+        status["last_attempt_utc"] = None
+        await coordinator.async_request_refresh()
 
     async def _readback() -> None:
         try:
             await asyncio.sleep(delay)
             if getattr(coordinator, "_shutdown_complete", False):
                 return
-            status = _set_list_status(coordinator)
-            # Bypass the normal 30/60-second endpoint TTL for this confirmation.
-            status["last_attempt_mono"] = None
-            status["last_attempt_utc"] = None
-            await coordinator.async_request_refresh()
+            await _refresh_settings()
+            remaining = max(0.0, SETTING_PERSISTENCE_DELAY_SECONDS - delay)
+            if remaining:
+                await asyncio.sleep(remaining)
+            if getattr(coordinator, "_shutdown_complete", False):
+                return
+            await _refresh_settings()
+            _finish_verification(coordinator, cache_values)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - normal polling remains the fallback.
+        except Exception:
             _LOGGER.debug("Delayed Navimow settings readback failed", exc_info=True)
         finally:
             current = getattr(coordinator, "_setting_readback_task", None)
@@ -147,10 +244,27 @@ async def async_write_settings(
         raise
 
     coordinator._persist_session()  # noqa: SLF001
+    coordinator._setting_write_verification = {  # noqa: SLF001
+        "status": "pending",
+        "requested_at_utc": datetime.now(UTC).isoformat(),
+        "checked_at_utc": None,
+        "keys": {
+            str(key): {
+                "status": "pending",
+                "requested_type": _value_kind(value),
+                "readback_type": None,
+            }
+            for key, value in cache_values.items()
+        },
+    }
     await _publish_write_through_cache(coordinator, cache_values)
 
     # Reset the TTL from the completed transaction, not from its start.
     status["last_attempt_mono"] = time.monotonic()
     status["last_attempt_utc"] = datetime.now(UTC).isoformat()
-    _schedule_readback(coordinator, max(0.0, float(readback_delay)))
+    _schedule_readback(
+        coordinator,
+        max(0.0, float(readback_delay)),
+        dict(cache_values),
+    )
     return results[-1] if results else None
