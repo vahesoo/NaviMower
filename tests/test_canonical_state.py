@@ -156,65 +156,17 @@ def test_no_legacy_position_or_task_bridge_exists() -> None:
     assert "legacy_totals_bridge" not in source
     assert "ledger_diagnostics" not in source
 
-def test_confirmed_docked_without_fresh_mqtt_uses_map_station() -> None:
+def test_docked_without_fresh_mqtt_keeps_real_cloud_pose_and_heading() -> None:
     snapshot = _base_snapshot()
     snapshot["docked"] = True
     snapshot["mqtt_pose_age"] = 3600
     state = canonical.build_canonical_state(
         snapshot,
         mqtt_position={"x": 10.0, "y": 10.0, "heading": 0.3},
-        cloud_position={"x": 18.0, "y": -4.0, "heading": 0.2},
-        cloud_position_age_s=2.0,
-        station_position={"x": 1.5, "y": 2.5},
-    )
-    position = state["navigation"]["position"]
-    assert position["source"] == "map_station"
-    assert position["value"] == {"x": 1.5, "y": 2.5, "heading": None}
-    assert position["stale"] is False
-    assert state["health"]["position_fallback_reason"] == "docked_station_authority"
-    assert state["health"]["map_station_position_override_active"] is True
-    assert state["health"]["private_cloud_position_fallback_active"] is False
-
-
-def test_fresh_mqtt_still_wins_while_docked() -> None:
-    snapshot = _base_snapshot()
-    snapshot["docked"] = True
-    snapshot["mqtt_pose_age"] = 0.2
-    state = canonical.build_canonical_state(
-        snapshot,
-        mqtt_position={"x": 1.7, "y": 2.6, "heading": 0.1},
-        cloud_position={"x": 18.0, "y": -4.0, "heading": 0.2},
-        cloud_position_age_s=2.0,
-        station_position={"x": 1.5, "y": 2.5},
-    )
-    assert state["navigation"]["position"]["source"] == "official_mqtt"
-    assert state["health"]["map_station_position_override_active"] is False
-
-
-def test_pending_departure_suppresses_docked_station_override() -> None:
-    snapshot = _base_snapshot()
-    snapshot["docked"] = True
-    snapshot["mqtt_pose_age"] = 3600
-    state = canonical.build_canonical_state(
-        snapshot,
-        mqtt_position={"x": 1.7, "y": 2.6, "heading": 0.1},
         cloud_position={"x": 1.8, "y": 2.7, "heading": 0.2},
         cloud_position_age_s=2.0,
-        station_position={"x": 1.5, "y": 2.5},
-        pending_activity="mowing",
     )
-    assert state["navigation"]["position"]["source"] == "private_cloud"
+    position = state["navigation"]["position"]
+    assert position["source"] == "private_cloud"
+    assert position["value"] == {"x": 1.8, "y": 2.7, "heading": 0.2}
     assert state["health"]["position_fallback_reason"] == "mqtt_pose_stale"
-
-
-def test_docked_without_station_keeps_cloud_fallback() -> None:
-    snapshot = _base_snapshot()
-    snapshot["docked"] = True
-    snapshot["mqtt_pose_age"] = None
-    state = canonical.build_canonical_state(
-        snapshot,
-        cloud_position={"x": 7.5, "y": -0.4, "heading": 1.2},
-        cloud_position_age_s=8.0,
-    )
-    assert state["navigation"]["position"]["source"] == "private_cloud"
-
