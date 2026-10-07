@@ -47,26 +47,17 @@ def resolve_position(
     mqtt_pose_age_s: Any,
     cloud_position: Any,
     cloud_position_age_s: Any,
-    station_position: Any = None,
-    docked: bool = False,
-    pending_activity: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
     cloud_position_max_age_s: float = DEFAULT_CLOUD_POSITION_MAX_AGE_S,
 ) -> dict[str, Any]:
     """Resolve position once, keeping source/freshness beside the value."""
     mqtt = _position(mqtt_position)
     cloud = _position(cloud_position)
-    station = _position(station_position)
     mqtt_age = _as_float(mqtt_pose_age_s)
     cloud_age = _as_float(cloud_position_age_s)
 
     if mqtt is not None and (mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s):
         value, source, age, stale = mqtt, "official_mqtt", mqtt_age, False
-    elif docked is True and pending_activity is None and station is not None:
-        # A confirmed stationary Dock state and the map's charging-pile position
-        # are stronger evidence than a private-cloud posture that may be an old
-        # last-known coordinate returned by a newly fetched get-location call.
-        value, source, age, stale = station, "map_station", None, False
     elif cloud is not None:
         value, source, age = cloud, "private_cloud", cloud_age
         stale = bool(cloud_age is not None and cloud_age > cloud_position_max_age_s)
@@ -136,8 +127,6 @@ def build_canonical_state(
     mqtt_position: Any = None,
     cloud_position: Any = None,
     cloud_position_age_s: Any = None,
-    station_position: Any = None,
-    pending_activity: Any = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
 ) -> dict[str, Any]:
     """Build the authoritative canonical state from resolved observations."""
@@ -149,9 +138,6 @@ def build_canonical_state(
         mqtt_pose_age_s=mqtt_age,
         cloud_position=cloud_position,
         cloud_position_age_s=cloud_age,
-        station_position=station_position,
-        docked=snapshot.get("docked") is True,
-        pending_activity=pending_activity,
         mqtt_pose_max_age_s=mqtt_pose_max_age_s,
     )
     task = _canonical_task(ledger_task)
@@ -161,9 +147,7 @@ def build_canonical_state(
         mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s
     )
     fallback_reason = None
-    if position.get("source") == "map_station":
-        fallback_reason = "docked_station_authority"
-    elif position.get("source") == "private_cloud":
+    if position.get("source") == "private_cloud":
         if mqtt_age is None:
             fallback_reason = "mqtt_pose_missing"
         elif mqtt_age > mqtt_pose_max_age_s:
@@ -227,7 +211,6 @@ def build_canonical_state(
             "cloud_position_age_s": round(cloud_age, 3) if cloud_age is not None else None,
             "position_fallback_reason": fallback_reason,
             "private_cloud_position_fallback_active": position.get("source") == "private_cloud",
-            "map_station_position_override_active": position.get("source") == "map_station",
         },
     }
 
