@@ -19,6 +19,7 @@ from typing import Any
 POSITION_TRUST_SCHEMA_VERSION = 1
 DOCK_STATION_TOLERANCE_M = 2.0
 SOURCE_FRESH_MAX_AGE_S = 120.0
+SOURCE_FUTURE_TOLERANCE_S = 30.0
 DEPARTURE_SOURCE_SKEW_S = 10.0
 STARTUP_FAIL_OPEN_S = 30.0
 
@@ -52,8 +53,11 @@ def _source_age_s(value: Any, now_epoch: float) -> float | None:
     source = _source_epoch(value)
     if source is None:
         return None
+    age = now_epoch - source
+    if age < -SOURCE_FUTURE_TOLERANCE_S:
+        return None
     # Small future skew is harmless for freshness decisions.
-    return max(0.0, now_epoch - source)
+    return max(0.0, age)
 
 
 def _distance(a: Any, b: Any) -> float | None:
@@ -276,7 +280,8 @@ def _candidate_departure_ok(
         now_epoch=now_epoch,
     )
 
-    source_epoch = _source_epoch(source_time)
+    source_age = _source_age_s(source_time, now_epoch)
+    source_epoch = _source_epoch(source_time) if source_age is not None else None
     departure_epoch = _as_float(state.get("departure_started_at_epoch"))
     if (
         source_epoch is not None
