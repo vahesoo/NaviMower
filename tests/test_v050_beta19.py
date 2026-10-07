@@ -19,7 +19,7 @@ def test_beta19_version_and_release_notes() -> None:
         "Issue #437",
         "startup/departure position trust gate",
         "within 2 m of the station",
-        "is never substituted for the mower position",
+        "used only as validation evidence",
         "health.position_trust",
     ):
         assert marker in notes
