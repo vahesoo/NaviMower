@@ -19,7 +19,7 @@ def test_beta18_version_and_release_notes() -> None:
         "35 -> 53",
         "10 -> 16",
         '35% -> `"23"`',
-        "minimum: 1%",
+        "minimum: 10%",
         "step: 10%",
     ):
         assert marker in notes
@@ -30,7 +30,7 @@ def test_sound_level_uses_hex_device_and_decimal_string_cloud() -> None:
     block = source.split('key="sound_level"', 1)[1].split(
         "NavimowNumberDescription(", 1
     )[0]
-    assert "native_min_value=1" in block
+    assert "native_min_value=10" in block
     assert "native_max_value=100" in block
     assert "native_step=10" in block
     assert "robot_hex=True" in block
