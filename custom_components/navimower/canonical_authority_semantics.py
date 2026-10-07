@@ -7,6 +7,11 @@ from typing import Any
 from .canonical_state import build_canonical_state, canonical_diagnostics
 from .const import MQTT_POSE_STALE_SECONDS
 from .position_fallback import cloud_report_age
+from .position_trust import (
+    position_trust_diagnostics,
+    prepare_position_candidates,
+    record_position_result,
+)
 
 
 def _apply_public_state(snapshot: dict[str, Any], state: dict[str, Any]) -> None:
@@ -93,7 +98,23 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
         else None
     )
     cloud_position = snapshot.get("cloud_position")
-    cloud_age = cloud_report_age(_cloud_report_time(snapshot))
+    cloud_report_time = _cloud_report_time(snapshot)
+    cloud_age = cloud_report_age(cloud_report_time)
+
+    mqtt_location = getattr(owner, "_mqtt_location", None)
+    mqtt_pose_time = (
+        mqtt_location.get("pose_time")
+        if isinstance(mqtt_location, dict)
+        else None
+    )
+    trusted = prepare_position_candidates(
+        owner,
+        snapshot,
+        mqtt_position=mqtt_position,
+        cloud_position=cloud_position,
+        mqtt_pose_time=mqtt_pose_time,
+        cloud_report_time=cloud_report_time,
+    )
     store = getattr(owner, "vendor_trail_store", None)
     owned_zone_ids = (
         set(store.owned_zone_ids())
@@ -108,11 +129,20 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
         ledger_task=getattr(owner, "_zone_ledger_task", None),
         vendor_owned_zone_ids=owned_zone_ids,
         vendor_store_revision=store_revision,
-        mqtt_position=mqtt_position,
-        cloud_position=cloud_position,
+        mqtt_position=trusted.get("mqtt_position"),
+        cloud_position=trusted.get("cloud_position"),
         cloud_position_age_s=cloud_age,
+        position_override=trusted.get("position_override"),
         mqtt_pose_max_age_s=float(MQTT_POSE_STALE_SECONDS),
     )
+    record_position_result(owner, snapshot, state)
+    trust_diagnostics = position_trust_diagnostics(owner)
+    if isinstance(trust_diagnostics, dict):
+        health = state.get("health")
+        if not isinstance(health, dict):
+            health = {}
+            state["health"] = health
+        health["position_trust"] = trust_diagnostics
     _apply_public_state(snapshot, state)
     owner._canonical_state = state
     owner._canonical_diagnostics = canonical_diagnostics(state)

@@ -127,18 +127,23 @@ def build_canonical_state(
     mqtt_position: Any = None,
     cloud_position: Any = None,
     cloud_position_age_s: Any = None,
+    position_override: dict[str, Any] | None = None,
     mqtt_pose_max_age_s: float = DEFAULT_MQTT_POSE_MAX_AGE_S,
 ) -> dict[str, Any]:
     """Build the authoritative canonical state from resolved observations."""
     owned = set(vendor_owned_zone_ids or set())
     mqtt_age = _as_float(snapshot.get("mqtt_pose_age"))
     cloud_age = _as_float(cloud_position_age_s)
-    position = resolve_position(
-        mqtt_position=mqtt_position,
-        mqtt_pose_age_s=mqtt_age,
-        cloud_position=cloud_position,
-        cloud_position_age_s=cloud_age,
-        mqtt_pose_max_age_s=mqtt_pose_max_age_s,
+    position = (
+        deepcopy(position_override)
+        if isinstance(position_override, dict)
+        else resolve_position(
+            mqtt_position=mqtt_position,
+            mqtt_pose_age_s=mqtt_age,
+            cloud_position=cloud_position,
+            cloud_position_age_s=cloud_age,
+            mqtt_pose_max_age_s=mqtt_pose_max_age_s,
+        )
     )
     task = _canonical_task(ledger_task)
     cycles = _canonical_cycles(ledger_state, owned)
