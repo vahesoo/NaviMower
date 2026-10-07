@@ -85,17 +85,6 @@ def _cloud_report_time(snapshot: dict[str, Any]) -> Any:
     return None
 
 
-def _station_position(owner: Any, snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    map_data = snapshot.get("map") if isinstance(snapshot.get("map"), dict) else {}
-    station = map_data.get("station")
-    if isinstance(station, dict):
-        return station
-    geometry = getattr(owner, "_map_geometry", None)
-    if isinstance(geometry, dict) and isinstance(geometry.get("station"), dict):
-        return geometry.get("station")
-    return None
-
-
 def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     """Resolve and publish Canonical state once after CycleEngine."""
     mqtt_position = (
@@ -105,12 +94,6 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
     )
     cloud_position = snapshot.get("cloud_position")
     cloud_age = cloud_report_age(_cloud_report_time(snapshot))
-    station_position = _station_position(owner, snapshot)
-    pending_activity = (
-        owner._pending_activity_value()
-        if hasattr(owner, "_pending_activity_value")
-        else None
-    )
     store = getattr(owner, "vendor_trail_store", None)
     owned_zone_ids = (
         set(store.owned_zone_ids())
@@ -128,8 +111,6 @@ def run_canonical_authority(owner: Any, snapshot: dict[str, Any]) -> dict[str, A
         mqtt_position=mqtt_position,
         cloud_position=cloud_position,
         cloud_position_age_s=cloud_age,
-        station_position=station_position,
-        pending_activity=pending_activity,
         mqtt_pose_max_age_s=float(MQTT_POSE_STALE_SECONDS),
     )
     _apply_public_state(snapshot, state)
