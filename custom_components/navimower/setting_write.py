@@ -5,11 +5,9 @@ sent to the mower and a private-cloud persistence write. The private cloud is
 eventually consistent, so refreshing ``set_list`` between those calls can
 briefly republish the previous value.
 
-This helper runs every operation in one executor job, updates the integration's
-last-good settings cache only after all writes were acknowledged, and forces one
-fresh ``set_list`` read after a short propagation delay. Normal coordinator
-polls continue for battery, position and progress while reusing the write-through
-settings cache during that delay.
+This helper owns the write transaction, write-through cache, device-command
+outcome probe and per-setting persistence verification. Readback tasks are keyed
+by setting so changing an unrelated setting cannot cancel an earlier check.
 """
 from __future__ import annotations
 
@@ -24,8 +22,33 @@ _LOGGER = logging.getLogger(__name__)
 
 SETTING_READBACK_DELAY_SECONDS = 15.0
 SETTING_PERSISTENCE_DELAY_SECONDS = 75.0
+SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS = (1.0, 3.0, 6.0)
 
 SettingOperation = tuple[Callable[..., Any], tuple[Any, ...]]
+
+_COMMAND_NUMBER_KEYS = (
+    "cmd_num",
+    "cmdNum",
+    "command_num",
+    "commandNum",
+    "command_number",
+    "commandNumber",
+)
+_COMMAND_STATUS_KEYS = {
+    "status",
+    "state",
+    "result",
+    "code",
+    "resultcode",
+    "result_code",
+    "errorcode",
+    "error_code",
+    "success",
+}
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _set_list_status(coordinator: Any) -> dict[str, Any]:
@@ -99,34 +122,211 @@ def _values_equivalent(expected: Any, actual: Any) -> bool:
     return expected == actual
 
 
-def _finish_verification(coordinator: Any, cache_values: dict[str, Any]) -> None:
-    set_list = dict(getattr(coordinator, "_raw_cache", {}).get("set_list") or {})
-    rows: dict[str, Any] = {}
-    failed: list[str] = []
-    for key, expected in cache_values.items():
-        present = key in set_list
-        actual = set_list.get(key)
-        confirmed = present and _values_equivalent(expected, actual)
-        status = "confirmed" if confirmed else ("missing" if not present else "reverted")
-        if not confirmed:
-            failed.append(str(key))
-        rows[str(key)] = {
-            "status": status,
-            "requested_type": _value_kind(expected),
-            "readback_type": _value_kind(actual) if present else None,
+def _command_number(value: Any) -> str | None:
+    """Extract a vendor command number without retaining the raw response."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (str, int)):
+        text = str(value).strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in _COMMAND_NUMBER_KEYS:
+            if key in value:
+                found = _command_number(value.get(key))
+                if found is not None:
+                    return found
+        for nested in value.values():
+            if isinstance(nested, (dict, list, tuple)):
+                found = _command_number(nested)
+                if found is not None:
+                    return found
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            found = _command_number(nested)
+            if found is not None:
+                return found
+    return None
+
+
+def _device_command_result(
+    operations: Sequence[SettingOperation], results: Sequence[Any]
+) -> tuple[bool, str | None]:
+    """Return whether this write used a mower command and its command number."""
+    used = False
+    for (func, _args), result in zip(operations, results):
+        if getattr(func, "__name__", "") != "send_setting_device":
+            continue
+        used = True
+        number = _command_number(result)
+        if number is not None:
+            return True, number
+    return used, None
+
+
+def _status_fields(
+    value: Any,
+    *,
+    prefix: str = "",
+    depth: int = 0,
+    out: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract only small status-like scalars from a command response."""
+    result = out if out is not None else {}
+    if depth > 3 or len(result) >= 12:
+        return result
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_text = str(key)
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            normalized = key_text.casefold()
+            if normalized in _COMMAND_STATUS_KEYS:
+                if isinstance(nested, (bool, int, float)):
+                    result[path] = nested
+                elif isinstance(nested, str) and len(nested) <= 32:
+                    result[path] = nested
+            if isinstance(nested, (dict, list, tuple)):
+                _status_fields(nested, prefix=path, depth=depth + 1, out=result)
+            if len(result) >= 12:
+                break
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value[:8]):
+            path = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            _status_fields(nested, prefix=path, depth=depth + 1, out=result)
+            if len(result) >= 12:
+                break
+    return result
+
+
+def _command_response_summary(value: Any) -> dict[str, Any]:
+    """Return a privacy-safe structural summary of /set/response."""
+    summary: dict[str, Any] = {"response_type": _value_kind(value)}
+    if isinstance(value, dict):
+        summary["top_level_keys"] = sorted(str(key) for key in value)[:20]
+    fields = _status_fields(value)
+    if fields:
+        summary["status_fields"] = fields
+    return summary
+
+
+def _verification_store(coordinator: Any) -> dict[str, Any]:
+    store = getattr(coordinator, "_setting_write_verification", None)
+    if not isinstance(store, dict) or store.get("schema_version") != 2:
+        store = {
+            "schema_version": 2,
+            "status": "idle",
+            "last_updated_utc": None,
+            "keys": {},
         }
-    previous = getattr(coordinator, "_setting_write_verification", {}) or {}
-    coordinator._setting_write_verification = {  # noqa: SLF001
-        "status": "confirmed" if not failed else "reverted",
-        "requested_at_utc": previous.get("requested_at_utc"),
-        "checked_at_utc": datetime.now(UTC).isoformat(),
-        "keys": rows,
+        coordinator._setting_write_verification = store  # noqa: SLF001
+    if not isinstance(store.get("keys"), dict):
+        store["keys"] = {}
+    return store
+
+
+def _update_verification_summary(coordinator: Any) -> None:
+    store = _verification_store(coordinator)
+    rows = list(store["keys"].values())
+    statuses = {
+        str(row.get("status"))
+        for row in rows
+        if isinstance(row, dict) and row.get("status")
     }
-    if failed:
-        _LOGGER.warning(
-            "Navimow setting persistence check failed for %s",
-            ", ".join(failed),
-        )
+    if not statuses:
+        overall = "idle"
+    elif statuses & {"reverted", "missing"}:
+        overall = "attention"
+    elif "pending" in statuses:
+        overall = "pending"
+    elif statuses == {"confirmed"}:
+        overall = "confirmed"
+    else:
+        overall = "mixed"
+    store["status"] = overall
+    store["last_updated_utc"] = _utc_now()
+
+
+def _set_pending_verification(
+    coordinator: Any,
+    cache_values: dict[str, Any],
+    *,
+    device_command_used: bool,
+    command_number: str | None,
+) -> None:
+    store = _verification_store(coordinator)
+    requested_at = _utc_now()
+    for key, expected in cache_values.items():
+        if not device_command_used:
+            command_outcome = "not_used"
+        elif command_number is None:
+            command_outcome = "no_command_number"
+        else:
+            command_outcome = "pending"
+        store["keys"][str(key)] = {
+            "status": "pending",
+            "requested_at_utc": requested_at,
+            "checked_at_utc": None,
+            "requested_type": _value_kind(expected),
+            "readback_type": None,
+            "readback_15s": None,
+            "persistence_75s": None,
+            "device_command": {
+                "used": device_command_used,
+                "command_number_received": command_number is not None,
+                "outcome": command_outcome,
+            },
+        }
+    _update_verification_summary(coordinator)
+
+
+def _record_readback(
+    coordinator: Any,
+    key: str,
+    expected: Any,
+    *,
+    phase: str,
+) -> str:
+    set_list = dict(getattr(coordinator, "_raw_cache", {}).get("set_list") or {})
+    present = key in set_list
+    actual = set_list.get(key)
+    confirmed = present and _values_equivalent(expected, actual)
+    status = "confirmed" if confirmed else ("missing" if not present else "reverted")
+    checked_at = _utc_now()
+
+    store = _verification_store(coordinator)
+    row = store["keys"].get(str(key))
+    if not isinstance(row, dict):
+        return status
+    row[phase] = {
+        "status": status,
+        "readback_type": _value_kind(actual) if present else None,
+        "checked_at_utc": checked_at,
+    }
+    row["readback_type"] = _value_kind(actual) if present else None
+    if phase == "persistence_75s":
+        row["status"] = status
+        row["checked_at_utc"] = checked_at
+    elif status != "confirmed":
+        row["status"] = status
+    _update_verification_summary(coordinator)
+    return status
+
+
+def _update_device_command(
+    coordinator: Any,
+    key: str,
+    update: dict[str, Any],
+) -> None:
+    store = _verification_store(coordinator)
+    row = store["keys"].get(str(key))
+    if not isinstance(row, dict):
+        return
+    command = row.get("device_command")
+    if not isinstance(command, dict):
+        command = {}
+        row["device_command"] = command
+    command.update(update)
+    command["checked_at_utc"] = _utc_now()
+    _update_verification_summary(coordinator)
 
 
 async def _publish_write_through_cache(
@@ -138,8 +338,6 @@ async def _publish_write_through_cache(
     set_list.update(cache_values)
     raw_cache["set_list"] = set_list
 
-    # Reuse the coordinator's one authoritative parser so raw-backed and parsed
-    # entities (switch/select/number/time/schedule) all receive the same values.
     raw_snapshot = dict(raw_cache)
     raw_snapshot["set_list"] = dict(set_list)
     parsed = await coordinator.hass.async_add_executor_job(
@@ -163,48 +361,176 @@ async def _publish_write_through_cache(
     coordinator.async_set_updated_data(snapshot)
 
 
+async def _refresh_settings(coordinator: Any) -> None:
+    status = _set_list_status(coordinator)
+    status["last_attempt_mono"] = None
+    status["last_attempt_utc"] = None
+    await coordinator.async_request_refresh()
+
+
 def _schedule_readback(
     coordinator: Any,
     delay: float,
     cache_values: dict[str, Any],
 ) -> None:
-    """Refresh once for propagation, then verify persistence later."""
-    previous = getattr(coordinator, "_setting_readback_task", None)
-    if previous is not None and not previous.done():
-        previous.cancel()
+    """Schedule independent short and persistence readbacks per setting key."""
+    tasks = getattr(coordinator, "_setting_readback_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = {}
+        coordinator._setting_readback_tasks = tasks  # noqa: SLF001
 
-    async def _refresh_settings() -> None:
-        status = _set_list_status(coordinator)
-        status["last_attempt_mono"] = None
-        status["last_attempt_utc"] = None
-        await coordinator.async_request_refresh()
+    for raw_key, expected in cache_values.items():
+        key = str(raw_key)
+        previous = tasks.get(key)
+        if previous is not None and not previous.done():
+            previous.cancel()
 
-    async def _readback() -> None:
-        try:
-            await asyncio.sleep(delay)
-            if getattr(coordinator, "_shutdown_complete", False):
-                return
-            await _refresh_settings()
-            remaining = max(0.0, SETTING_PERSISTENCE_DELAY_SECONDS - delay)
-            if remaining:
-                await asyncio.sleep(remaining)
-            if getattr(coordinator, "_shutdown_complete", False):
-                return
-            await _refresh_settings()
-            _finish_verification(coordinator, cache_values)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _LOGGER.debug("Delayed Navimow settings readback failed", exc_info=True)
-        finally:
-            current = getattr(coordinator, "_setting_readback_task", None)
-            if current is asyncio.current_task():
-                coordinator._setting_readback_task = None  # noqa: SLF001
+        async def _readback(
+            *,
+            verify_key: str = key,
+            verify_expected: Any = expected,
+        ) -> None:
+            try:
+                await asyncio.sleep(delay)
+                if getattr(coordinator, "_shutdown_complete", False):
+                    return
+                await _refresh_settings(coordinator)
+                short_status = _record_readback(
+                    coordinator,
+                    verify_key,
+                    verify_expected,
+                    phase="readback_15s",
+                )
+                if short_status != "confirmed":
+                    _LOGGER.warning(
+                        "Navimow setting %s reverted or disappeared after short readback",
+                        verify_key,
+                    )
 
-    coordinator._setting_readback_task = coordinator.hass.async_create_task(  # noqa: SLF001
-        _readback(),
-        f"Navimower settings readback {coordinator.entry.entry_id}",
-    )
+                remaining = max(0.0, SETTING_PERSISTENCE_DELAY_SECONDS - delay)
+                if remaining:
+                    await asyncio.sleep(remaining)
+                if getattr(coordinator, "_shutdown_complete", False):
+                    return
+                await _refresh_settings(coordinator)
+                final_status = _record_readback(
+                    coordinator,
+                    verify_key,
+                    verify_expected,
+                    phase="persistence_75s",
+                )
+                if final_status != "confirmed":
+                    _LOGGER.warning(
+                        "Navimow setting persistence check failed for %s",
+                        verify_key,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _LOGGER.debug(
+                    "Delayed Navimow settings readback failed for %s",
+                    verify_key,
+                    exc_info=True,
+                )
+                store = _verification_store(coordinator)
+                row = store["keys"].get(verify_key)
+                if isinstance(row, dict):
+                    row["readback_error_type"] = type(err).__name__
+                    _update_verification_summary(coordinator)
+            finally:
+                current = tasks.get(verify_key)
+                if current is asyncio.current_task():
+                    tasks.pop(verify_key, None)
+
+        tasks[key] = coordinator.hass.async_create_task(
+            _readback(),
+            f"Navimower setting readback {coordinator.entry.entry_id} {key}",
+        )
+
+
+def _schedule_command_status(
+    coordinator: Any,
+    command_number: str | None,
+    keys: Sequence[str],
+) -> None:
+    """Probe the mower-side command result without retaining raw vendor data."""
+    if command_number is None:
+        return
+    command_status = getattr(coordinator.client, "command_status", None)
+    if not callable(command_status):
+        for key in keys:
+            _update_device_command(coordinator, key, {"outcome": "unsupported"})
+        return
+
+    tasks = getattr(coordinator, "_setting_command_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = {}
+        coordinator._setting_command_tasks = tasks  # noqa: SLF001
+
+    for raw_key in keys:
+        key = str(raw_key)
+        previous = tasks.get(key)
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        async def _check(*, verify_key: str = key) -> None:
+            last_error_type: str | None = None
+            saw_empty_response = False
+            try:
+                for retry_delay in SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS:
+                    await asyncio.sleep(retry_delay)
+                    if getattr(coordinator, "_shutdown_complete", False):
+                        return
+                    try:
+                        response = await coordinator.hass.async_add_executor_job(
+                            command_status,
+                            coordinator.sn,
+                            command_number,
+                        )
+                    except Exception as err:
+                        last_error_type = type(err).__name__
+                        continue
+
+                    summary = _command_response_summary(response)
+                    if response:
+                        _update_device_command(
+                            coordinator,
+                            verify_key,
+                            {"outcome": "response_received", **summary},
+                        )
+                        return
+                    saw_empty_response = True
+
+                if saw_empty_response:
+                    _update_device_command(
+                        coordinator,
+                        verify_key,
+                        {
+                            "outcome": "empty_response",
+                            "response_type": "mapping",
+                            "top_level_keys": [],
+                        },
+                    )
+                else:
+                    _update_device_command(
+                        coordinator,
+                        verify_key,
+                        {
+                            "outcome": "query_error",
+                            "error_type": last_error_type,
+                        },
+                    )
+            except asyncio.CancelledError:
+                raise
+            finally:
+                current = tasks.get(verify_key)
+                if current is asyncio.current_task():
+                    tasks.pop(verify_key, None)
+
+        tasks[key] = coordinator.hass.async_create_task(
+            _check(),
+            f"Navimower setting command status {coordinator.entry.entry_id} {key}",
+        )
 
 
 async def async_write_settings(
@@ -214,22 +540,14 @@ async def async_write_settings(
     cache_values: dict[str, Any],
     readback_delay: float = SETTING_READBACK_DELAY_SECONDS,
 ) -> Any:
-    """Run setting operations atomically, then confirm them after a delay.
-
-    No coordinator refresh occurs between operations. Once every blocking call
-    returns successfully, the acknowledged values are written through to the
-    local ``set_list`` cache. A forced cloud readback replaces that cache after
-    ``readback_delay`` seconds.
-    """
+    """Run setting operations atomically and verify each setting independently."""
     if not operations:
         return None
 
     status = _set_list_status(coordinator)
     now = time.monotonic()
-    # A concurrent normal poll may continue, but it must not fetch an old
-    # ``set_list`` while this transaction is in flight.
     status["last_attempt_mono"] = now
-    status["last_attempt_utc"] = datetime.now(UTC).isoformat()
+    status["last_attempt_utc"] = _utc_now()
 
     def _run_operations() -> list[Any]:
         return [func(*args) for func, args in operations]
@@ -237,31 +555,26 @@ async def async_write_settings(
     try:
         results = await coordinator.hass.async_add_executor_job(_run_operations)
     except Exception:
-        # Let the next normal refresh establish the real state after a failed
-        # partial transaction instead of retaining the temporary TTL hold.
         status["last_attempt_mono"] = None
         status["last_attempt_utc"] = None
         raise
 
+    device_command_used, command_number = _device_command_result(operations, results)
+
     coordinator._persist_session()  # noqa: SLF001
-    coordinator._setting_write_verification = {  # noqa: SLF001
-        "status": "pending",
-        "requested_at_utc": datetime.now(UTC).isoformat(),
-        "checked_at_utc": None,
-        "keys": {
-            str(key): {
-                "status": "pending",
-                "requested_type": _value_kind(value),
-                "readback_type": None,
-            }
-            for key, value in cache_values.items()
-        },
-    }
+    _set_pending_verification(
+        coordinator,
+        cache_values,
+        device_command_used=device_command_used,
+        command_number=command_number,
+    )
     await _publish_write_through_cache(coordinator, cache_values)
 
-    # Reset the TTL from the completed transaction, not from its start.
     status["last_attempt_mono"] = time.monotonic()
-    status["last_attempt_utc"] = datetime.now(UTC).isoformat()
+    status["last_attempt_utc"] = _utc_now()
+
+    keys = [str(key) for key in cache_values]
+    _schedule_command_status(coordinator, command_number, keys)
     _schedule_readback(
         coordinator,
         max(0.0, float(readback_delay)),

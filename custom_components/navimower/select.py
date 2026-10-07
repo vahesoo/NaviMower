@@ -130,14 +130,15 @@ SETTING_SELECTS: tuple[NavimowSelectDescription, ...] = (
         value_fn=lambda s: None,
         raw_read_key="mode",
         write_key="mode",
-        # Robot expects zero-padded decimal text while cloud iot_set expects
-        # the bare integer. Keep the canonical value numeric so the generic
-        # writer can encode each transport correctly.
+        # Field testing shows the cloud accepts the numeric value immediately,
+        # but the mower can later overwrite it unless the device-side command
+        # applies the same numeric encoding.
         value_map={
             "standard": 2,
             "efficient": 3,
             "precision": 4,
         },
+        robot_numeric=True,
     ),
     # H215 exposes the app's three-level Night light brightness control through
     # lightIntensity. Keep the existing night_light_level unique ID so upgrades
