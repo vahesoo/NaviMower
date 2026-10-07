@@ -19,7 +19,7 @@ def test_beta19_version_and_release_notes() -> None:
         "Issue #437",
         "startup/departure position trust gate",
         "within 2 m of the station",
-        "never substituted for the mower position",
+        "is never substituted for the mower position",
         "health.position_trust",
     ):
         assert marker in notes
@@ -38,7 +38,7 @@ def test_position_trust_gate_is_canonical_pre_resolver_input() -> None:
     assert 'health["position_trust"] = trust_diagnostics' in authority
     assert "position_override: dict[str, Any] | None = None" in canonical
     assert "DOCK_STATION_TOLERANCE_M = 2.0" in trust
-    assert '"source": "startup_waiting"' in trust
+    assert '_unavailable_override("startup_waiting")' in trust
     assert '"source": "trusted_previous"' in trust
     ast.parse(authority)
     ast.parse(canonical)
