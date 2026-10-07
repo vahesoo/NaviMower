@@ -344,6 +344,9 @@ async def async_get_config_entry_diagnostics(
             "session_area", "session_area_source", "total_area", "total_area_source",
             "coverage", "coverage_source", "zone_states", "totals",
         )),
+        "setting_write_verification": deepcopy(
+            getattr(coordinator, "_setting_write_verification", None)
+        ),
         "settings_summary": {
             "rain_behavior": settings.get("rain_behavior"),
             "rain_delay_wire": settings.get("rain_delay_wire"),
