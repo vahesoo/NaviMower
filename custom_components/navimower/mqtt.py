@@ -13,6 +13,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -34,12 +35,16 @@ from .const import (
     CONF_OAUTH_TOKEN,
     MQTT_BROKER,
     MQTT_DISCONNECT_TIMEOUT_SECONDS,
+    MQTT_KEEPALIVE_SECONDS,
     MQTT_PASSWORD,
     MQTT_PORT,
     MQTT_POSE_RECOVERY_STALE_SECONDS,
     MQTT_POSE_RESUBSCRIBE_COOLDOWN_SECONDS,
     MQTT_POSE_STALE_SECONDS,
     MQTT_RECOVERY_BACKOFF_SECONDS,
+    MQTT_START_RETRY_INITIAL_SECONDS,
+    MQTT_TRANSPORT_RECOVERY_STALE_SECONDS,
+    MQTT_USER_INFO_RETRY_SECONDS,
     MQTT_RESUBSCRIBE_GRACE_SECONDS,
     MQTT_USERNAME,
     MQTT_WATCHDOG_INTERVAL_SECONDS,
@@ -49,13 +54,20 @@ from .location import extract_mqtt_battery, location_topic, parse_location_paylo
 
 _LOGGER = logging.getLogger(__name__)
 
+# Multiple Navimower config entries start in parallel. CPython's per-module
+# import locks can deadlock when separate executor threads concurrently import
+# the mower_sdk package graph for the first time. Keep the import off the HA
+# event loop, but serialize that one-time package import across entries.
+_MOWER_SDK_IMPORT_LOCK = threading.Lock()
+
 
 def _load_mower_sdk_types() -> tuple[Any, Any]:
     """Import mower_sdk classes off the Home Assistant event loop."""
-    from mower_sdk.api import MowerAPI
-    from mower_sdk.sdk import NavimowSDK
+    with _MOWER_SDK_IMPORT_LOCK:
+        from mower_sdk.api import MowerAPI
+        from mower_sdk.sdk import NavimowSDK
 
-    return MowerAPI, NavimowSDK
+        return MowerAPI, NavimowSDK
 
 
 class NavimowerMqttBridge:
@@ -98,6 +110,8 @@ class NavimowerMqttBridge:
         self._next_recovery_mono = 0.0
         self._recovery_count = 0
         self._recovery_total = 0
+        self._pose_resubscribe_streak = 0
+        self._retry_delay_hint_seconds = MQTT_START_RETRY_INITIAL_SECONDS
         self._recovery_state = "stopped"
         self._last_recovery_reason: str | None = None
         self._last_recovery_utc: str | None = None
@@ -207,10 +221,12 @@ class NavimowerMqttBridge:
                 raise ConfigEntryAuthFailed(
                     f"Official Navimow authorization was rejected: {err}"
                 ) from err
+            self._retry_delay_hint_seconds = MQTT_USER_INFO_RETRY_SECONDS
             raise ConfigEntryNotReady(
                 f"Could not obtain Navimow MQTT credentials: {err}"
             ) from err
 
+        self._retry_delay_hint_seconds = MQTT_START_RETRY_INITIAL_SECONDS
         connection = self._connection_details(mqtt_info, access_token)
 
         def _create_sdk() -> Any:
@@ -223,7 +239,7 @@ class NavimowerMqttBridge:
                 auth_headers=connection["auth_headers"],
                 loop=self.hass.loop,
                 records=devices,
-                keepalive_seconds=2400,
+                keepalive_seconds=MQTT_KEEPALIVE_SECONDS,
                 reconnect_min_delay=1,
                 reconnect_max_delay=60,
             )
@@ -240,6 +256,7 @@ class NavimowerMqttBridge:
         self._last_any_message_mono = None
         self._last_location_message_mono = None
         self._last_valid_pose_mono = None
+        self._pose_resubscribe_streak = 0
         try:
             self._attach_hooks(sdk, official_id, generation)
         except Exception:
@@ -358,7 +375,10 @@ class NavimowerMqttBridge:
         )
 
     async def _async_retry_start(self) -> None:
-        delay = 30
+        delay = max(
+            MQTT_START_RETRY_INITIAL_SECONDS,
+            int(self._retry_delay_hint_seconds),
+        )
         try:
             while not self._unloading and not self._stopped and self.sdk is None:
                 await asyncio.sleep(delay)
@@ -370,7 +390,10 @@ class NavimowerMqttBridge:
                     self.coordinator.set_mqtt_connected(
                         False, configured=self.configured, error=str(err)
                     )
-                    next_delay = min(delay * 2, 600)
+                    next_delay = min(delay * 2, MQTT_USER_INFO_RETRY_SECONDS)
+                    hint = int(self._retry_delay_hint_seconds)
+                    if hint > MQTT_START_RETRY_INITIAL_SECONDS:
+                        next_delay = max(next_delay, hint)
                     _LOGGER.warning(
                         "Navimower MQTT startup retry failed; retrying in %s s: %s",
                         next_delay,
@@ -543,6 +566,17 @@ class NavimowerMqttBridge:
         return True
 
     # -------------------------------------------------------------- watchdog
+    def _transport_message_age(self) -> float | None:
+        """Age of current-device MQTT traffic, falling back to connection age."""
+        anchor = (
+            self._last_any_message_mono
+            or self._connected_mono
+            or self._started_mono
+        )
+        if anchor is None:
+            return None
+        return max(0.0, time.monotonic() - anchor)
+
     def _ensure_watchdog(self) -> None:
         if (
             self._watchdog_task is not None
@@ -572,6 +606,7 @@ class NavimowerMqttBridge:
                         task = self._recovery_task
                         self._recovery_task = None
                         task.cancel()
+                    self._pose_resubscribe_streak = 0
                     if self.sdk is not None:
                         self._set_recovery_state("idle")
                     continue
@@ -615,14 +650,24 @@ class NavimowerMqttBridge:
         """
         try:
             self._recovery_total += 1
+            self._pose_resubscribe_streak += 1
             sdk = self.sdk
             generation = self._generation
             device_id = self._device_id
             self._set_recovery_state("resubscribing", reason)
-            _LOGGER.warning(
-                "Navimower MQTT %s while mower is active; re-subscribing to location",
-                reason,
+            message = (
+                "Navimower MQTT %s for mower %s while active; "
+                "re-subscribing to location (attempt %s)"
             )
+            log_args = (
+                reason,
+                self._masked_serial(str(self.coordinator.sn)),
+                self._pose_resubscribe_streak,
+            )
+            if self._pose_resubscribe_streak == 1:
+                _LOGGER.warning(message, *log_args)
+            else:
+                _LOGGER.debug(message, *log_args)
             if sdk is not None:
                 await self._async_subscribe_location(sdk, device_id, generation)
             await asyncio.sleep(MQTT_RESUBSCRIBE_GRACE_SECONDS)
@@ -634,6 +679,23 @@ class NavimowerMqttBridge:
             if age is not None and age <= MQTT_POSE_STALE_SECONDS:
                 self._mark_pose_recovered()
                 return
+
+            transport_age = self._transport_message_age()
+            sdk_connected = bool(sdk is not None and sdk.is_connected)
+            transport_stale = bool(
+                transport_age is not None
+                and transport_age > MQTT_TRANSPORT_RECOVERY_STALE_SECONDS
+            )
+            if not sdk_connected or transport_stale:
+                transport_reason = (
+                    f"{reason}; broker/current-device traffic stale "
+                    f"for {transport_age:.1f} s"
+                    if transport_age is not None
+                    else f"{reason}; MQTT client disconnected"
+                )
+                await self._async_rebuild_client(transport_reason)
+                return
+
             # Transport can be healthy while only pose is missing. Preserve the
             # client and useful MQTT state/progress traffic; position continues
             # through the private-cloud freshness fallback.
@@ -701,6 +763,9 @@ class NavimowerMqttBridge:
                 next_delay = MQTT_RECOVERY_BACKOFF_SECONDS[
                     min(self._recovery_count, len(MQTT_RECOVERY_BACKOFF_SECONDS) - 1)
                 ]
+                hint = int(self._retry_delay_hint_seconds)
+                if hint > MQTT_START_RETRY_INITIAL_SECONDS:
+                    next_delay = max(next_delay, hint)
                 self._next_recovery_mono = time.monotonic() + next_delay
                 _LOGGER.warning(
                     "Navimower MQTT client rebuild failed; private-cloud fallback "
@@ -717,6 +782,7 @@ class NavimowerMqttBridge:
         self._last_valid_pose_mono = time.monotonic()
         self._next_recovery_mono = 0.0
         self._recovery_count = 0
+        self._pose_resubscribe_streak = 0
         self._set_recovery_state("live")
         task = self._recovery_task
         if task is not None and task is not asyncio.current_task():
@@ -1018,7 +1084,15 @@ class NavimowerMqttBridge:
             "stream_state": self._recovery_state,
             "recovery_count": self._recovery_total,
             "pose_resubscribe_count": self._recovery_total,
+            "pose_resubscribe_streak": self._pose_resubscribe_streak,
             "consecutive_rebuild_count": self._recovery_count,
+            "keepalive_seconds": MQTT_KEEPALIVE_SECONDS,
+            "transport_recovery_stale_seconds": MQTT_TRANSPORT_RECOVERY_STALE_SECONDS,
+            "transport_message_age_s": (
+                round(self._transport_message_age(), 1)
+                if self._transport_message_age() is not None
+                else None
+            ),
             "last_any_message_scope": "current_device",
             "last_recovery_reason": self._last_recovery_reason,
             "last_recovery_utc": self._last_recovery_utc,
