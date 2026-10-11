@@ -80,6 +80,9 @@ MQTT_BROKER: Final = "mqtt.navimow.com"
 MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
+# Upstream NavimowHA moved from a 2400 s keepalive to 120 s in October 2026
+# to detect half-open broker connections in a bounded time.
+MQTT_KEEPALIVE_SECONDS: Final = 120
 MQTT_POSE_STALE_SECONDS: Final = 20
 # Vehicle state/action packets can remain authoritative without a fresh pose.
 MQTT_STATE_STALE_SECONDS: Final = 90
@@ -97,7 +100,15 @@ MQTT_RESUBSCRIBE_GRACE_SECONDS: Final = 10
 # the location subscription only occasionally. Never rebuild the client solely
 # because pose is missing.
 MQTT_POSE_RESUBSCRIBE_COOLDOWN_SECONDS: Final = 120
+# If both the live pose and all current-device MQTT traffic are missing beyond
+# this window, the broker session itself is considered degraded and the bridge
+# escalates from a topic re-subscribe to a full SDK client rebuild.
+MQTT_TRANSPORT_RECOVERY_STALE_SECONDS: Final = 180
 MQTT_DISCONNECT_TIMEOUT_SECONDS: Final = 15
+# The vendor /mqtt/userInfo endpoint uses a circuit breaker. Private cloud is
+# still fully usable when it is unavailable, so do not hammer that endpoint.
+MQTT_USER_INFO_RETRY_SECONDS: Final = 600
+MQTT_START_RETRY_INITIAL_SECONDS: Final = 30
 # First rebuild is immediate; repeated failures back off while private-cloud
 # fallback continues to publish state and position.
 MQTT_RECOVERY_BACKOFF_SECONDS: Final[tuple[int, ...]] = (0, 15, 30, 60, 120, 300)
