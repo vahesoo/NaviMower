@@ -641,12 +641,12 @@ class NavimowerMqttBridge:
                 self._watchdog_task = None
 
     async def _async_recovery_cycle(self, reason: str) -> None:
-        """Re-subscribe a degraded pose stream without rebuilding MQTT.
+        """Recover pose first by subscribe, then rebuild only stale transport.
 
-        Field diagnostics show that Navimow can keep the broker connection and
-        current-device state traffic alive while type=1 location/pose packets
-        disappear for minutes. Rebuilding the whole SDK in that condition can
-        create a reconnect storm and does not fix the vendor-side publisher.
+        Navimow can keep current-device state/progress traffic alive while only
+        type=1 pose packets disappear. That case must preserve the client. A
+        full rebuild is reserved for a disconnected SDK or when current-device
+        MQTT traffic itself has also gone stale.
         """
         try:
             self._recovery_total += 1
@@ -732,8 +732,9 @@ class NavimowerMqttBridge:
 
             self._set_recovery_state("rebuilding", reason)
             _LOGGER.warning(
-                "Navimower MQTT location did not recover; rebuilding client "
-                "without reloading the integration (attempt %s)",
+                "Navimower MQTT transport for mower %s did not recover; "
+                "rebuilding client without reloading the integration (attempt %s)",
+                self._masked_serial(str(self.coordinator.sn)),
                 self._recovery_count,
             )
             try:
