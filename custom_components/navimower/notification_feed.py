@@ -35,7 +35,7 @@ _NOTIFICATION_TTL_SECONDS = 60
 # Entity attributes are intentionally smaller than the internal merged history so Recorder stays below its 16 KiB state-attribute limit.
 _NOTIFICATION_ATTR_HISTORY_LIMIT = 5
 _VENDOR_REPEAT_WINDOW_SECONDS = 5 * 60
-_UNRESOLVED_VENDOR_TITLE_RE = re.compile(r"%(?:\\d+\\$)?[@A-Za-z]|\\{\\{[^{}]+\\}\\}")
+_UNRESOLVED_VENDOR_TITLE_RE = re.compile(r"%(?:\d+\$)?[@A-Za-z]|\{\{[^{}]+\}\}")
 _VENDOR_TITLE_OVERRIDES = {
     # Confirmed H-series vendor code. The Device feed can return the broken
     # localized title "Completed on %@" while the body is the real 1003 fault.
