@@ -20,19 +20,11 @@ from .const import (
 from .gate_area_editor import delete_gate_area, upsert_gate_area
 from .georeference_tools import async_relearn_georeference
 from .map_snapshot import active_map_snapshot_managers
-from .iot_file_probe import (
-    DEFAULT_IOT_FILE_TYPES,
-    IOT_FILE_MAX_TYPES_PER_RUN,
-    IOT_FILE_TYPE_MAX,
-    IOT_FILE_TYPE_MIN,
-    async_probe_iot_file,
-)
 from .model_support import supports_ordered_zone_mowing
 from .notification_actions import (
     async_mark_all_notifications_read,
     async_mark_notification_read,
 )
-from .raw_export import async_export_raw_data
 from .resume import async_resume_task
 from .task_resume import (
     RESUME_STRATEGY_ORDERED_RUN,
@@ -55,8 +47,6 @@ SERVICE_MARK_NOTIFICATION_READ = "mark_notification_read"
 SERVICE_MARK_ALL_NOTIFICATIONS_READ = "mark_all_notifications_read"
 SERVICE_RELEARN_GEOREFERENCE = "relearn_georeference"
 SERVICE_REFRESH_MAP_SNAPSHOT = "refresh_map_snapshot"
-SERVICE_EXPORT_RAW_DATA = "export_raw_data"
-SERVICE_PROBE_IOT_FILE = "probe_iot_file"
 
 _WEEKDAY_TO_NUM = {
     "sunday": 1,
@@ -122,18 +112,6 @@ CONTINUE_LAST_ORDERED_RUN_SCHEMA = DEVICE_ONLY_SCHEMA
 CONTINUE_TASK_SCHEMA = DEVICE_ONLY_SCHEMA
 RELEARN_GEOREFERENCE_SCHEMA = DEVICE_ONLY_SCHEMA
 REFRESH_MAP_SNAPSHOT_SCHEMA = DEVICE_ONLY_SCHEMA
-EXPORT_RAW_DATA_SCHEMA = DEVICE_ONLY_SCHEMA
-PROBE_IOT_FILE_SCHEMA = vol.Schema(
-    {
-        vol.Optional("device_id"): cv.string,
-        vol.Optional("file_types", default=list(DEFAULT_IOT_FILE_TYPES)): vol.All(
-            cv.ensure_list,
-            [vol.All(vol.Coerce(int), vol.Range(min=IOT_FILE_TYPE_MIN, max=IOT_FILE_TYPE_MAX))],
-            vol.Length(min=1, max=IOT_FILE_MAX_TYPES_PER_RUN),
-        ),
-        vol.Optional("download_artifacts", default=False): cv.boolean,
-    }
-)
 
 MARK_NOTIFICATION_READ_SCHEMA = vol.Schema(
     {
@@ -627,65 +605,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 f"Navimower map snapshot refresh failed: {err}"
             ) from err
 
-    async def _export_raw_data(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(call)
-        try:
-            path = await async_export_raw_data(hass, coordinator)
-        except Exception as err:
-            raise HomeAssistantError(
-                f"Navimower raw data export failed: {err}"
-            ) from err
-        persistent_notification.async_create(
-            hass,
-            (
-                "Unredacted Navimower raw-data export completed.\n\n"
-                f"File: `{path}`\n\n"
-                "This prerelease development file intentionally contains exact "
-                "vendor/map/location values and identifiers. Do not publish or "
-                "attach it to a public issue."
-            ),
-            title="Navimower raw data export",
-            notification_id="navimower_raw_data_export",
-        )
-
-    async def _probe_iot_file(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(call)
-        file_types = list(call.data.get("file_types") or DEFAULT_IOT_FILE_TYPES)
-        download_artifacts = bool(call.data.get("download_artifacts", False))
-        try:
-            result = await async_probe_iot_file(
-                hass,
-                coordinator,
-                file_types,
-                download_artifacts=download_artifacts,
-            )
-        except ValueError as err:
-            raise ServiceValidationError(str(err)) from err
-        except Exception as err:
-            raise HomeAssistantError(
-                f"Navimower get-iot-file probe failed: {err}"
-            ) from err
-        bundle_text = (
-            f"\nBundle: `{result['bundle_path']}`"
-            if result.get("bundle_path")
-            else ""
-        )
-        persistent_notification.async_create(
-            hass,
-            (
-                "Navimower get-iot-file prerelease probe completed.\n\n"
-                f"Types: `{result.get('file_types')}`\n"
-                f"Successful types: `{result.get('successful_types')}`\n"
-                f"Downloaded artifact types: `{result.get('artifact_types')}`\n"
-                f"File: `{result['json_path']}`"
-                f"{bundle_text}\n\n"
-                "Signed vendor URLs are not persisted. The probe file can still "
-                "contain mower identifiers and vendor metadata; review it before sharing."
-            ),
-            title="Navimower get-iot-file probe",
-            notification_id=f"navimower_iot_file_probe_{coordinator.entry.entry_id}",
-        )
-
     registrations = (
         (SERVICE_SET_SCHEDULE, _set_schedule, SET_SCHEDULE_SCHEMA),
         (SERVICE_MOW, _mow, MOW_SCHEMA),
@@ -703,8 +622,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_MARK_ALL_NOTIFICATIONS_READ, _mark_all_notifications_read, MARK_ALL_NOTIFICATIONS_READ_SCHEMA),
         (SERVICE_RELEARN_GEOREFERENCE, _relearn_georeference, RELEARN_GEOREFERENCE_SCHEMA),
         (SERVICE_REFRESH_MAP_SNAPSHOT, _refresh_map_snapshot, REFRESH_MAP_SNAPSHOT_SCHEMA),
-        (SERVICE_EXPORT_RAW_DATA, _export_raw_data, EXPORT_RAW_DATA_SCHEMA),
-        (SERVICE_PROBE_IOT_FILE, _probe_iot_file, PROBE_IOT_FILE_SCHEMA),
     )
     for service, handler, schema in registrations:
         if not hass.services.has_service(DOMAIN, service):
