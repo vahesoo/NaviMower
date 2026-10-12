@@ -405,6 +405,7 @@ After Schedule is configured, the **Navimower schedule status** sensor provides 
 | `navimower.mark_notification_read` | Mark one merged notification row read |
 | `navimower.mark_all_notifications_read` | Mark all retained notification rows read |
 | `navimower.relearn_georeference` | Clear only learned map georeference calibration and relearn from fresh samples |
+| `navimower.refresh_map_snapshot` | Force enabled backend Map snapshot image entities to render a fresh image for automations/notifications |
 
 ### Smart task continuation
 

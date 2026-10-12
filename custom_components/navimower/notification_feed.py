@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+import re
 import time
 from typing import Any
 
@@ -33,6 +34,13 @@ _NOTIFICATION_FILTER = "all"
 _NOTIFICATION_TTL_SECONDS = 60
 # Entity attributes are intentionally smaller than the internal merged history so Recorder stays below its 16 KiB state-attribute limit.
 _NOTIFICATION_ATTR_HISTORY_LIMIT = 5
+_VENDOR_REPEAT_WINDOW_SECONDS = 5 * 60
+_UNRESOLVED_VENDOR_TITLE_RE = re.compile(r"%(?:\d+\$)?[@A-Za-z]|\{\{[^{}]+\}\}")
+_VENDOR_TITLE_OVERRIDES = {
+    # Confirmed H-series vendor code. The Device feed can return the broken
+    # localized title "Completed on %@" while the body is the real 1003 fault.
+    "1003": "Mowing motor undervoltage protection",
+}
 
 # Legacy notification-history route kept as a callable compatibility/debug helper only.
 _LEGACY_NOTIFICATION_PATH = "/mowerbot/user/message/get-vehicle-history-message"
@@ -100,7 +108,8 @@ def _created_at(value: Any) -> str | None:
         return None
 
 
-def _message_age(item: dict[str, Any]) -> float | None:
+def _message_epoch(item: dict[str, Any]) -> float | None:
+    """Return one notification timestamp in epoch seconds when available."""
     raw = item.get("addtime")
     try:
         stamp = float(raw)
@@ -108,16 +117,109 @@ def _message_age(item: dict[str, Any]) -> float | None:
         stamp = 0.0
     if stamp > 10_000_000_000:
         stamp /= 1000.0
-    if stamp <= 0:
-        created = item.get("created_at")
-        try:
-            parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        stamp = parsed.timestamp()
+    if stamp > 0:
+        return stamp
+    created = item.get("created_at")
+    try:
+        parsed = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def _message_age(item: dict[str, Any]) -> float | None:
+    stamp = _message_epoch(item)
+    if stamp is None:
+        return None
     return max(0.0, datetime.now(UTC).timestamp() - stamp)
+
+
+def _canonical_vendor_title(title: Any, vendor_code: str | None) -> str | None:
+    """Hide unresolved vendor localization placeholders from the public feed."""
+    text = _bounded_text(title, 255)
+    if text and not _UNRESOLVED_VENDOR_TITLE_RE.search(text):
+        return text
+    if vendor_code and vendor_code in _VENDOR_TITLE_OVERRIDES:
+        return _VENDOR_TITLE_OVERRIDES[vendor_code]
+    if vendor_code:
+        return f"Mower notification ({vendor_code})"
+    return "Mower notification" if text else None
+
+
+def _notification_fingerprint(item: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the stable identity used only for short-window vendor dedupe."""
+    code = str(item.get("vendor_code") or "").strip()
+    content = " ".join(str(item.get("content") or "").split()).casefold()
+    if not code or not content:
+        return None
+    return code, content
+
+
+def _group_vendor_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Collapse repeated copies of one vendor event into a single visible row.
+
+    The grouping window is anchored to the newest occurrence, so a fault that
+    repeats again later becomes a new event instead of growing one group forever.
+    """
+    ordered = sorted(
+        (deepcopy(item) for item in messages),
+        key=lambda item: _message_epoch(item) or 0.0,
+        reverse=True,
+    )
+    buckets: list[dict[str, Any]] = []
+    for item in ordered:
+        fingerprint = _notification_fingerprint(item)
+        stamp = _message_epoch(item)
+        target: dict[str, Any] | None = None
+        if fingerprint is not None and stamp is not None:
+            for bucket in buckets:
+                if bucket["fingerprint"] != fingerprint:
+                    continue
+                anchor = bucket["anchor"]
+                if anchor is not None and 0 <= anchor - stamp <= _VENDOR_REPEAT_WINDOW_SECONDS:
+                    target = bucket
+                    break
+        if target is None:
+            buckets.append(
+                {
+                    "item": item,
+                    "fingerprint": fingerprint,
+                    "anchor": stamp,
+                    "ids": [
+                        str(item.get("message_id"))
+                    ] if item.get("message_id") not in (None, "") else [],
+                    "reads": [item.get("read")],
+                }
+            )
+            continue
+        if item.get("message_id") not in (None, ""):
+            message_id = str(item.get("message_id"))
+            if message_id not in target["ids"]:
+                target["ids"].append(message_id)
+        target["reads"].append(item.get("read"))
+
+    visible: list[dict[str, Any]] = []
+    member_map: dict[str, list[str]] = {}
+    for bucket in buckets:
+        row = bucket["item"]
+        ids = list(bucket["ids"])
+        reads = list(bucket["reads"])
+        row["repeat_count"] = max(1, len(ids) or len(reads))
+        if any(value is False for value in reads):
+            row["read"] = False
+        elif reads and all(value is True for value in reads):
+            row["read"] = True
+        elif any(value is True for value in reads):
+            row["read"] = None
+        representative = row.get("message_id")
+        if representative not in (None, "") and ids:
+            member_map[str(representative)] = ids
+        visible.append(row)
+    return visible, member_map
 
 
 def _normalize_item(item: Any) -> dict[str, Any] | None:
@@ -145,13 +247,11 @@ def _normalize_item(item: Any) -> dict[str, Any] | None:
             "messageCode",
         )
     )
+    raw_title = _first_present(item, "title", "message_title", "messageTitle")
     return {
         "id": _first_present(item, "id", "message_record_id"),
         "message_id": _first_present(item, "message_id", "messageId"),
-        "title": _bounded_text(
-            _first_present(item, "title", "message_title", "messageTitle"),
-            255,
-        ),
+        "title": _canonical_vendor_title(raw_title, vendor_code),
         "content": _bounded_text(
             _first_present(item, "content", "message_content", "messageContent"),
             1200,
@@ -206,7 +306,17 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
     result = dict(snapshot)
     cache = getattr(coordinator, "_notification_cache", None)
     normalized = _normalize_response(cache)
-    vendor_messages = normalized["list"][:VENDOR_NOTIFICATION_LIMIT]
+    raw_vendor_messages = normalized["list"]
+    grouped_vendor_messages, group_members = _group_vendor_messages(raw_vendor_messages)
+    vendor_messages = grouped_vendor_messages[:VENDOR_NOTIFICATION_LIMIT]
+    visible_ids = {
+        str(item.get("message_id"))
+        for item in vendor_messages
+        if item.get("message_id") not in (None, "")
+    }
+    coordinator._notification_group_members = {  # noqa: SLF001
+        key: value for key, value in group_members.items() if key in visible_ids
+    }
     center = getattr(coordinator, "notification_center", None)
     local_messages = center.messages if center is not None else []
     messages = merge_notification_lists(vendor_messages, local_messages)
@@ -256,6 +366,7 @@ def _decorate_snapshot(coordinator: Any, snapshot: dict[str, Any]) -> dict[str, 
             "notification_total": len(messages),
             "notification_count": len(messages),
             "notification_vendor_count": len(vendor_messages),
+            "notification_vendor_raw_count": len(raw_vendor_messages),
             "notification_local_count": len(local_messages),
             "notification_page": None,
             "notification_has_history_message": normalized.get("has_history_message"),
@@ -346,6 +457,7 @@ def _install_notification_sensor() -> None:
             "confidence": data.get("notification_confidence"),
             "count": data.get("notification_count"),
             "vendor_count": data.get("notification_vendor_count"),
+            "vendor_raw_count": data.get("notification_vendor_raw_count"),
             "local_count": data.get("notification_local_count"),
             "has_history_message": data.get("notification_has_history_message"),
             "next_message_id": data.get("notification_next_message_id"),

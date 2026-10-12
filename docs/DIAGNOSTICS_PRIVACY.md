@@ -44,11 +44,7 @@ Redaction tests cannot prove that every future service payload is safe. When in 
 
 Home Assistant **Download diagnostics** is the supported public troubleshooting path and remains sanitized on every release channel.
 
-Stable releases do not expose development capture or endpoint-probe actions. A prerelease development line may temporarily expose explicit maintainer-only research surfaces for controlled field investigations.
-
-The `navimower.export_raw_data` action writes a local full-value capture under `/config/navimower_diagnostics/raw/`. The `navimower.probe_iot_file` action is narrower: it can call only the read-only `/mowerbot/vehicle/common/get-iot-file` endpoint for a bounded list of integer file types. It never accepts an arbitrary endpoint or payload. Signed download URLs are not stored in the probe JSON, and optional artifact downloads use a hard size limit.
-
-Both prerelease research surfaces must be removed again before stable promotion.
+Development-only raw export and endpoint-probe actions are not shipped in the public integration package, including the stable-preparation prerelease line. Research captures, protocol notes and one-off probe evidence belong in the private development repository instead of Home Assistant's public action surface.
 
 Development captures may contain exact map/location values or identifiers and must not be attached to a public GitHub issue or forum post. Arbitrary endpoint probing, passive discovery and exact MQTT-payload retention remain outside the shipped integration.
 

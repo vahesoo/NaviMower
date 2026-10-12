@@ -16,37 +16,24 @@ def _source(name: str) -> str:
     return text
 
 
-def test_development_capture_surfaces_follow_release_channel() -> None:
-    manifest = json.loads((COMPONENT / "manifest.json").read_text(encoding="utf-8"))
-    prerelease = "-" in str(manifest.get("version") or "")
+def test_development_capture_surfaces_are_not_shipped() -> None:
     services = _source("services.py")
     services_yaml = _source("services.yaml")
     runtime = _source("runtime.py")
 
-    # Explicit maintainer development surfaces are allowed only on prerelease
-    # builds. Stable promotion must remove them again.
-    if prerelease:
-        assert (COMPONENT / "raw_export.py").exists()
-        assert "SERVICE_EXPORT_RAW_DATA" in services
-        assert "async_export_raw_data" in services
-        assert "export_raw_data:" in services_yaml
-        assert (COMPONENT / "iot_file_probe.py").exists()
-        assert "SERVICE_PROBE_IOT_FILE" in services
-        assert "async_probe_iot_file" in services
-        assert "probe_iot_file:" in services_yaml
-    else:
-        assert not (COMPONENT / "raw_export.py").exists()
-        assert "SERVICE_EXPORT_RAW_DATA" not in services
-        assert "async_export_raw_data" not in services
-        assert "export_raw_data" not in services_yaml
-        assert not (COMPONENT / "iot_file_probe.py").exists()
-        assert "SERVICE_PROBE_IOT_FILE" not in services
-        assert "async_probe_iot_file" not in services
-        assert "probe_iot_file" not in services_yaml
+    # Stable-preparation keeps maintainer research in the private dev repository,
+    # not in the public integration package — including prerelease builds.
+    assert not (COMPONENT / "raw_export.py").exists()
+    assert "SERVICE_EXPORT_RAW_DATA" not in services
+    assert "async_export_raw_data" not in services
+    assert "export_raw_data" not in services_yaml
+    assert not (COMPONENT / "iot_file_probe.py").exists()
+    assert "SERVICE_PROBE_IOT_FILE" not in services
+    assert "async_probe_iot_file" not in services
+    assert "probe_iot_file" not in services_yaml
 
     # Arbitrary endpoint probing, passive discovery and exact MQTT-payload
-    # retention stay retired on every release channel. The prerelease IoT-file
-    # probe above is intentionally fixed to one read-only endpoint.
+    # retention remain retired as well.
     assert not (COMPONENT / "private_api_probe.py").exists()
     assert not (COMPONENT / "raw_mqtt_semantics.py").exists()
     for token in (
@@ -96,11 +83,8 @@ def test_home_assistant_download_is_the_only_shipped_support_export() -> None:
     assert "def sanitize" in sanitizer
     assert "REDACTION_VERSION" in sanitizer
     assert "Home Assistant **Download diagnostics** is the supported public troubleshooting path" in privacy_doc
-    assert "Stable releases do not expose development capture or endpoint-probe actions" in privacy_doc
-    assert "navimower.export_raw_data" in privacy_doc
-    assert "navimower.probe_iot_file" in privacy_doc
-    assert "It never accepts an arbitrary endpoint or payload" in privacy_doc
-    assert "must be removed again before stable promotion" in privacy_doc
+    assert "Development-only raw export and endpoint-probe actions are not shipped" in privacy_doc
+    assert "private development repository" in privacy_doc
 
 
 def test_interoperability_boundary_keeps_secrets_backend_owned() -> None:
