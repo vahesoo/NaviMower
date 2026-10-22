@@ -367,8 +367,16 @@ class NavimowCloudClient:
     def location(self, sn: str, vehicle_type: int) -> dict:
         return self.call(
             "/vehicle/vehicle/get-location",
-            {"vehicle_sn": sn, "vehicle_type": vehicle_type},
+            {"vehicle_sn": sn, "vehicle_type": vehicle_type, "need_precise_location": 2},
         ) or {}
+
+    def app_active(self, sn: str) -> Any:
+        """Report the integration's active session; never claim BLE connectivity."""
+        return self.call(
+            "/mowerbot/vehicle/vehicle/state",
+            {"vehicle_sn": sn, "type": 1, "stateList": [{"state": 1}]},
+            retry_auth=False,
+        )
 
     def errors(self, sn: str, vehicle_type: int) -> dict:
         return self.call(

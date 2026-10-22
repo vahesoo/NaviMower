@@ -56,11 +56,11 @@ def resolve_position(
     mqtt_age = _as_float(mqtt_pose_age_s)
     cloud_age = _as_float(cloud_position_age_s)
 
-    if mqtt is not None and (mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s):
+    if mqtt is not None and mqtt_age is not None and 0 <= mqtt_age <= mqtt_pose_max_age_s:
         value, source, age, stale = mqtt, "official_mqtt", mqtt_age, False
     elif cloud is not None:
         value, source, age = cloud, "private_cloud", cloud_age
-        stale = bool(cloud_age is not None and cloud_age > cloud_position_max_age_s)
+        stale = cloud_age is None or cloud_age < 0 or cloud_age > cloud_position_max_age_s
     else:
         value, source, age, stale = None, "unavailable", None, True
 
@@ -149,7 +149,7 @@ def build_canonical_state(
     cycles = _canonical_cycles(ledger_state, owned)
     mqtt_pose_seen = mqtt_age is not None
     mqtt_pose_fresh = _position(mqtt_position) is not None and (
-        mqtt_age is None or mqtt_age <= mqtt_pose_max_age_s
+        mqtt_age is not None and 0 <= mqtt_age <= mqtt_pose_max_age_s
     )
     fallback_reason = None
     if position.get("source") == "private_cloud":

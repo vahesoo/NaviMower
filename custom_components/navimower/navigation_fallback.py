@@ -38,6 +38,10 @@ class _NavigationProxy:
 
 
 def _cloud_report_time(snapshot: dict[str, Any]) -> Any:
+    if snapshot.get("cloud_position_kind") == "last_known":
+        return None
+    if "cloud_pose_time" in snapshot:
+        return snapshot["cloud_pose_time"]
     raw = snapshot.get("raw") or {}
     location = raw.get("location") or {}
     if isinstance(location, dict) and location.get("report_time") is not None:
