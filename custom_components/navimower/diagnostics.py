@@ -109,6 +109,10 @@ def _mqtt_navigation_diagnostics(coordinator: Any, data: dict[str, Any]) -> dict
     return {
         "cached_location": cached,
         "pose_age_s": data.get("mqtt_pose_age"),
+        "pose_receipt_age_s": data.get("mqtt_pose_receipt_age"),
+        "message_age_s": data.get("mqtt_message_age"),
+        "cloud_position_kind": data.get("cloud_position_kind"),
+        "app_presence": deepcopy(data.get("app_presence")),
         "action_age_s": data.get("mqtt_action_age"),
         "vehicle_state": data.get("mqtt_vehicle_state"),
         "physical_zone_id": data.get("current_physical_zone_id"),

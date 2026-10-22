@@ -20,7 +20,60 @@ RTK reference (NOT latitude/longitude).
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
+
+
+def valid_coordinate(value: Any) -> float | None:
+    """Accept finite local coordinates, including legitimate zero axes."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number != -99999 else None
+
+
+def parse_cloud_pose(value: Any) -> dict[str, Any]:
+    """Select a complete pose from one record and one coordinate family.
+
+    Current coordinates always precede last-known coordinates, regardless of
+    JSON key order. A last-known position never inherits the current report time.
+    """
+    records: list[dict] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            records.append(node)
+            # Do not mistake a route point or map vertex for the mower pose.
+            for key in ("data", "location", "position"):
+                child = node.get(key)
+                if isinstance(child, dict):
+                    visit(child)
+
+    visit(value)
+    families = (
+        ("current", "posture_x", "posture_y", ("posture_theta", "posture_yaw"), "report_time"),
+        ("current", "postureX", "postureY", ("postureTheta",), "reportTime"),
+        ("current", "x", "y", ("heading", "yaw", "angle"), "time"),
+        ("last_known", "last_posture_x", "last_posture_y", ("last_posture_theta",), "last_report_time"),
+    )
+    for kind, xkey, ykey, headings, timekey in families:
+        for row in records:
+            x, y = valid_coordinate(row.get(xkey)), valid_coordinate(row.get(ykey))
+            if x is None or y is None:
+                continue
+            heading = next((valid_coordinate(row[key]) for key in headings if key in row), None)
+            stamp = row.get(timekey)
+            if stamp is None and kind == "current":
+                stamp = _message_source_time(row)
+            return {
+                "position": {"x": x, "y": y, "heading": heading},
+                "kind": kind,
+                "time": stamp,
+            }
+    return {"position": None, "kind": "unavailable", "time": None}
 
 
 def extract_mqtt_battery(data: Any) -> int | None:
@@ -226,6 +279,14 @@ def parse_location_payload(
     for item in data:
         if not isinstance(item, dict):
             continue
+        # Invalid/future poses must not poison the ordering high-water mark.
+        if item.get("type") in (1, "1"):
+            stamp = _message_source_time(item)
+            if stamp is not None and stamp > time.time() + 30:
+                continue
+            pose = [valid_coordinate(item.get(key)) for key in ("postureX", "postureY", "postureTheta")]
+            if any(value is None for value in pose):
+                continue
         accepted, t, _source_time = _accept_source_order(
             source_times, late_counts, item
         )
@@ -237,21 +298,17 @@ def parse_location_payload(
             loc["_accepted_message_types"].append(t)
 
         if t == 1:
-            try:
-                loc["x"] = float(item["postureX"])
-                loc["y"] = float(item["postureY"])
-                loc["theta"] = float(item["postureTheta"])
-            except (TypeError, ValueError, KeyError):
-                pass
+            pose = [valid_coordinate(item.get(key)) for key in ("postureX", "postureY", "postureTheta")]
+            if all(value is not None for value in pose):
+                loc["x"], loc["y"], loc["theta"] = pose
+                loc["pose_time"] = _source_time
+                loc["_pose_updated"] = True
             if "vehicleState" in item:
                 loc["vehicle_state"] = item["vehicleState"]
                 loc["_state_updated"] = True
-            if "time" in item:
-                loc["pose_time"] = item["time"]
             if (battery := extract_mqtt_battery(item)) is not None:
                 loc["battery"] = battery
                 loc["_battery_updated"] = True
-            loc["_pose_updated"] = True
             changed = True
         elif t == 2:
             if "currentMowBoundary" in item:

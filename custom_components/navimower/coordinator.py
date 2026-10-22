@@ -23,6 +23,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .api import NavimowAuthError, NavimowCloudClient, NavimowError, Tokens
+from .app_presence import diagnostics as app_presence_diagnostics, report_if_due
 from .channel import NavimowerChannel, parse_channels
 from .gate import NavimowerGate, parse_gates
 from .history import (
@@ -30,7 +31,8 @@ from .history import (
     SESSION_DETAIL_POINT_FORMAT,
     NavimowerHistory,
 )
-from .location import decode_map_work_position
+from .location import decode_map_work_position, parse_cloud_pose, valid_coordinate
+from .position_fallback import cloud_report_age
 from .map_identifiers import resolve_map_identifiers
 from .ordered_run import (
     last_ordered_run_snapshot,
@@ -1157,6 +1159,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         # Dense official MQTT pose is merged into private-cloud state.
         self._mqtt_location: dict[str, Any] | None = None
         self._mqtt_last_update: float | None = None
+        self._mqtt_pose_age_at_receipt: float | None = None
         self._mqtt_last_message_update: float | None = None
         self._mqtt_state_last_update: float | None = None
         self._mqtt_action_last_update: float | None = None
@@ -1661,6 +1664,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         raw = self._raw_cache
         now = time.monotonic()
         self._last_private_attempt_mono = now
+        report_if_due(self, now)
         active = self._private_poll_active()
         ttls = (
             PRIVATE_ENDPOINT_TTLS_ACTIVE
@@ -2405,7 +2409,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
         # Coverage and position. MQTT is authoritative while fresh; private
         # get-location remains a fallback when MQTT is absent/stale.
-        cloud_position = self._parse_position(location)
+        cloud_pose = parse_cloud_pose(location)
+        cloud_position = cloud_pose["position"]
         coverage = _parse_coverage(raw.get("path_info_time"), zone_names)
         mqtt_position = self._fresh_mqtt_position()
         position = mqtt_position or cloud_position
@@ -2653,11 +2658,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "longitude": _as_float(_find(location, "longitude", "lng", "lon")),
             "position": position,
             "cloud_position": cloud_position,
+            "cloud_position_kind": cloud_pose["kind"],
+            "cloud_pose_time": cloud_pose["time"],
             "pose_source": "mqtt" if mqtt_position is not None else "private_cloud",
             "pose_time": (
                 (self._mqtt_location or {}).get("pose_time")
                 if mqtt_position is not None
-                else _find(location, "report_time")
+                else cloud_pose["time"]
             ),
             "path": self._parse_path(location),
             # per-zone coverage (%) + reconstructed mowed trail ([[x,y],...])
@@ -3096,9 +3103,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     def _fresh_mqtt_position(self) -> dict[str, float] | None:
         if self._mqtt_location is None or self._mqtt_last_update is None:
             return None
-        if time.monotonic() - self._mqtt_last_update > MQTT_POSE_STALE_SECONDS:
+        age = self.pose_age()
+        if age is None or age > MQTT_POSE_STALE_SECONDS:
             return None
-        x, y = _as_float(self._mqtt_location.get("x")), _as_float(self._mqtt_location.get("y"))
+        x, y = valid_coordinate(self._mqtt_location.get("x")), valid_coordinate(self._mqtt_location.get("y"))
         if x is None or y is None:
             return None
         return {"x": x, "y": y, "heading": _as_float(self._mqtt_location.get("theta"))}
@@ -3982,16 +3990,21 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         return self.history.active_session_no
 
     def pose_age(self) -> float | None:
-        """Age in seconds of the latest true MQTT pose packet."""
-        if self._mqtt_last_update is None:
+        """Measurement age, advanced monotonically since receipt, not packet age."""
+        initial_age = getattr(self, "_mqtt_pose_age_at_receipt", None)
+        if self._mqtt_last_update is None or initial_age is None:
             return None
-        return max(0.0, time.monotonic() - self._mqtt_last_update)
+        return initial_age + max(0.0, time.monotonic() - self._mqtt_last_update)
 
     def mqtt_message_age(self) -> float | None:
         """Age of the latest relevant message on the MQTT location topic."""
         if self._mqtt_last_message_update is None:
             return None
         return max(0.0, time.monotonic() - self._mqtt_last_message_update)
+
+    def mark_mqtt_location_received(self) -> None:
+        """Record transport receipt even when the pose is rejected or old."""
+        self._mqtt_last_message_update = time.monotonic()
 
     def mqtt_stream_expected(self) -> bool:
         """Return whether the mower should currently emit live location data."""
@@ -4067,6 +4080,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "mqtt_connected": self._mqtt_connected,
             "mqtt_error": self._last_mqtt_error,
             "mqtt_pose_age": self.pose_age(),
+            "mqtt_pose_receipt_age": (
+                max(0.0, time.monotonic() - self._mqtt_last_update)
+                if self._mqtt_last_update is not None else None
+            ),
+            "mqtt_message_age": self.mqtt_message_age(),
+            "app_presence": app_presence_diagnostics(self, time.monotonic()),
             "mqtt_pose_valid": self._fresh_mqtt_position() is not None,
             "mqtt_state_age": self.mqtt_state_age(),
             "mqtt_action_age": self.mqtt_action_age(),
@@ -4202,12 +4221,21 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_location = merged
 
         pose_updated = bool(location.get("_pose_updated")) or (
-            self._mqtt_last_update is None
+            "_pose_updated" not in location
+            and self._mqtt_last_update is None
             and _as_float(location.get("x")) is not None
             and _as_float(location.get("y")) is not None
         )
         if pose_updated:
+            previous_age = self.pose_age()
             self._mqtt_last_update = now_monotonic
+            self._mqtt_pose_age_at_receipt = cloud_report_age(merged.get("pose_time"))
+            if (
+                merged.get("pose_time") == previous_mqtt.get("pose_time")
+                and previous_age is not None
+                and self._mqtt_pose_age_at_receipt is not None
+            ):
+                self._mqtt_pose_age_at_receipt = max(previous_age, self._mqtt_pose_age_at_receipt)
         state_updated = location.get("_state_updated") is True or (
             "_state_updated" not in location
             and location.get("vehicle_state") is not None
@@ -4663,23 +4691,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
 
     @staticmethod
     def _parse_position(location: Any) -> dict | None:
-        x = _as_float(_find(location, "posture_x", "postureX", "last_posture_x", "x"))
-        y = _as_float(_find(location, "posture_y", "postureY", "last_posture_y", "y"))
-        # posture_theta is the real heading field (radians); keep older guesses.
-        heading = _as_float(
-            _find(
-                location,
-                "posture_theta",
-                "last_posture_theta",
-                "posture_yaw",
-                "yaw",
-                "heading",
-                "angle",
-            )
-        )
-        if x is None and y is None:
-            return None
-        return {"x": x, "y": y, "heading": heading}
+        return parse_cloud_pose(location)["position"]
 
     @staticmethod
     def _parse_path(location: Any) -> list | None:

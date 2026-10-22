@@ -81,6 +81,10 @@ def _apply_public_state(snapshot: dict[str, Any], state: dict[str, Any]) -> None
 
 
 def _cloud_report_time(snapshot: dict[str, Any]) -> Any:
+    if snapshot.get("cloud_position_kind") == "last_known":
+        return None
+    if "cloud_pose_time" in snapshot:
+        return snapshot["cloud_pose_time"]
     raw = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
     location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
     if location.get("report_time") is not None:

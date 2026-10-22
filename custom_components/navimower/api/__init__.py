@@ -121,7 +121,8 @@ class NavimowCloudClient(_NavimowCloudClient):
         request = urllib.request.Request(
             f"https://{self._host}{path}",
             data=data,
-            headers=_client._HEADERS,
+            headers={**_client._HEADERS, "Content-Type": "application/json"}
+            if path == "/mowerbot/vehicle/vehicle/state" else _client._HEADERS,
             method="POST",
         )
         try:

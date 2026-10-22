@@ -488,6 +488,7 @@ class NavimowerMqttBridge:
                 "/realtimeDate/location"
             ):
                 self._last_location_message_mono = now
+                self.coordinator.mark_mqtt_location_received()
                 try:
                     parsed = json.loads(
                         (payload or b"").decode("utf-8", errors="replace")
@@ -505,7 +506,7 @@ class NavimowerMqttBridge:
                     # recovered; cached coordinates must never reset watchdog age.
                     pose_updated = bool(location.get("_pose_updated"))
                     self.coordinator.ingest_mqtt_location(location)
-                    if pose_updated:
+                    if pose_updated and self.coordinator._fresh_mqtt_position() is not None:
                         self._mark_pose_recovered()
                 return
             if original_on_message is not None:
