@@ -31,9 +31,10 @@ PASSPORT_HOSTS: Final = {
         "api-passport-sg.ninebot.com",
     ),
     "us": (
+        # Official US/ore Passport route; the legacy US host can return 90060.
+        "api-passport-ore.willand.com",
         "api-passport-us.ninebot.com",
         "api-passport-ore.ninebot.com",
-        "api-passport-ore.willand.com",
     ),
     "bj": (
         "api-passport-bj.willand.com",
