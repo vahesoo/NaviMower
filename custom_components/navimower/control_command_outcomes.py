@@ -41,7 +41,7 @@ def _now_utc() -> str:
 def _state(owner: Any) -> dict[str, Any]:
     state = getattr(owner, "_control_command_outcome_state", None)
     if not isinstance(state, dict) or state.get("schema_version") != 1:
-        state = {"schema_version": 1, "next_sequence": 0, "recent": []}
+        state = {"schema_version": 1, "next_sequence": 0, "recent_commands": []}
         owner._control_command_outcome_state = state
     return state
 
@@ -55,7 +55,7 @@ def control_command_snapshot(owner: Any) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "latest": deepcopy(recent[-1]) if recent else None,
-        "recent": recent,
+        "recent_commands": recent,
     }
 
 
