@@ -85,8 +85,11 @@ def test_partial_map_must_not_retire_known_zones():
     assert totals["map_area_m2"] == 400
 
 
-@pytest.mark.asyncio
-async def test_pending_to_answered_async(monkeypatch):
+def test_pending_to_answered_async(monkeypatch):
+    asyncio.run(_pending_to_answered_async(monkeypatch))
+
+
+async def _pending_to_answered_async(monkeypatch):
     calls = []
     async def no_wait(_seconds):
         return None
@@ -117,8 +120,11 @@ async def test_pending_to_answered_async(monkeypatch):
     assert owner._setting_write_verification["keys"]["mode"]["device_command"]["outcome"] == "answered"
 
 
-@pytest.mark.asyncio
-async def test_partial_settings_failure_is_recorded_without_replay(monkeypatch):
+def test_partial_settings_failure_is_recorded_without_replay(monkeypatch):
+    asyncio.run(_partial_settings_failure_is_recorded_without_replay(monkeypatch))
+
+
+async def _partial_settings_failure_is_recorded_without_replay(monkeypatch):
     async def no_wait(_seconds):
         return None
     monkeypatch.setattr(writer.asyncio, "sleep", no_wait)
