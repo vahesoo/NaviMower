@@ -93,6 +93,45 @@ def test_docked_far_mqtt_can_fall_back_to_real_cloud_pose_near_station() -> None
     assert trust.position_trust_diagnostics(owner)["first_trusted_source"] == "private_cloud"
 
 
+
+def test_docked_reported_pose_at_2_721m_is_accepted_after_restart() -> None:
+    owner = Owner()
+    result = trust.prepare_position_candidates(
+        owner,
+        snapshot(docked=True),
+        mqtt_position=None,
+        cloud_position={"x": 3.721, "y": 2.0, "heading": 0.8},
+        mqtt_pose_time=None,
+        cloud_report_time=1_700_000_000,
+        now_epoch=1_800_000_000,
+        now_mono=100.0,
+    )
+    assert result["cloud_position"] == {"x": 3.721, "y": 2.0, "heading": 0.8}
+    assert result["position_override"] is None
+    diag = trust.position_trust_diagnostics(owner)
+    assert diag["ready"] is True
+    assert diag["first_trusted_source"] == "private_cloud"
+    assert diag["last_reason"] == "docked_station_consistent"
+    assert abs(diag["station_distance_m"] - 2.721) < 0.001
+
+
+def test_docked_distant_retained_pose_still_rejected() -> None:
+    owner = Owner()
+    result = trust.prepare_position_candidates(
+        owner,
+        snapshot(docked=True),
+        mqtt_position={"x": 5.0, "y": 2.0, "heading": 0.8},
+        cloud_position=None,
+        mqtt_pose_time=1_700_000_000,
+        cloud_report_time=None,
+        now_epoch=1_800_000_000,
+        now_mono=100.0,
+    )
+    assert result["mqtt_position"] is None
+    assert result["position_override"]["available"] is False
+    assert trust.position_trust_diagnostics(owner)["phase"] == "startup_waiting"
+
+
 def test_active_startup_accepts_recent_vendor_timestamp() -> None:
     owner = Owner()
     result = trust.prepare_position_candidates(
