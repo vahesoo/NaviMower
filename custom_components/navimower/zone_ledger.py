@@ -121,6 +121,8 @@ def new_ledger_state() -> dict[str, Any]:
         "zones": {},
         "reset_candidates": {},
         "last_event": None,
+        "active_map": None,
+        "retired_history": {},
     }
 
 
@@ -129,6 +131,10 @@ def normalize_ledger_state(value: Any) -> dict[str, Any]:
         return new_ledger_state()
     state = new_ledger_state()
     state["revision"] = max(0, as_int(value.get("revision")) or 0)
+    if isinstance(value.get("active_map"), dict):
+        state["active_map"] = deepcopy(value["active_map"])
+    if isinstance(value.get("retired_history"), dict):
+        state["retired_history"] = deepcopy(value["retired_history"])
     zones = value.get("zones")
     if isinstance(zones, dict):
         state["zones"] = {
@@ -362,6 +368,60 @@ def reduce_zone_ledger(
         if (zone_id := as_int(key)) is not None and zone_id > 0
     }
     all_zone_ids = sorted(set(map_by_id) | set(detail_by_id) | set(coverage_by_id) | previous_ids)
+
+    # Retained zone records are history, not proof that a zone still belongs to
+    # the currently installed map. Only a complete versioned map observation may
+    # establish or change the active membership; sparse/failed map refreshes may
+    # not retire zones.
+    map_payload = snapshot.get("map")
+    map_revision = (
+        str(map_payload.get("revision") or map_payload.get("map_version") or "").strip()
+        if isinstance(map_payload, dict) else ""
+    )
+    map_payload_zones = map_payload.get("zones") if isinstance(map_payload, dict) else None
+    observed_ids = set(map_by_id)
+    payload_ids = (
+        {as_int(row.get("id")) for row in map_payload_zones if isinstance(row, dict)}
+        if isinstance(map_payload_zones, list) else set()
+    )
+    complete_map = bool(
+        map_revision
+        and observed_ids
+        and payload_ids == observed_ids
+        and all(zone_geometry_signature(row) for row in map_by_id.values())
+    )
+    active_map = state.get("active_map")
+    if complete_map:
+        map_id = str(map_payload.get("map_id") or "")
+        map_base_id = str(map_payload.get("map_base_id") or "")
+        previous_identity = (active_map or {}).get("map_id") if isinstance(active_map, dict) else None
+        previous_base = (active_map or {}).get("map_base_id") if isinstance(active_map, dict) else None
+        # New identity/revision is accepted only from complete geometry, not a
+        # leftover coverage row or History seed.
+        state["active_map"] = {
+            "revision": map_revision,
+            "map_id": map_id,
+            "map_base_id": map_base_id,
+            "zone_ids": sorted(observed_ids),
+        }
+        # A different map identity cannot inherit the current cycle for a reused
+        # numeric ID. Keep the prior row in persisted history through its key.
+        if active_map and (previous_identity != map_id or previous_base != map_base_id):
+            for zone_id in observed_ids:
+                key = str(zone_id)
+                prior = previous_zones.get(key)
+                if prior:
+                    archive = state.setdefault("retired_history", {})
+                    archive[f"{previous_identity}:{previous_base}:{key}"] = deepcopy(prior)
+                    previous_zones.pop(key, None)
+    elif not isinstance(active_map, dict):
+        # First-start compatibility until a complete identified map is available.
+        state["active_map"] = None
+
+    public_zone_ids = (
+        sorted(_unique_zone_ids(state["active_map"].get("zone_ids")))
+        if isinstance(state.get("active_map"), dict) else all_zone_ids
+    )
 
     coverage_age = as_float(snapshot.get("coverage_source_age"))
     coverage_fresh = bool(
@@ -693,11 +753,11 @@ def reduce_zone_ledger(
     if _semantic_signature(resolved_zones) != before:
         state["revision"] = (as_int(state.get("revision")) or 0) + 1
 
-    task_zone_ids = _task_zone_ids(snapshot, active_session, all_zone_ids)
+    task_zone_ids = _task_zone_ids(snapshot, active_session, public_zone_ids)
     task_zone_set = set(task_zone_ids)
     visited_zone_ids = set(_unique_zone_ids((active_session or {}).get("visited_zone_ids")))
     public_rows: list[dict[str, Any]] = []
-    for zone_id in all_zone_ids:
+    for zone_id in public_zone_ids:
         record = resolved_zones.get(str(zone_id)) or {}
         progress = clamp_pct(record.get("progress_pct"))
         public_rows.append(
