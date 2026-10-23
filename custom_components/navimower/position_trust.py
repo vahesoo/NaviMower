@@ -17,7 +17,11 @@ import time
 from typing import Any
 
 POSITION_TRUST_SCHEMA_VERSION = 1
-DOCK_STATION_TOLERANCE_M = 2.0
+# Map-station XY and the reported parked mower pose can differ by a few
+# metres. Tont/H215 reports a stable ~2.72 m offset while docked. Accept
+# near-station real pose candidates at startup without synthesizing station XY.
+# This still rejects distant retained/cached positions (issue #437).
+DOCK_STATION_TOLERANCE_M = 3.5
 SOURCE_FRESH_MAX_AGE_S = 120.0
 SOURCE_FUTURE_TOLERANCE_S = 30.0
 DEPARTURE_SOURCE_SKEW_S = 10.0
