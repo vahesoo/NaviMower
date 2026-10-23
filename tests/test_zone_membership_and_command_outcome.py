@@ -187,3 +187,34 @@ def test_control_status_tracking_does_not_change_mower_activity():
     assert "client.resume(" not in source
     import ast
     ast.parse(source)
+
+
+def test_beta27_control_history_survives_public_diagnostics_privacy_filter():
+    """The generic privacy filter drops 'recent', not our safe command history."""
+    import ast
+    import importlib.util
+    source = (ROOT / "control_command_outcomes.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    snapshot = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "control_command_snapshot")
+    namespace = {"Any": object, "deepcopy": __import__("copy").deepcopy, "CONTROL_COMMAND_HISTORY_LIMIT": 12}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[snapshot], type_ignores=[])), "control_command_outcomes.py", "exec"), namespace)
+    owner = SimpleNamespace(_control_command_outcome_state={
+        "schema_version": 1,
+        "recent": [
+            {"sequence": 1, "command": "mow_zones", "vendor_status": "3", "outcome": "answered"},
+            {"sequence": 2, "command": "dock", "vendor_status": "3", "outcome": "answered"},
+        ],
+    })
+    exported = namespace["control_command_snapshot"](owner)
+    assert [item["command"] for item in exported["recent_commands"]] == ["mow_zones", "dock"]
+    assert exported["latest"]["command"] == "dock"
+    sanitize = load("diagnostics_sanitize_beta27", "diagnostics_sanitize.py").sanitize
+    privacy_keys = frozenset({"name", "title", "content", "variable", "recent"})
+    output = sanitize({"control_command_outcomes": exported, "other": {"recent": [{"name": "private"}]}}, exclude_keys=privacy_keys)
+    assert [item["command"] for item in output["control_command_outcomes"]["recent_commands"]] == ["mow_zones", "dock"]
+    assert "recent" not in output["other"]
+    assert "recent" not in exported
+    assert [item["command"] for item in owner._control_command_outcome_state["recent"]] == ["mow_zones", "dock"]
+    assert namespace["control_command_snapshot"](SimpleNamespace()) == {
+        "schema_version": 1, "latest": None, "recent_commands": [],
+    }
