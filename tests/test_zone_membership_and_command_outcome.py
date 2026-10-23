@@ -158,3 +158,32 @@ async def _partial_settings_failure_is_recorded_without_replay(monkeypatch):
     assert row["completed_stages"] == 1
     assert row["failed_stage"] == 2
     assert row["device_command"]["command_number_received"] is True
+
+
+def test_control_vendor_status_codes():
+    import ast
+
+    source = (ROOT / "setting_write.py").read_text()
+    parsed = ast.parse(source)
+    names = {"_command_status_state"}
+    functions = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    ns = {"Any": object}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[])), "status", "exec"), ns)
+    expected = {"0": "pending", "1": "pending", "2": "pending", "3": "answered", "4": "failed", "5": "failed", "9": "no_response"}
+    for code, outcome in expected.items():
+        assert ns["_command_status_state"]({"status": code}) == (outcome, code)
+
+
+def test_control_status_tracking_does_not_change_mower_activity():
+    source = (ROOT / "control_command_outcomes.py").read_text()
+    assert "command_status" in source
+    assert "mow_zones" in source
+    assert "cancel_control_command_tracking" in source
+    assert "async_add_executor_job" in source
+    assert "CONTROL_COMMAND_HISTORY_LIMIT" in source
+    assert "set_pending_activity" not in source
+    assert "set_command_target" not in source
+    assert "mow_zones(" not in source
+    assert "client.resume(" not in source
+    import ast
+    ast.parse(source)
