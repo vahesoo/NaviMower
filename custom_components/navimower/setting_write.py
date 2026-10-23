@@ -34,6 +34,16 @@ _COMMAND_NUMBER_KEYS = (
     "command_number",
     "commandNumber",
 )
+COMMAND_STATUS_LABELS: dict[str, str] = {
+    "0": "Waiting",
+    "1": "Created",
+    "2": "Sent",
+    "3": "Answered",
+    "4": "Expired",
+    "5": "Discarded",
+    "9": "No response",
+}
+
 _COMMAND_STATUS_KEYS = {
     "status",
     "state",

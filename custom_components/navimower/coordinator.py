@@ -33,6 +33,11 @@ from .history import (
 )
 from .location import decode_map_work_position, parse_cloud_pose, valid_coordinate
 from .position_fallback import cloud_report_age
+from .control_command_outcomes import (
+    record_control_command_send,
+    record_control_command_error,
+    cancel_control_command_tracking,
+)
 from .map_identifiers import resolve_map_identifiers
 from .ordered_run import (
     last_ordered_run_snapshot,
@@ -1399,6 +1404,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         if self._shutdown_complete:
             return
         self._shutdown_complete = True
+        cancel_control_command_tracking(self)
         for cancel in list(self._gate_release_tasks.values()):
             try:
                 cancel()
@@ -4703,7 +4709,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     # -------------------------------------------------------------- commands
     async def async_send(self, func, *args) -> Any:
         """Run a client command in the executor then request a quick refresh."""
-        result = await self.hass.async_add_executor_job(func, *args)
+        try:
+            result = await self.hass.async_add_executor_job(func, *args)
+        except Exception as err:
+            record_control_command_error(self, func, err)
+            raise
+        record_control_command_send(self, func, result)
         self._persist_session()
         await self.async_request_refresh()
         return result
