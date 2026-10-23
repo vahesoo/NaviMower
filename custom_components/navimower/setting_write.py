@@ -22,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SETTING_READBACK_DELAY_SECONDS = 15.0
 SETTING_PERSISTENCE_DELAY_SECONDS = 75.0
-SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS = (1.0, 3.0, 6.0)
+SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS = (1.0, 3.0, 6.0, 10.0, 15.0)
 
 SettingOperation = tuple[Callable[..., Any], tuple[Any, ...]]
 
@@ -208,6 +208,27 @@ def _command_response_summary(value: Any) -> dict[str, Any]:
     return summary
 
 
+def _command_status_state(response: Any) -> tuple[str, str | None]:
+    """Classify vendor command status without mistaking pending for success."""
+    if not isinstance(response, dict):
+        return "unknown", None
+    status = response.get("status")
+    if status is None and isinstance(response.get("data"), dict):
+        status = response["data"].get("status")
+    if isinstance(status, bool):
+        return "unknown", None
+    value = str(status).strip() if status is not None else None
+    if value in {"0", "1", "2"}:
+        return "pending", value
+    if value == "3":
+        return "answered", value
+    if value in {"4", "5"}:
+        return "failed", value
+    if value == "9":
+        return "no_response", value
+    return "unknown", value
+
+
 def _verification_store(coordinator: Any) -> dict[str, Any]:
     store = getattr(coordinator, "_setting_write_verification", None)
     if not isinstance(store, dict) or store.get("schema_version") != 2:
@@ -234,6 +255,8 @@ def _update_verification_summary(coordinator: Any) -> None:
     if not statuses:
         overall = "idle"
     elif statuses & {"reverted", "missing"}:
+        overall = "attention"
+    elif "partial_failure" in statuses:
         overall = "attention"
     elif "pending" in statuses:
         overall = "pending"
@@ -492,16 +515,32 @@ def _schedule_command_status(
                         continue
 
                     summary = _command_response_summary(response)
+                    state, vendor_status = _command_status_state(response)
                     if response:
+                        outcome = {
+                            "pending": "pending",
+                            "answered": "answered",
+                            "failed": "failed",
+                            "no_response": "no_response",
+                            "unknown": "unknown_status",
+                        }[state]
                         _update_device_command(
                             coordinator,
                             verify_key,
-                            {"outcome": "response_received", **summary},
+                            {"outcome": outcome, "vendor_status": vendor_status, **summary},
                         )
-                        return
-                    saw_empty_response = True
+                        if state in {"answered", "failed", "no_response"}:
+                            return
+                    else:
+                        saw_empty_response = True
 
-                if saw_empty_response:
+                if last_error_type is None and not saw_empty_response:
+                    _update_device_command(
+                        coordinator,
+                        verify_key,
+                        {"outcome": "timeout", "vendor_status": None},
+                    )
+                elif saw_empty_response:
                     _update_device_command(
                         coordinator,
                         verify_key,
@@ -540,7 +579,7 @@ async def async_write_settings(
     cache_values: dict[str, Any],
     readback_delay: float = SETTING_READBACK_DELAY_SECONDS,
 ) -> Any:
-    """Run setting operations atomically and verify each setting independently."""
+    """Run ordered setting operations and verify each setting independently."""
     if not operations:
         return None
 
@@ -549,14 +588,44 @@ async def async_write_settings(
     status["last_attempt_mono"] = now
     status["last_attempt_utc"] = _utc_now()
 
+    # A device command and a later persistence write are not a transaction.
+    # Keep successfully completed stages if a subsequent stage raises.
+    completed: list[tuple[int, Any]] = []
+
     def _run_operations() -> list[Any]:
-        return [func(*args) for func, args in operations]
+        results: list[Any] = []
+        for index, (func, args) in enumerate(operations):
+            result = func(*args)
+            results.append(result)
+            completed.append((index, result))
+        return results
 
     try:
         results = await coordinator.hass.async_add_executor_job(_run_operations)
-    except Exception:
+    except Exception as err:
         status["last_attempt_mono"] = None
         status["last_attempt_utc"] = None
+        if completed:
+            used, number = _device_command_result(
+                [operations[index] for index, _ in completed],
+                [result for _, result in completed],
+            )
+            _set_pending_verification(
+                coordinator, cache_values,
+                device_command_used=used, command_number=number,
+            )
+            store = _verification_store(coordinator)
+            for key in cache_values:
+                row = store["keys"][str(key)]
+                row["status"] = "partial_failure"
+                row["failed_stage"] = len(completed) + 1
+                row["completed_stages"] = len(completed)
+                row["error_type"] = type(err).__name__
+            _update_verification_summary(coordinator)
+            _schedule_command_status(coordinator, number, list(cache_values))
+            # Refresh actual cloud state; never optimistically publish requested
+            # values or automatically replay already-completed commands.
+            _schedule_readback(coordinator, SETTING_READBACK_DELAY_SECONDS, dict(cache_values))
         raise
 
     device_command_used, command_number = _device_command_result(operations, results)
