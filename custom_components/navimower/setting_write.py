@@ -326,7 +326,9 @@ def _record_readback(
     }
     row["readback_type"] = _value_kind(actual) if present else None
     if phase == "persistence_75s":
-        row["status"] = status
+        # A later matching readback must not erase the recorded partial failure:
+        # the first stage ran but the subsequent persistence operation raised.
+        row["status"] = "partial_failure" if row.get("completed_stages") else status
         row["checked_at_utc"] = checked_at
     elif status != "confirmed":
         row["status"] = status
