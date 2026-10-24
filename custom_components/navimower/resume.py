@@ -84,5 +84,7 @@ async def async_resume_task(coordinator, *, source: str) -> Any:
         raise
 
     trace["request_accepted"] = True
+    trace["send_acknowledged"] = True
+    trace["physical_confirmation"] = "pending"
     trace["command_number"] = _command_number(result)
     return result
