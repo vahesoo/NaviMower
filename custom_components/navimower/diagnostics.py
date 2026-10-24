@@ -32,6 +32,19 @@ _PRIVATE_TEXT_KEYS = frozenset({
 })
 
 
+def _safe_resume_command_trace(coordinator: Any) -> dict[str, Any] | None:
+    """Expose a fixed allowlist instead of raw responses, serials or command IDs."""
+    trace = getattr(coordinator, "_last_resume_command", None)
+    if not isinstance(trace, dict):
+        return None
+    allowed = (
+        "source", "requested_at", "request", "zones_sent",
+        "progress_reset_requested", "state_code_before", "activity_before",
+        "docked_before", "task_progress_before", "request_accepted",
+    )
+    return {key: deepcopy(trace.get(key)) for key in allowed if key in trace}
+
+
 def _selected(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     """Return a compact copy of selected coordinator fields."""
     return {key: deepcopy(data.get(key)) for key in keys if key in data}
@@ -431,7 +444,7 @@ async def async_get_config_entry_diagnostics(
             "last_error": data.get("notification_error"),
         },
         "notification_center": notification_center_diagnostics,
-        "last_resume_command": None,
+        "last_resume_command": _safe_resume_command_trace(coordinator),
         "task_resume": deepcopy(data.get("task_resume") or {}),
         "last_ordered_run": coordinator.last_ordered_run() if hasattr(coordinator, "last_ordered_run") else None,
         "private_polling": private_polling,
