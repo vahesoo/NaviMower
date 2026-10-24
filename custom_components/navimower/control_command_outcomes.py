@@ -133,6 +133,7 @@ def capture_control_command_context(
         "state_before": before,
         # Internal correlation only; never include this field in diagnostics.
         "_trace_token": trace.get("started_at_utc") if method == "mow_zones" else None,
+        "_resume_trace_token": trace.get("requested_at") if method == "resume" else None,
     }
 
 
@@ -152,6 +153,7 @@ def control_command_snapshot(owner: Any) -> dict[str, Any]:
     recent = deepcopy(state.get("recent", [])[-CONTROL_COMMAND_HISTORY_LIMIT:])
     for entry in recent:
         entry.pop("_trace_token", None)
+        entry.pop("_resume_trace_token", None)
     return {
         "schema_version": 1,
         "latest": deepcopy(recent[-1]) if recent else None,
@@ -186,6 +188,8 @@ def _new_row(owner: Any, method: str, *, acknowledged: bool, has_number: bool, c
         "observed_state": None,
         "state_after_monitor": None,
     }
+    if context and context.get("_resume_trace_token") is not None:
+        row["_resume_trace_token"] = context["_resume_trace_token"]
     if context and context.get("_trace_token") is not None:
         # An internal token is kept in memory but excluded by the public snapshot.
         row["_trace_token"] = context["_trace_token"]
@@ -405,6 +409,11 @@ def record_control_command_send(owner: Any, func: Any, response: Any, *, context
                         )
                     except Exception as err:
                         row["verification_record_error_type"] = type(err).__name__
+            if method == "resume":
+                trace = getattr(owner, "_last_resume_command", None)
+                if isinstance(trace, dict) and trace.get("requested_at") == row.get("_resume_trace_token"):
+                    trace["physical_confirmation"] = row["physical_confirmation"]
+                    trace["vendor_outcome"] = row["outcome"]
             if tasks.get(sequence) is asyncio.current_task():
                 tasks.pop(sequence, None)
 
