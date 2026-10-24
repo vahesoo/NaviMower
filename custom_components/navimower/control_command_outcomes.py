@@ -14,7 +14,6 @@ from typing import Any
 
 from .setting_write import (
     COMMAND_STATUS_LABELS,
-    SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS,
     _command_number,
     _command_status_state,
 )
@@ -23,7 +22,7 @@ CONTROL_METHODS = frozenset({"mow_zones", "pause", "dock", "resume"})
 CONTROL_COMMAND_HISTORY_LIMIT = 12
 CONTROL_COMMAND_MAX_POLLS = 4  # Maximum concurrent command monitors.
 # Absolute deadlines after the vendor send acknowledgement, in seconds.
-CONTROL_COMMAND_STATUS_POLL_AT_SECONDS = (1.0, 4.0, 10.0, 15.0, 25.0)
+CONTROL_COMMAND_STATUS_POLL_AT_SECONDS = (1.0, 4.0, 10.0, 15.0, 25.0, 40.0, 60.0)
 CONTROL_COMMAND_REFRESH_AT_SECONDS = frozenset({4.0, 15.0})
 
 # Values are deliberately taken from the vendor's *actual* reports, never
@@ -58,6 +57,85 @@ def _now_utc() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _reported_state(owner: Any) -> dict[str, Any]:
+    """Cached vendor evidence only; never use optimistic HA activity as proof."""
+    raw = getattr(owner, "_raw_cache", None)
+    index2 = raw.get("index2") if isinstance(raw, dict) else None
+    code = index2.get("vehicle_state") if isinstance(index2, dict) else None
+    fresh_mqtt = getattr(owner, "_fresh_mqtt_vehicle_state", None)
+    mqtt = fresh_mqtt() if callable(fresh_mqtt) else None
+    return {
+        "private_state_code": str(code) if code is not None else None,
+        "mqtt_vehicle_state": mqtt if isinstance(mqtt, int) else None,
+        "mqtt_named_state": str(getattr(owner, "_mqtt_named_state", "") or "") or None,
+    }
+
+
+def capture_control_command_context(
+    owner: Any, func: Any, args: tuple[Any, ...], *, source: str | None = None,
+) -> dict[str, Any] | None:
+    """Snapshot safe command intent and pre-send vendor state before the executor.
+
+    This deliberately contains no command number, token, serial, raw request,
+    location or MQTT payload. `navimower.mow` also serves the Map Card's Mow UI.
+    """
+    method = str(getattr(func, "__name__", "") or "")
+    if method not in CONTROL_METHODS:
+        return None
+    trace = None
+    if method == "mow_zones":
+        trace = getattr(owner, "_last_mow_command_trace", None)
+    elif method == "resume":
+        trace = getattr(owner, "_last_resume_command", None)
+    trace = trace if isinstance(trace, dict) else {}
+    origin = str(source or trace.get("source") or f"client.{method}")
+    before = _reported_state(owner)
+    trace_before = trace.get("state_before")
+    if isinstance(trace_before, dict):
+        before["state_code"] = trace_before.get("state_code")
+        before["activity"] = trace_before.get("activity")
+    elif method == "resume":
+        before["state_code"] = trace.get("state_code_before")
+        before["activity"] = trace.get("activity_before")
+    else:
+        data = getattr(owner, "data", None)
+        before["state_code"] = data.get("state_code") if isinstance(data, dict) else None
+        # Activity was already set optimistically by some callers; exclude it.
+        before["activity"] = None
+
+    if method == "mow_zones":
+        setup = trace.get("partition_setup")
+        if setup is None and args:
+            setup = args[-1]
+        try:
+            setup = int(setup) if setup is not None else None
+        except (ValueError, TypeError):
+            setup = None
+        request = {
+            "command_family": "mow_zones",
+            "zone_ids": [int(z) for z in (trace.get("resolved_zone_ids") or [])][:48],
+            "reset": bool(trace.get("reset")) if "reset" in trace else bool(
+                setup is not None and setup & 0x20
+            ),
+            "ordered": bool(trace.get("ordered")) if "ordered" in trace else bool(
+                setup is not None and setup & 0x02
+            ),
+            "partition_setup": setup,
+        }
+    else:
+        request = {
+            "command_family": "behavior",
+            "behavior_type": {"pause": 1, "dock": 2, "resume": 3}[method],
+        }
+    return {
+        "command_source": origin,
+        "request": request,
+        "state_before": before,
+        # Internal correlation only; never include this field in diagnostics.
+        "_trace_token": trace.get("started_at_utc") if method == "mow_zones" else None,
+    }
+
+
 def _state(owner: Any) -> dict[str, Any]:
     state = getattr(owner, "_control_command_outcome_state", None)
     if not isinstance(state, dict) or state.get("schema_version") != 1:
@@ -72,6 +150,8 @@ def control_command_snapshot(owner: Any) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {"schema_version": 1, "latest": None, "recent_commands": []}
     recent = deepcopy(state.get("recent", [])[-CONTROL_COMMAND_HISTORY_LIMIT:])
+    for entry in recent:
+        entry.pop("_trace_token", None)
     return {
         "schema_version": 1,
         "latest": deepcopy(recent[-1]) if recent else None,
@@ -79,7 +159,7 @@ def control_command_snapshot(owner: Any) -> dict[str, Any]:
     }
 
 
-def _new_row(owner: Any, method: str, *, acknowledged: bool, has_number: bool) -> dict[str, Any]:
+def _new_row(owner: Any, method: str, *, acknowledged: bool, has_number: bool, context: dict[str, Any] | None = None) -> dict[str, Any]:
     store = _state(owner)
     store["next_sequence"] += 1
     row: dict[str, Any] = {
@@ -100,7 +180,15 @@ def _new_row(owner: Any, method: str, *, acknowledged: bool, has_number: bool) -
         "physical_observed_at_utc": None,
         "state_refresh_count": 0,
         "state_refresh_endpoints": [],
+        "command_source": (context or {}).get("command_source") or f"client.{method}",
+        "request": deepcopy((context or {}).get("request") or {}),
+        "state_before": deepcopy((context or {}).get("state_before")),
+        "observed_state": None,
+        "state_after_monitor": None,
     }
+    if context and context.get("_trace_token") is not None:
+        # An internal token is kept in memory but excluded by the public snapshot.
+        row["_trace_token"] = context["_trace_token"]
     store["recent"].append(row)
     del store["recent"][:-CONTROL_COMMAND_HISTORY_LIMIT]
     return row
@@ -128,12 +216,12 @@ def _observe_response(row: dict[str, Any], response: Any) -> bool:
     return code in _TERMINAL
 
 
-def record_control_command_error(owner: Any, func: Any, error: Exception) -> None:
+def record_control_command_error(owner: Any, func: Any, error: Exception, *, context: dict[str, Any] | None = None) -> None:
     """Record only the error type; never include credentials or vendor payloads."""
     method = str(getattr(func, "__name__", "") or "")
     if method not in CONTROL_METHODS:
         return
-    row = _new_row(owner, method, acknowledged=False, has_number=False)
+    row = _new_row(owner, method, acknowledged=False, has_number=False, context=context)
     row["outcome"] = "send_error"
     row["error_type"] = type(error).__name__
 
@@ -180,6 +268,7 @@ def _confirm_observed_state(owner: Any, row: dict[str, Any], sent_mono: float) -
     row["physical_source"] = source
     row["physical_delay_s"] = round(max(0.0, received_mono - sent_mono), 2)
     row["physical_observed_at_utc"] = _now_utc()
+    row["observed_state"] = _reported_state(owner)
     return True
 
 
@@ -200,7 +289,7 @@ def _mark_control_state_endpoints_due(owner: Any, method: str) -> list[str]:
     return keys
 
 
-def record_control_command_send(owner: Any, func: Any, response: Any) -> None:
+def record_control_command_send(owner: Any, func: Any, response: Any, *, context: dict[str, Any] | None = None) -> None:
     """Monitor vendor feedback and physical-state evidence without blocking HA.
 
     The command is never replayed. At most two targeted, non-blocking private
@@ -212,7 +301,7 @@ def record_control_command_send(owner: Any, func: Any, response: Any) -> None:
         return
 
     number = _command_number(response)
-    row = _new_row(owner, method, acknowledged=True, has_number=number is not None)
+    row = _new_row(owner, method, acknowledged=True, has_number=number is not None, context=context)
     query = getattr(getattr(owner, "client", None), "command_status", None)
     can_query = number is not None and callable(query)
     if number is not None and not callable(query):
@@ -304,6 +393,18 @@ def record_control_command_send(owner: Any, func: Any, response: Any) -> None:
             if row["physical_confirmation"] == "pending":
                 row["physical_confirmation"] = "unconfirmed"
         finally:
+            row["state_after_monitor"] = _reported_state(owner)
+            if method == "mow_zones":
+                notify = getattr(owner, "record_mow_command_verification", None)
+                if callable(notify):
+                    try:
+                        notify(
+                            row.get("_trace_token"),
+                            physical_confirmation=row["physical_confirmation"],
+                            vendor_outcome=row["outcome"],
+                        )
+                    except Exception as err:
+                        row["verification_record_error_type"] = type(err).__name__
             if tasks.get(sequence) is asyncio.current_task():
                 tasks.pop(sequence, None)
 
