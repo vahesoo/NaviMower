@@ -4714,7 +4714,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         except Exception as err:
             record_control_command_error(self, func, err)
             raise
-        record_control_command_send(self, func, result)
+        # Command diagnostics and later state confirmation are best-effort:
+        # a tracking failure must not turn a successfully sent command into an
+        # apparent command failure or trigger a duplicate mower action.
+        try:
+            record_control_command_send(self, func, result)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Navimower command monitoring setup failed")
         self._persist_session()
-        await self.async_request_refresh()
+        if str(getattr(func, "__name__", "") or "") not in {
+            "mow_zones", "pause", "dock", "resume",
+        }:
+            # Settings/other legacy sends retain their existing refresh path.
+            await self.async_request_refresh()
         return result
