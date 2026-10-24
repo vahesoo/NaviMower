@@ -15,7 +15,6 @@ from .map_underlay import map_underlay_diagnostics
 from .private_cloud_region import private_cloud_region_diagnostics
 from .state_semantics import error_transition_diagnostics
 from .control_command_outcomes import control_command_snapshot
-from .resume import resume_command_diagnostics
 
 # Omit retired research blocks even when an older runtime cache still has them.
 # This is a report-only projection; it never changes or clears the source cache.
@@ -35,26 +34,13 @@ _PRIVATE_TEXT_KEYS = frozenset({
 
 def _safe_resume_command_trace(coordinator: Any) -> dict[str, Any] | None:
     """Expose a fixed allowlist instead of raw responses, serials or command IDs."""
-    trace = resume_command_diagnostics(coordinator)
+    trace = getattr(coordinator, "_last_resume_command", None)
     if not isinstance(trace, dict):
         return None
     allowed = (
         "source", "requested_at", "request", "zones_sent",
         "progress_reset_requested", "state_code_before", "activity_before",
         "docked_before", "task_progress_before", "request_accepted",
-    )
-    return {key: deepcopy(trace.get(key)) for key in allowed if key in trace}
-
-
-def _safe_mow_command_trace(coordinator: Any) -> dict[str, Any] | None:
-    trace = getattr(coordinator, "_last_mow_command_trace", None)
-    if not isinstance(trace, dict):
-        return None
-    allowed = (
-        "started_at_utc", "source", "requested_zone_ids", "resolved_zone_ids",
-        "reset", "ordered", "partition_setup", "send_acknowledged",
-        "physical_confirmation", "vendor_outcome",
-        "verification_updated_at_utc",
     )
     return {key: deepcopy(trace.get(key)) for key in allowed if key in trace}
 
@@ -459,7 +445,6 @@ async def async_get_config_entry_diagnostics(
         },
         "notification_center": notification_center_diagnostics,
         "last_resume_command": _safe_resume_command_trace(coordinator),
-        "last_mow_command": _safe_mow_command_trace(coordinator),
         "task_resume": deepcopy(data.get("task_resume") or {}),
         "last_ordered_run": coordinator.last_ordered_run() if hasattr(coordinator, "last_ordered_run") else None,
         "private_polling": private_polling,
