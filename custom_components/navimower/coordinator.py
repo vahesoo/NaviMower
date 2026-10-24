@@ -35,6 +35,7 @@ from .location import decode_map_work_position, parse_cloud_pose, valid_coordina
 from .position_fallback import cloud_report_age
 from .control_command_outcomes import (
     record_control_command_send,
+    capture_control_command_context,
     record_control_command_error,
     cancel_control_command_tracking,
 )
@@ -3455,6 +3456,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             )
             self._publish_last_ordered_run()
 
+    def record_mow_command_verification(
+        self, trace_token: str | None, *, physical_confirmation: str,
+        vendor_outcome: str,
+    ) -> None:
+        """Attach later command evidence without rewriting the logical mowing run."""
+        trace = self._last_mow_command_trace
+        if not isinstance(trace, dict) or trace.get("started_at_utc") != trace_token:
+            return
+        trace["physical_confirmation"] = physical_confirmation
+        trace["vendor_outcome"] = vendor_outcome
+        trace["verification_updated_at_utc"] = datetime.now(UTC).isoformat()
+
     def record_mow_command_result(self, result: Any) -> None:
         """Attach the private-cloud acknowledgement to the active command trace."""
         if self._last_mow_command_trace is None:
@@ -3463,10 +3476,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             datetime.now(UTC).isoformat()
         )
         self._last_mow_command_trace["send_response"] = deepcopy(result)
+        self._last_mow_command_trace["send_acknowledged"] = True
+        self._last_mow_command_trace["physical_confirmation"] = "pending"
         self._last_mow_command_trace["cmd_num"] = _extract_command_number(result)
         self._last_mow_command_trace["state_after_send"] = (
             self._mow_command_state_snapshot()
         )
+        # Retain existing ordered-run metadata for Smart Resume, but never call
+        # it proof that the robot actually started mowing.
         self._record_successful_mow_in_ordered_run()
 
     def record_mow_command_error(self, error: BaseException) -> None:
@@ -4709,16 +4726,23 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
     # -------------------------------------------------------------- commands
     async def async_send(self, func, *args) -> Any:
         """Run a client command in the executor then request a quick refresh."""
+        context = capture_control_command_context(
+            self, func, args,
+            source=getattr(self, "_command_source_hint", None),
+        )
         try:
             result = await self.hass.async_add_executor_job(func, *args)
         except Exception as err:
-            record_control_command_error(self, func, err)
+            try:
+                record_control_command_error(self, func, err, context=context)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Navimower command send-error tracking failed")
             raise
         # Command diagnostics and later state confirmation are best-effort:
         # a tracking failure must not turn a successfully sent command into an
         # apparent command failure or trigger a duplicate mower action.
         try:
-            record_control_command_send(self, func, result)
+            record_control_command_send(self, func, result, context=context)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Navimower command monitoring setup failed")
         self._persist_session()
