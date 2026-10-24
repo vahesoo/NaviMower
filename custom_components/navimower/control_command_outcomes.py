@@ -7,6 +7,7 @@ of the original control command or any changes to gate/navigation logic.
 from __future__ import annotations
 
 import asyncio
+import time
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -20,7 +21,26 @@ from .setting_write import (
 
 CONTROL_METHODS = frozenset({"mow_zones", "pause", "dock", "resume"})
 CONTROL_COMMAND_HISTORY_LIMIT = 12
-CONTROL_COMMAND_MAX_POLLS = 4
+CONTROL_COMMAND_MAX_POLLS = 4  # Maximum concurrent command monitors.
+# Absolute deadlines after the vendor send acknowledgement, in seconds.
+CONTROL_COMMAND_STATUS_POLL_AT_SECONDS = (1.0, 4.0, 10.0, 15.0, 25.0)
+CONTROL_COMMAND_REFRESH_AT_SECONDS = frozenset({4.0, 15.0})
+
+# Values are deliberately taken from the vendor's *actual* reports, never
+# from the optimistic HA activity state or a cached pre-command value.
+_MQTT_EXPECTED = {
+    "mow_zones": frozenset({4}),
+    "resume": frozenset({4}),
+    "dock": frozenset({5, 2}),
+    # MQTT vehicleState=3 means paused OR idle; never treat it as proof of Pause.
+    "pause": frozenset(),
+}
+_PRIVATE_EXPECTED = {
+    "mow_zones": frozenset({"0210", "0212"}),
+    "resume": frozenset({"0210", "0212"}),
+    "pause": frozenset({"0211"}),
+    "dock": frozenset({"0220", "0101", "0102"}),
+}
 
 _TERMINAL = frozenset({"3", "4", "5", "9"})
 _OUTCOMES = {
@@ -41,7 +61,7 @@ def _now_utc() -> str:
 def _state(owner: Any) -> dict[str, Any]:
     state = getattr(owner, "_control_command_outcome_state", None)
     if not isinstance(state, dict) or state.get("schema_version") != 1:
-        state = {"schema_version": 1, "next_sequence": 0, "recent_commands": []}
+        state = {"schema_version": 1, "next_sequence": 0, "recent": []}
         owner._control_command_outcome_state = state
     return state
 
@@ -74,6 +94,12 @@ def _new_row(owner: Any, method: str, *, acknowledged: bool, has_number: bool) -
         "last_checked_at_utc": None,
         "query_count": 0,
         "observations": [],
+        "physical_confirmation": "pending" if acknowledged else "not_checked",
+        "physical_source": None,
+        "physical_delay_s": None,
+        "physical_observed_at_utc": None,
+        "state_refresh_count": 0,
+        "state_refresh_endpoints": [],
     }
     store["recent"].append(row)
     del store["recent"][:-CONTROL_COMMAND_HISTORY_LIMIT]
@@ -112,21 +138,85 @@ def record_control_command_error(owner: Any, func: Any, error: Exception) -> Non
     row["error_type"] = type(error).__name__
 
 
+def _confirm_observed_state(owner: Any, row: dict[str, Any], sent_mono: float) -> bool:
+    """Accept only a matching vendor state *received after* the command reply.
+
+    This is evidence of the expected state, not evidence of command causality.
+    In particular, neither the HA optimistic activity nor MQTT's ambiguous
+    paused-or-idle vehicleState=3 may confirm a Pause.
+    """
+    method = row["command"]
+    observations: list[tuple[str, float]] = []
+
+    mqtt_stamp = getattr(owner, "_mqtt_state_last_update", None)
+    if isinstance(mqtt_stamp, (int, float)) and mqtt_stamp >= sent_mono:
+        fresh_state = getattr(owner, "_fresh_mqtt_vehicle_state", None)
+        mqtt_state = fresh_state() if callable(fresh_state) else None
+        if mqtt_state in _MQTT_EXPECTED[method]:
+            observations.append(("mqtt_vehicle_state", float(mqtt_stamp)))
+
+    named_stamp = getattr(owner, "_mqtt_named_state_last_update", None)
+    if method == "pause" and isinstance(named_stamp, (int, float)) and named_stamp >= sent_mono:
+        named_state = str(getattr(owner, "_mqtt_named_state", "") or "").strip().casefold()
+        if named_state == "ispaused":
+            observations.append(("mqtt_named_state", float(named_stamp)))
+
+    statuses = getattr(owner, "_endpoint_status", None)
+    cloud_status = statuses.get("index2") if isinstance(statuses, dict) else None
+    cloud_stamp = cloud_status.get("last_success_mono") if isinstance(cloud_status, dict) else None
+    if isinstance(cloud_stamp, (int, float)) and cloud_stamp >= sent_mono:
+        raw_cache = getattr(owner, "_raw_cache", None)
+        index2 = raw_cache.get("index2") if isinstance(raw_cache, dict) else None
+        raw_state = str(index2.get("vehicle_state") or "") if isinstance(index2, dict) else ""
+        if raw_state in _PRIVATE_EXPECTED[method]:
+            observations.append(("private_index2", float(cloud_stamp)))
+
+    if not observations:
+        return False
+
+    # Prefer a freshly received official MQTT state if both sources agree.
+    source, received_mono = observations[0]
+    row["physical_confirmation"] = "state_observed"
+    row["physical_source"] = source
+    row["physical_delay_s"] = round(max(0.0, received_mono - sent_mono), 2)
+    row["physical_observed_at_utc"] = _now_utc()
+    return True
+
+
+def _mark_control_state_endpoints_due(owner: Any, method: str) -> list[str]:
+    """Invalidate only relevant endpoint TTLs; do not clear last-good data."""
+    keys = ["index2"]
+    if method in {"mow_zones", "resume", "dock"}:
+        fresh_position = getattr(owner, "_fresh_mqtt_position", None)
+        if not callable(fresh_position) or fresh_position() is None:
+            keys.append("location")
+
+    statuses = getattr(owner, "_endpoint_status", None)
+    if isinstance(statuses, dict):
+        for key in keys:
+            status = statuses.get(key)
+            if isinstance(status, dict):
+                status["last_attempt_mono"] = None
+    return keys
+
+
 def record_control_command_send(owner: Any, func: Any, response: Any) -> None:
-    """Schedule bounded, non-blocking status reads for accepted control sends."""
+    """Monitor vendor feedback and physical-state evidence without blocking HA.
+
+    The command is never replayed. At most two targeted, non-blocking private
+    refreshes are requested, and both are skipped once fresh MQTT/private
+    evidence already matches the expected state.
+    """
     method = str(getattr(func, "__name__", "") or "")
     if method not in CONTROL_METHODS:
         return
 
     number = _command_number(response)
     row = _new_row(owner, method, acknowledged=True, has_number=number is not None)
-    if number is None:
-        return
-
     query = getattr(getattr(owner, "client", None), "command_status", None)
-    if not callable(query):
+    can_query = number is not None and callable(query)
+    if number is not None and not callable(query):
         row["outcome"] = "unsupported"
-        return
 
     tasks = getattr(owner, "_control_command_outcome_tasks", None)
     if not isinstance(tasks, dict):
@@ -138,51 +228,87 @@ def record_control_command_send(owner: Any, func: Any, response: Any) -> None:
         if not old_task.done():
             old_task.cancel()
         for previous in _state(owner)["recent"]:
-            if previous["sequence"] == oldest and previous["outcome"] in {
-                "pending", "unknown_status", "empty_response",
-            }:
-                previous["outcome"] = "superseded"
+            if previous["sequence"] == oldest:
+                if previous["outcome"] in {"pending", "unknown_status", "empty_response"}:
+                    previous["outcome"] = "superseded"
+                if previous["physical_confirmation"] == "pending":
+                    previous["physical_confirmation"] = "superseded"
 
     sequence = row["sequence"]
+    sent_mono = time.monotonic()
 
-    async def _check() -> None:
+    async def _monitor() -> None:
         last_error_type: str | None = None
         response_seen = False
+        status_done = not can_query
         try:
-            for delay in SETTING_COMMAND_STATUS_RETRY_DELAYS_SECONDS:
-                await asyncio.sleep(delay)
+            for deadline in CONTROL_COMMAND_STATUS_POLL_AT_SECONDS:
+                await asyncio.sleep(max(0.0, sent_mono + deadline - time.monotonic()))
                 if getattr(owner, "_shutdown_complete", False):
-                    row["outcome"] = "shutdown"
-                    return
-                try:
-                    response_value = await owner.hass.async_add_executor_job(
-                        query, owner.sn, number,
-                    )
-                except Exception as err:  # read-only, best-effort check
-                    last_error_type = type(err).__name__
-                    continue
-                response_seen = response_seen or bool(response_value)
-                if _observe_response(row, response_value):
+                    if not status_done:
+                        row["outcome"] = "shutdown"
+                    if row["physical_confirmation"] == "pending":
+                        row["physical_confirmation"] = "shutdown"
                     return
 
-            if response_seen:
-                row["outcome"] = "poll_timeout"
-            elif last_error_type is not None:
-                row["outcome"] = "query_error"
-                row["error_type"] = last_error_type
-            else:
-                row["outcome"] = "empty_response"
-            row["last_checked_at_utc"] = _now_utc()
+                observed = _confirm_observed_state(owner, row, sent_mono)
+
+                if not status_done:
+                    try:
+                        response_value = await owner.hass.async_add_executor_job(
+                            query, owner.sn, number,
+                        )
+                    except Exception as err:  # read-only best-effort
+                        last_error_type = type(err).__name__
+                    else:
+                        response_seen = response_seen or bool(response_value)
+                        if _observe_response(row, response_value):
+                            status_done = True
+
+                if deadline in CONTROL_COMMAND_REFRESH_AT_SECONDS and not observed:
+                    row["state_refresh_endpoints"] = _mark_control_state_endpoints_due(owner, method)
+                    row["state_refresh_count"] += 1
+                    try:
+                        await owner.async_request_refresh()
+                    except Exception as err:  # diagnostics must never fail a command
+                        row["state_refresh_error_type"] = type(err).__name__
+                    observed = _confirm_observed_state(owner, row, sent_mono)
+
+                if status_done and observed:
+                    return
+                if status_done and deadline >= max(CONTROL_COMMAND_REFRESH_AT_SECONDS):
+                    break
+
+            if not status_done:
+                if response_seen:
+                    row["outcome"] = "poll_timeout"
+                elif last_error_type is not None:
+                    row["outcome"] = "query_error"
+                    row["error_type"] = last_error_type
+                else:
+                    row["outcome"] = "empty_response"
+                row["last_checked_at_utc"] = _now_utc()
+            if row["physical_confirmation"] == "pending":
+                row["physical_confirmation"] = "unconfirmed"
         except asyncio.CancelledError:
             if row["outcome"] in {"pending", "unknown_status", "empty_response"}:
                 row["outcome"] = "cancelled"
+            if row["physical_confirmation"] == "pending":
+                row["physical_confirmation"] = "cancelled"
             raise
+        except Exception as err:
+            # Only diagnostic monitoring failed, never the already-sent command.
+            if row["outcome"] in {"pending", "unknown_status", "empty_response"}:
+                row["outcome"] = "monitor_error"
+            row["monitor_error_type"] = type(err).__name__
+            if row["physical_confirmation"] == "pending":
+                row["physical_confirmation"] = "unconfirmed"
         finally:
             if tasks.get(sequence) is asyncio.current_task():
                 tasks.pop(sequence, None)
 
     tasks[sequence] = owner.hass.async_create_task(
-        _check(), f"Navimower command status {owner.entry.entry_id} {sequence}",
+        _monitor(), f"Navimower command monitor {owner.entry.entry_id} {sequence}",
     )
 
 
