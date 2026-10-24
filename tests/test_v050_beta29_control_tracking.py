@@ -62,9 +62,9 @@ def test_sixty_second_sent_poll_preserves_early_refresh_budget(monkeypatch):
 def test_resume_diagnostics_and_control_trace_are_explicitly_allowlisted():
     source = (ROOT / "diagnostics.py").read_text(encoding="utf-8")
     assert '"last_resume_command": _safe_resume_command_trace(coordinator)' in source
-    assert '"last_mow_command": _safe_mow_command_trace(coordinator)' in source
+    assert '"last_mow_command"' not in source
     assert '"command_number"' not in source.split("def _safe_resume_command_trace(", 1)[1].split("def _safe_mow_command_trace(", 1)[0]
-    assert '"send_response"' not in source.split("def _safe_mow_command_trace(", 1)[1].split("def _selected(", 1)[0]
+    assert 'from .resume import resume_command_diagnostics' not in source
     coordinator = (ROOT / "coordinator.py").read_text(encoding="utf-8")
     assert 'record_control_command_send(self, func, result, context=context)' in coordinator
     assert 'record_control_command_verification(' not in coordinator
