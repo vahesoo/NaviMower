@@ -166,19 +166,6 @@ def task_resume_decision(
             evidence=[*evidence, "map_edit_state"],
         )
 
-    if activity == ACTIVITY_MOWING:
-        return _base_result(
-            available=False,
-            strategy=None,
-            reason="already_mowing",
-            activity=activity,
-            state_code=state_code,
-            task_progress_pct=progress,
-            task_zone_ids=task_zone_ids,
-            ordered_run=ordered_run,
-            evidence=[*evidence, "activity_mowing"],
-        )
-
     if session_complete:
         return _base_result(
             available=False,
@@ -203,6 +190,40 @@ def task_resume_decision(
             task_zone_ids=task_zone_ids,
             ordered_run=ordered_run,
             evidence=[*evidence, "task_progress_complete"],
+        )
+
+    # A genuine vendor Paused state outranks the local optimistic Mow
+    # activity. Map Card Resume must use c:behavior type=3 here rather than
+    # repeatedly sending s:mower(reset=false) into an interrupted task.
+    # A fresh MQTT mowing state (4) takes precedence over an older cloud pause.
+    vendor_paused = (
+        state_code in _RESUMABLE_VENDOR_PAUSED_STATES
+        or activity == ACTIVITY_PAUSED
+    ) and snapshot.get("mqtt_vehicle_state") != 4
+    if vendor_paused:
+        return _base_result(
+            available=True,
+            strategy=RESUME_STRATEGY_VENDOR,
+            reason="vendor_paused_task",
+            activity=activity,
+            state_code=state_code,
+            task_progress_pct=progress,
+            task_zone_ids=task_zone_ids,
+            ordered_run=ordered_run,
+            evidence=[*evidence, "paused_retained_task"],
+        )
+
+    if activity == ACTIVITY_MOWING:
+        return _base_result(
+            available=False,
+            strategy=None,
+            reason="already_mowing",
+            activity=activity,
+            state_code=state_code,
+            task_progress_pct=progress,
+            task_zone_ids=task_zone_ids,
+            ordered_run=ordered_run,
+            evidence=[*evidence, "activity_mowing"],
         )
 
     ordered_resumable = bool(
@@ -231,20 +252,6 @@ def task_resume_decision(
         )
     if ordered_resumable and not ordered_matches_task:
         evidence.append("ordered_run_unconfirmed_for_current_task")
-
-    if state_code in _RESUMABLE_VENDOR_PAUSED_STATES or activity == ACTIVITY_PAUSED:
-        evidence.append("paused_retained_task")
-        return _base_result(
-            available=True,
-            strategy=RESUME_STRATEGY_VENDOR,
-            reason="vendor_paused_task",
-            activity=activity,
-            state_code=state_code,
-            task_progress_pct=progress,
-            task_zone_ids=task_zone_ids,
-            ordered_run=ordered_run,
-            evidence=evidence,
-        )
 
     resumable_context = activity in {
         ACTIVITY_RETURNING,
@@ -297,9 +304,43 @@ def task_resume_decision(
     )
 
 
+def paused_mow_request_decision(
+    data: dict[str, Any] | None,
+    requested_zone_ids: list[int],
+    *,
+    reset: bool,
+) -> str:
+    """Choose a safe action for Mow from a confirmed paused vendor task.
+
+    Return 'mow' in ordinary states, 'vendor_resume' when Reset OFF requests
+    the exact retained task, or 'blocked' when a zone change cannot safely be
+    represented by vendor Resume. The caller must never silently reset progress.
+    """
+    snapshot = data or {}
+    state_code = str(snapshot.get("state_code") or "").strip()
+    if reset or state_code not in _RESUMABLE_VENDOR_PAUSED_STATES:
+        return "mow"
+    if snapshot.get("mqtt_vehicle_state") == 4:
+        return "mow"
+
+    requested = _zone_ids(requested_zone_ids)
+    totals = snapshot.get("totals")
+    totals = totals if isinstance(totals, dict) else {}
+    retained = _zone_ids(totals.get("task_zone_ids"))
+    if not retained:
+        retained = _zone_ids(snapshot.get("planned_zone_ids"))
+    if not retained:
+        active = totals.get("active_zone_id")
+        retained = _zone_ids([active]) if active is not None else []
+    if requested and retained and requested == retained:
+        return "vendor_resume"
+    return "blocked"
+
+
 __all__ = [
     "RESUME_STRATEGY_ORDERED_RUN",
     "RESUME_STRATEGY_VENDOR",
     "guard_managed_schedule_resume",
+    "paused_mow_request_decision",
     "task_resume_decision",
 ]
