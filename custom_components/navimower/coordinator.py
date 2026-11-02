@@ -1169,6 +1169,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._mqtt_last_message_update: float | None = None
         self._mqtt_state_last_update: float | None = None
         self._mqtt_action_last_update: float | None = None
+        self._mqtt_start_type_last_update: float | None = None
+        self._mqtt_work_start_type_last_update: float | None = None
         self._mqtt_task_delay_last_update: float | None = None
         self._mqtt_named_state: str | None = None
         self._mqtt_named_state_last_update: float | None = None
@@ -4266,6 +4268,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         )
         if state_updated:
             self._mqtt_state_last_update = now_monotonic
+        if "mow_start_type" in location and location.get("mow_start_type") is not None:
+            self._mqtt_start_type_last_update = now_monotonic
+        if "map_work_position" in location and location.get("work_mode") is not None:
+            self._mqtt_work_start_type_last_update = now_monotonic
         action_updated = location.get("_action_updated") is True or (
             "_action_updated" not in location
             and location.get("action") is not None

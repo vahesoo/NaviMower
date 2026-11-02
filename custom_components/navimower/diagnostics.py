@@ -15,6 +15,7 @@ from .map_underlay import map_underlay_diagnostics
 from .private_cloud_region import private_cloud_region_diagnostics
 from .state_semantics import error_transition_diagnostics
 from .control_command_outcomes import control_command_snapshot
+from .vendor_task_codes import vendor_task_codes_diagnostics
 
 # Omit retired research blocks even when an older runtime cache still has them.
 # This is a report-only projection; it never changes or clears the source cache.
@@ -363,6 +364,7 @@ async def async_get_config_entry_diagnostics(
             "coverage", "coverage_source", "zone_states", "totals",
         )),
         "control_command_outcomes": control_command_snapshot(coordinator),
+        "vendor_task_codes": vendor_task_codes_diagnostics(coordinator, data),
         "setting_write_verification": deepcopy(
             getattr(coordinator, "_setting_write_verification", None)
         ),
