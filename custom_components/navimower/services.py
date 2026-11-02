@@ -31,6 +31,7 @@ from .task_resume import (
     RESUME_STRATEGY_VENDOR,
     guard_managed_schedule_resume,
     task_resume_decision,
+    paused_mow_request_decision,
 )
 
 install_runtime_extensions()
@@ -279,6 +280,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 "No mowing zones known yet — wait for the mower to report its map, "
                 "or pass explicit zone ids."
             )
+        paused_action = paused_mow_request_decision(
+            coordinator.data, requested_zones, reset=call.data["reset"],
+        )
+        if paused_action == "blocked":
+            raise ServiceValidationError(
+                "Mow with Reset OFF cannot change the selected zones while the "
+                "vendor task is paused. Resume the existing task instead, or "
+                "explicitly start a new cycle with Reset ON."
+            )
+        if paused_action == "vendor_resume":
+            await async_resume_task(coordinator, source="navimower.mow_paused")
+            return
         partition_ids = encode_partition_ids(zones)
         partition_setup = mow_setup(reset=call.data["reset"], ordered=ordered)
         coordinator.begin_mow_command_trace(
