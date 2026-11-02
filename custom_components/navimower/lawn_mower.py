@@ -161,8 +161,8 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
                 partition_setup,
             )
             self.coordinator.record_mow_command_result(result)
-            self.coordinator.start_new_mowing_cycle(
-                region_ids, source="lawn_mower.start_mowing_reset"
+            self.coordinator.defer_mow_cycle_reset(
+                source="lawn_mower.start_mowing_reset"
             )
         except Exception as err:
             self.coordinator.record_mow_command_error(err)
