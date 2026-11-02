@@ -94,5 +94,5 @@ assert '"cutting_height_supported": cutting_height_supported' in source
 assert "merged.update(location)" in source
 assert "defer_mow_cycle_reset" in SERVICES.read_text(encoding="utf-8")
 assert "start_new_mowing_cycle" in COORDINATOR.read_text(encoding="utf-8")
-assert "start_new_mowing_cycle" in MOWER.read_text(encoding="utf-8")
+assert "defer_mow_cycle_reset" in MOWER.read_text(encoding="utf-8")
 print("state consistency tests passed")
