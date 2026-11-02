@@ -329,9 +329,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
             coordinator.record_mow_command_result(result)
             if call.data["reset"]:
-                coordinator.start_new_mowing_cycle(
-                    zones, source="navimower.mow_reset"
-                )
+                coordinator.defer_mow_cycle_reset(source="navimower.mow_reset")
         except Exception as err:
             coordinator.record_mow_command_error(err)
             coordinator.clear_pending_activity()
