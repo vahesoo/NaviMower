@@ -4200,6 +4200,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         elif mqtt_state in MQTT_DOCKED_STATES:
             activity = ACTIVITY_DOCKED
         pending_activity = self._pending_activity_value()
+        if (
+            pending_activity == ACTIVITY_MOWING
+            and str(snapshot.get("state_code") or "") in {STATE_PAUSED, "0221"}
+            and mqtt_state != MQTT_STATE_MOWING
+        ):
+            self.clear_pending_activity()
+            pending_activity = None
         if pending_activity is not None:
             activity = pending_activity
         snapshot["activity"] = activity
