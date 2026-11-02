@@ -2446,14 +2446,21 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             activity = ACTIVITY_ERROR
             self.clear_pending_activity()
         elif pending_activity is not None:
+            # Fresh/known vendor Paused must not be hidden by optimistic Mowing.
+            if (
+                pending_activity == ACTIVITY_MOWING
+                and state_code in {STATE_PAUSED, "0221"}
+                and mqtt_vehicle_state != MQTT_STATE_MOWING
+            ):
+                self.clear_pending_activity()
+                pending_activity = None
             # Keep the explicit HA command state through short vendor transition
             # codes. Clear it only after a matching known state is observed.
-            if activity == pending_activity and (
-                mqtt_vehicle_state is not None
+            if pending_activity is not None and activity == pending_activity and (                mqtt_vehicle_state is not None
                 or state_code in VEHICLE_STATE_TO_ACTIVITY
             ):
                 self.clear_pending_activity()
-            else:
+            elif pending_activity is not None:
                 activity = pending_activity
 
         state_label = VEHICLE_STATE_LABELS.get(state_code)
@@ -3469,6 +3476,17 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         trace["physical_confirmation"] = physical_confirmation
         trace["vendor_outcome"] = vendor_outcome
         trace["verification_updated_at_utc"] = datetime.now(UTC).isoformat()
+        if physical_confirmation == "state_observed":
+            self._record_successful_mow_in_ordered_run()
+            if trace.pop("pending_cycle_reset", False):
+                self.start_new_mowing_cycle(
+                    trace.get("resolved_zone_ids") or [],
+                    source=str(trace.get("pending_cycle_reset_source") or "navimower.mow_reset"),
+                )
+        else:
+            # Acknowledgement alone must not overwrite the last confirmed run.
+            self.clear_pending_activity()
+            self.clear_command_target()
 
     def record_mow_command_result(self, result: Any) -> None:
         """Attach the private-cloud acknowledgement to the active command trace."""
@@ -3484,9 +3502,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         self._last_mow_command_trace["state_after_send"] = (
             self._mow_command_state_snapshot()
         )
-        # Retain existing ordered-run metadata for Smart Resume, but never call
-        # it proof that the robot actually started mowing.
-        self._record_successful_mow_in_ordered_run()
+        # Only a subsequent confirmed vendor mowing state may commit this run.
+
+    def defer_mow_cycle_reset(self, *, source: str) -> None:
+        """Commit a requested reset only when monitoring observes mowing."""
+        trace = self._last_mow_command_trace
+        if isinstance(trace, dict):
+            trace["pending_cycle_reset"] = True
+            trace["pending_cycle_reset_source"] = source
 
     def record_mow_command_error(self, error: BaseException) -> None:
         """Preserve a failed send attempt instead of losing its payload details."""
@@ -4361,6 +4384,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         elif mqtt_state in MQTT_DOCKED_STATES:
             candidate_activity = ACTIVITY_DOCKED
         pending_activity = self._pending_activity_value()
+        if (
+            pending_activity == ACTIVITY_MOWING
+            and state_code in {STATE_PAUSED, "0221"}
+            and mqtt_state != MQTT_STATE_MOWING
+        ):
+            self.clear_pending_activity()
+            pending_activity = None
         if pending_activity is not None:
             if candidate_activity == pending_activity:
                 self.clear_pending_activity()
