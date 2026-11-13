@@ -125,6 +125,37 @@ async def _async_private_poll_guard(coordinator: NavimowCoordinator) -> None:
         raise
 
 
+async def _async_history_retention_housekeeping(coordinator: NavimowCoordinator) -> None:
+    """Apply History retention daily even when no mower session finishes.
+
+    Normal History startup/finalization and shutdown already prune expired
+    sessions. This periodic task closes the quiet-season gap without altering
+    MQTT, cloud polling, gate or mowing command timing.
+    """
+    try:
+        while not coordinator._shutdown_complete:
+            await asyncio.sleep(24 * 60 * 60)
+            if coordinator._shutdown_complete:
+                return
+            if coordinator.history.retention_days <= 0:
+                continue
+            try:
+                await coordinator.history.async_checkpoint()
+                archive = getattr(coordinator, "session_archive", None)
+                if archive is not None and not getattr(archive, "_stopped", False):
+                    archive._prune_memory()
+                    await archive._async_prune_archive_stores()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOGGER.warning(
+                    "Navimower daily History retention cleanup failed",
+                    exc_info=True,
+                )
+    except asyncio.CancelledError:
+        raise
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up OAuth, services and authenticated map/history HTTP resources."""
     hass.data.setdefault(DOMAIN, {})
@@ -322,6 +353,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    coordinator.history_retention_task = hass.async_create_background_task(
+        _async_history_retention_housekeeping(coordinator),
+        f"Navimower History retention {entry.entry_id}",
+    )
 
     # Map-artifact prewarming may traverse a large retained current-cycle history.
     # Start it only after every awaited config-entry setup step has completed so
@@ -365,6 +400,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         getattr(coordinator, "private_poll_guard_task", None) if coordinator else None
     )
 
+    history_retention_task = (
+        getattr(coordinator, "history_retention_task", None)
+        if coordinator is not None
+        else None
+    )
+    if history_retention_task is not None:
+        history_retention_task.cancel()
+        await asyncio.gather(history_retention_task, return_exceptions=True)
+        coordinator.history_retention_task = None
+
     if private_poll_guard is not None:
         private_poll_guard.cancel()
         await asyncio.gather(private_poll_guard, return_exceptions=True)
@@ -375,6 +420,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
+        if coordinator is not None and history_retention_task is not None:
+            coordinator.history_retention_task = hass.async_create_background_task(
+                _async_history_retention_housekeeping(coordinator),
+                f"Navimower History retention {entry.entry_id}",
+            )
         if coordinator is not None and private_poll_guard is not None:
             coordinator.private_poll_guard_task = hass.async_create_background_task(
                 _async_private_poll_guard(coordinator),
