@@ -346,7 +346,8 @@ async def async_get_config_entry_diagnostics(
         "positioning": _selected(data, (
             "heading", "pose_source", "mqtt_pose_age",
             "current_physical_zone_id", "current_physical_zone_source",
-            "current_physical_zone_source_age", "current_physical_zone_stale",
+            "current_physical_zone_source_age", "current_physical_zone_position_age",
+            "current_physical_zone_stale",
             "current_channel_id", "current_channel_source",
             "current_channel_pose_age", "current_channel_stale", "target_zone_id", "target_zone_ids", "target_zone_source",
             "target_zone_immediate_source", "target_zone_immediate_age_seconds",
@@ -360,7 +361,8 @@ async def async_get_config_entry_diagnostics(
             "mowing_progress_source", "mowing_progress_source_age", "task_progress_private_cloud",
             "task_progress_source", "active_zone_progress", "active_zone_progress_source",
             "active_zone_progress_source_age", "active_zone_progress_zone_id", "coverage_source_age",
-            "session_area", "session_area_source", "total_area", "total_area_source",
+            "session_area", "session_area_source", "session_area_source_age",
+            "total_area", "total_area_source",
             "coverage", "coverage_source", "zone_states", "totals",
         )),
         "control_command_outcomes": control_command_snapshot(coordinator),
@@ -451,6 +453,12 @@ async def async_get_config_entry_diagnostics(
         "last_ordered_run": coordinator.last_ordered_run() if hasattr(coordinator, "last_ordered_run") else None,
         "private_polling": private_polling,
         "prepared_render_model": prepared_render_diagnostics,
+        "map_snapshot": {
+            "render_age_seconds": getattr(
+                getattr(coordinator, "map_snapshot_manager", None),
+                "render_age_seconds", None
+            ),
+        },
         "prepared_history": session_archive_diagnostics,
         "session_render_archive": session_archive_diagnostics,
         "mqtt_health": mqtt_health,

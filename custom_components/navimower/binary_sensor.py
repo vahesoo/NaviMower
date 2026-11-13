@@ -300,11 +300,10 @@ class NavimowerCustomAreaBinarySensor(NavimowEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        state, source, age = self._resolved_presence()
+        state, source, _age = self._resolved_presence()
         return {
             **self.area.as_dict(),
             "position_source": source,
-            "position_age": age,
             "cloud_fallback": source == "private_cloud",
             "state_confirmed": state is not None,
             "cloud_outside_confirmation_count": int(

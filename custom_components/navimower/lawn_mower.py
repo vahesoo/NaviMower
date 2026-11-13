@@ -222,7 +222,6 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             "weather_frost": data.get("weather_frost_state"),
             "weather_high_temperature": data.get("weather_high_temperature_state"),
             "weather_source": data.get("weather_state_source"),
-            "weather_age_s": data.get("weather_state_age"),
             "weather_fresh": data.get("weather_state_fresh"),
             "rain_level": data.get("weather_rain_level"),
             "model": data.get("model") or self.coordinator.entry.data.get("model"),
@@ -239,6 +238,5 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             "command_target_active": data.get("command_target_active"),
             "current_channel": data.get("current_channel"),
             "pose_source": data.get("pose_source"),
-            "mqtt_pose_age": data.get("mqtt_pose_age"),
             "map_api_path": f"/api/navimower/map/{self.coordinator.entry.entry_id}",
         }

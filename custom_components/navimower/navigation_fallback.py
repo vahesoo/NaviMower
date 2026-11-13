@@ -248,7 +248,6 @@ def _install_sensor_attributes() -> None:
             "zone_id": data.get("current_physical_zone_id"),
             "source": data.get("current_physical_zone_source"),
             "position_source": data.get("current_physical_zone_position_source"),
-            "position_age": data.get("current_physical_zone_position_age"),
             "stale": data.get("current_physical_zone_stale"),
             "mqtt_pose_valid": data.get("mqtt_pose_valid"),
         }
