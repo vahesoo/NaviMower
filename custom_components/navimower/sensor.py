@@ -16,6 +16,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    MATCH_ALL,
     PERCENTAGE,
     EntityCategory,
     UnitOfArea,
@@ -80,9 +81,7 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         value_fn=lambda d: d.get("battery"),
         attrs_fn=lambda d: {
             "source": d.get("battery_source"),
-            "source_age": d.get("battery_source_age"),
             "mqtt_battery": d.get("battery_mqtt"),
-            "mqtt_age": d.get("battery_mqtt_age"),
             "private_cloud_battery": d.get("battery_private_cloud"),
         },
     ),
@@ -100,7 +99,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "weather_hold_reason": d.get("weather_hold_reason"),
             "weather_hold_reasons": d.get("weather_hold_reasons"),
             "weather_source": d.get("weather_state_source"),
-            "weather_age_s": d.get("weather_state_age"),
             "weather_fresh": d.get("weather_state_fresh"),
             "rain_level": d.get("weather_rain_level"),
             "rain_delay_active": d.get("rain_delay_active"),
@@ -125,7 +123,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "high_temperature": d.get("weather_high_temperature_state"),
             "rain_level": d.get("weather_rain_level"),
             "source": d.get("weather_state_source"),
-            "source_age": d.get("weather_state_age"),
             "fresh": d.get("weather_state_fresh"),
             "rain_delay_enabled": d.get("rain_delay_enabled"),
             "rain_delay_configured_minutes": d.get("rain_delay_configured_minutes"),
@@ -172,7 +169,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "active_zone_id": (d.get("totals") or {}).get("active_zone_id"),
             "cycle_id": d.get("active_cycle_id"),
             "source": (d.get("totals") or {}).get("task_progress_source") or "canonical_task",
-            "source_age": d.get("mowing_progress_source_age"),
             "mqtt_task_percentage": (d.get("mowing_progress_mqtt") or {}).get("mowing_percentage"),
             "private_cloud_task_percentage": d.get("task_progress_private_cloud"),
             "zone_weighted_fallback_pct": (d.get("totals") or {}).get(
@@ -236,6 +232,7 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
     NavimowSensorDescription(
         key="pose_age",
         name="MQTT pose age",
+        entity_registry_enabled_default=False,
         icon="mdi:timer-outline",
         native_unit_of_measurement=UnitOfTime.SECONDS,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -254,8 +251,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         value_fn=lambda d: d.get("pose_source"),
         attrs_fn=lambda d: {
             "mqtt_pose_valid": d.get("mqtt_pose_valid"),
-            "mqtt_pose_age": d.get("mqtt_pose_age"),
-            "private_poll_age": d.get("private_poll_age"),
             "private_poll_profile": d.get("private_poll_profile"),
         },
     ),
@@ -269,7 +264,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "stream_expected": d.get("mqtt_stream_expected"),
             "recovery_count": d.get("mqtt_recovery_count"),
             "last_recovery_reason": d.get("mqtt_last_recovery_reason"),
-            "last_location_message_age": d.get(
                 "mqtt_last_location_message_age"
             ),
         },
@@ -288,7 +282,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             else None
         ),
         attrs_fn=lambda d: {
-            "core_age": d.get("private_core_age"),
             "profile": d.get("private_poll_profile"),
         },
     ),
@@ -324,7 +317,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
         attrs_fn=lambda d: {
             "zone_id": d.get("current_physical_zone_id"),
             "source": d.get("current_physical_zone_source"),
-            "pose_age": d.get("mqtt_pose_age"),
         },
     ),
     NavimowSensorDescription(
@@ -344,7 +336,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "planned_zone_ids": d.get("planned_zone_ids"),
             "planned_zones_source": d.get("planned_zones_source"),
             "command_source": d.get("target_zone_command_source"),
-            "target_age_seconds": d.get("target_zone_immediate_age_seconds"),
             "command_target_active": d.get("command_target_active"),
             "navigation_zone_ids": d.get("navigation_target_zone_ids"),
             "navigation_source": d.get("navigation_target_zone_source"),
@@ -376,7 +367,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "source": d.get("current_channel_source"),
             "stale": d.get("current_channel_stale"),
             "pose_valid": d.get("current_channel_pose_valid"),
-            "pose_age": d.get("current_channel_pose_age"),
         },
     ),
     NavimowSensorDescription(
@@ -409,7 +399,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "task_progress_pct": (d.get("totals") or {}).get("task_progress_pct"),
             "task_zone_ids": (d.get("totals") or {}).get("task_zone_ids"),
             "source": (d.get("totals") or {}).get("task_mowed_area_source") or "cycle_engine",
-            "source_age": d.get("session_area_source_age"),
             "mqtt_subtotal_area_m2": d.get("session_area_mqtt"),
             "private_cloud_subtotal_area_m2": d.get("session_area_private_cloud"),
             "interpreted_task_mowed_area_m2": (d.get("totals") or {}).get("task_mowed_area_m2"),
@@ -680,6 +669,9 @@ async def async_setup_entry(
 class NavimowSensor(NavimowEntity, SensorEntity):
     """A single value from the mower snapshot."""
 
+    # Keep notification previews in live state for the Map Card, not Recorder.
+    _unrecorded_attributes = frozenset({"recent"})
+
     entity_description: NavimowSensorDescription
 
     def __init__(
@@ -723,6 +715,10 @@ class NavimowerScheduleStatusSensor(NavimowEntity, SensorEntity):
 
 class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
     """Small map metadata entity pointing the card to the authenticated API."""
+
+    # Map Card consumes live attributes; recording a copy of the map metadata
+    # for every real map/progress update is unnecessary.
+    _unrecorded_attributes = frozenset({MATCH_ALL})
 
     _attr_has_entity_name = True
     _attr_name = "Map data"
@@ -786,7 +782,6 @@ class NavimowerMapDataSensor(NavimowEntity, SensorEntity):
             "mqtt_stream_state": self.data.get("mqtt_stream_state"),
             "mqtt_recovery_count": self.data.get("mqtt_recovery_count"),
             "position_source": self.data.get("pose_source"),
-            "private_poll_age": self.data.get("private_poll_age"),
             "private_poll_profile": self.data.get("private_poll_profile"),
             "activity": self.data.get("activity"),
             "display_state": self.data.get("display_state") or self.data.get("state"),
