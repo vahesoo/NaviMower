@@ -179,7 +179,11 @@ def test_snapshot_wiring_keeps_cache_and_manual_refresh_semantics() -> None:
     assert "refresh_map_snapshot:" in services_yaml
     assert "return only after the cached image has been replaced" in services_yaml
     assert '"render_reason": self._manager.render_reason' in image
-    assert '"render_age_seconds"' in image
+    # Beta32 keeps renderer freshness in cached Download diagnostics rather than
+    # republishing an ever-increasing image attribute on each coordinator tick.
+    assert '"render_age_seconds"' not in image
+    diagnostics = (ROOT / "custom_components" / "navimower" / "diagnostics.py").read_text(encoding="utf-8")
+    assert '"render_age_seconds"' in diagnostics
     assert "current_physical_zone_id" in manager
     assert '"model_family": str(' in manager
     assert '"model": str(data.get("model") or "")' in manager
