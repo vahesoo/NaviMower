@@ -69,11 +69,6 @@ class NavimowMapSnapshotImage(NavimowEntity, ImageEntity):
         rendered = self._manager.last_rendered_at
         return {
             "last_rendered_at": rendered.isoformat() if rendered is not None else None,
-            "render_age_seconds": (
-                round(self._manager.render_age_seconds, 1)
-                if self._manager.render_age_seconds is not None
-                else None
-            ),
             "render_reason": self._manager.render_reason,
             "render_duration_ms": self._manager.render_duration_ms,
             "failure_count": self._manager.failure_count,
