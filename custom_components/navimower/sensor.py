@@ -264,8 +264,6 @@ SENSORS: tuple[NavimowSensorDescription, ...] = (
             "stream_expected": d.get("mqtt_stream_expected"),
             "recovery_count": d.get("mqtt_recovery_count"),
             "last_recovery_reason": d.get("mqtt_last_recovery_reason"),
-                "mqtt_last_location_message_age"
-            ),
         },
     ),
     NavimowSensorDescription(
