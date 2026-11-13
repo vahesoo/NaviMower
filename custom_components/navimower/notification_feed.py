@@ -463,8 +463,6 @@ def _install_notification_sensor() -> None:
             "next_message_id": data.get("notification_next_message_id"),
             "filter_state": data.get("notification_filter_state"),
             "source": data.get("notification_source"),
-            "source_age": data.get("notification_source_age"),
-            "vendor_source_age": data.get("notification_vendor_source_age"),
             "last_error": data.get("notification_error"),
             "recent": deepcopy(
                 (data.get("notification_history") or [])[:_NOTIFICATION_ATTR_HISTORY_LIMIT]
