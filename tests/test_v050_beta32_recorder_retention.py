@@ -41,8 +41,8 @@ def test_sensor_attributes_do_not_publish_clock_ages() -> None:
     tree = _tree("sensor.py")
     descriptions = next(
         item for item in tree.body
-        if isinstance(item, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "SENSORS" for target in item.targets)
+        if isinstance(item, ast.AnnAssign)
+        and isinstance(item.target, ast.Name) and item.target.id == "SENSORS"
     )
     # Some dedicated opt-in diagnostic sensors intentionally publish age as
     # their *state*. They must not put another changing clock in attributes.
