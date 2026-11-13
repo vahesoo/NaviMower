@@ -235,7 +235,11 @@ def _install_sensor() -> None:
             name="Mowing pause reason",
             icon="mdi:pause-circle-outline",
             value_fn=lambda data: data.get("mowing_pause_reason"),
-            attrs_fn=lambda data: dict(data.get("mowing_pause_status") or {}),
+            attrs_fn=lambda data: {
+                key: value
+                for key, value in (data.get("mowing_pause_status") or {}).items()
+                if key != "weather_age_s"
+            },
         ),
     )
 
