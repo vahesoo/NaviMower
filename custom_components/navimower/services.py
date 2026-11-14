@@ -32,6 +32,7 @@ from .task_resume import (
     guard_managed_schedule_resume,
     task_resume_decision,
     paused_mow_request_decision,
+    ordered_run_matches_current_task,
 )
 
 install_runtime_extensions()
@@ -356,6 +357,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(
                 "All zones in the last ordered mowing run are already complete."
             )
+        if not ordered_run_matches_current_task(
+            coordinator.data, run,
+            active_session=coordinator.history.active_session_metadata(),
+        ):
+            raise ServiceValidationError(
+                "The retained ordered run belongs to an older mowing task. "
+                "Use the vendor Resume action for the current task instead."
+            )
 
         try:
             fresh_completion = await coordinator.async_refresh_last_ordered_run_completion()
@@ -369,6 +378,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
 
         run = coordinator.last_ordered_run() or run
+        if not ordered_run_matches_current_task(
+            coordinator.data, run,
+            active_session=coordinator.history.active_session_metadata(),
+        ):
+            raise ServiceValidationError(
+                "A newer vendor task was observed during refresh; "
+                "the retained ordered run cannot be replayed."
+            )
         zones = coordinator.remaining_last_ordered_run_zone_ids()
         if not zones:
             if run.get("complete"):
