@@ -85,6 +85,7 @@ from .const import (
     MQTT_STATE_IDLE,
     MQTT_STATE_MAPPING,
     MQTT_STATE_MOWING,
+    MQTT_STATE_PAUSED_OR_IDLE,
     MQTT_STATE_RETURNING,
     MQTT_POSE_STALE_SECONDS,
     MQTT_STATE_STALE_SECONDS,
@@ -2605,6 +2606,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             "state": state_label,
             "activity": activity,
             "mqtt_vehicle_state": mqtt_vehicle_state,
+            "mqtt_named_state": self._fresh_mqtt_named_state(),
             "mqtt_action": mqtt_action,
             "mqtt_state_age": self.mqtt_state_age(),
             "mqtt_action_age": self.mqtt_action_age(),
@@ -4187,6 +4189,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["pose_source"] = "mqtt"
             snapshot["pose_time"] = (self._mqtt_location or {}).get("pose_time")
         snapshot["mqtt_vehicle_state"] = mqtt_state
+        snapshot["mqtt_named_state"] = self._fresh_mqtt_named_state()
         snapshot["mqtt_action"] = mqtt_action
         snapshot["mqtt_state_age"] = self.mqtt_state_age()
         snapshot["mqtt_action_age"] = self.mqtt_action_age()
@@ -4199,6 +4202,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             activity = ACTIVITY_RETURNING
         elif mqtt_state in MQTT_DOCKED_STATES:
             activity = ACTIVITY_DOCKED
+        elif (
+            mqtt_state == MQTT_STATE_PAUSED_OR_IDLE
+            and snapshot.get("mqtt_named_state") == "isPaused"
+            and str(snapshot.get("state_code") or "") in {"0210", STATE_PAUSED, "0221"}
+        ):
+            activity = ACTIVITY_PAUSED
         pending_activity = self._pending_activity_value()
         if (
             pending_activity == ACTIVITY_MOWING
@@ -4377,6 +4386,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             snapshot["pose_time"] = merged.get("pose_time")
         snapshot["mqtt_location"] = dict(merged)
         snapshot["mqtt_vehicle_state"] = mqtt_state
+        snapshot["mqtt_named_state"] = self._fresh_mqtt_named_state()
         snapshot["mqtt_action"] = mqtt_action
         snapshot["mqtt_state_age"] = self.mqtt_state_age()
         snapshot["mqtt_action_age"] = self.mqtt_action_age()
@@ -4390,6 +4400,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             candidate_activity = ACTIVITY_RETURNING
         elif mqtt_state in MQTT_DOCKED_STATES:
             candidate_activity = ACTIVITY_DOCKED
+        elif (
+            mqtt_state == MQTT_STATE_PAUSED_OR_IDLE
+            and snapshot.get("mqtt_named_state") == "isPaused"
+            and state_code in {"0210", STATE_PAUSED, "0221"}
+        ):
+            candidate_activity = ACTIVITY_PAUSED
         pending_activity = self._pending_activity_value()
         if (
             pending_activity == ACTIVITY_MOWING
@@ -4502,6 +4518,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
             self._mqtt_named_state_last_update = now_monotonic
         self._mqtt_connected = True
         snapshot = dict(self.data or self._bootstrap_snapshot())
+        snapshot["mqtt_named_state"] = self._fresh_mqtt_named_state()
+        if (
+            state_name == "isPaused"
+            and self._fresh_mqtt_vehicle_state() != MQTT_STATE_MOWING
+            and str(snapshot.get("state_code") or "") in {"0210", STATE_PAUSED, "0221"}
+        ):
+            self.clear_pending_activity()
+            snapshot["activity"] = ACTIVITY_PAUSED
         if state_name == "isLifted":
             self._set_problem_latch(
                 True,
