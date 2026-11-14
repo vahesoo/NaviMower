@@ -29,6 +29,7 @@ from .coordinator import NavimowCoordinator
 from .entity import NavimowEntity
 from .model_support import supports_ordered_zone_mowing
 from .resume import async_resume_task
+from .task_resume import confirmed_paused_vendor_task
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,7 +84,13 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
     @property
     def activity(self) -> LawnMowerActivity:
         state_code = str(self.data.get("state_code") or "")
-        if state_code in MAP_EDIT_STATES or state_code in _RESUMABLE_PAUSED_STATES:
+        if state_code in MAP_EDIT_STATES:
+            self._last_valid_activity = LawnMowerActivity.PAUSED
+            return LawnMowerActivity.PAUSED
+        if self.data.get("mqtt_vehicle_state") == 4:
+            self._last_valid_activity = LawnMowerActivity.MOWING
+            return LawnMowerActivity.MOWING
+        if confirmed_paused_vendor_task(self.data):
             self._last_valid_activity = LawnMowerActivity.PAUSED
             return LawnMowerActivity.PAUSED
         mapped = _ACTIVITY_MAP.get(self.data.get("activity"))
@@ -99,7 +106,7 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
         client = self.coordinator.client
         sn = self._sn
         state_code = str(self.data.get("state_code") or "")
-        if state_code in _RESUMABLE_PAUSED_STATES:
+        if confirmed_paused_vendor_task(self.data):
             self._note_activity_command(
                 "lawn_mower.start_mowing_paused",
                 "Home Assistant requested the paused mowing task to resume.",
@@ -110,6 +117,13 @@ class NavimowLawnMower(NavimowEntity, LawnMowerEntity):
             )
             return
 
+        if self.data.get("mqtt_vehicle_state") == 4 or self.data.get("activity") in {
+            ACTIVITY_MOWING, ACTIVITY_RETURNING,
+        }:
+            raise HomeAssistantError(
+                "Cannot start a new mowing cycle while the mower is already "
+                "mowing or returning to dock."
+            )
         zones = self.data.get("zones") or []
         if not zones:
             raise HomeAssistantError(

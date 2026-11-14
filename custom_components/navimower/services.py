@@ -32,6 +32,8 @@ from .task_resume import (
     guard_managed_schedule_resume,
     task_resume_decision,
     paused_mow_request_decision,
+    confirmed_paused_vendor_task,
+    ordered_run_matches_current_task,
 )
 
 install_runtime_extensions()
@@ -280,8 +282,24 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 "No mowing zones known yet — wait for the mower to report its map, "
                 "or pass explicit zone ids."
             )
+        # Frontend buttons can be gray, but API/automations must have the
+        # same server-side protection against stale or conflicting state.
+        command_snapshot = coordinator.data or {}
+        if not confirmed_paused_vendor_task(command_snapshot):
+            mqtt_state = command_snapshot.get("mqtt_vehicle_state")
+            activity = command_snapshot.get("activity")
+            if mqtt_state == 4 or activity == ACTIVITY_MOWING:
+                raise ServiceValidationError(
+                    "The mower is already mowing. Pause or dock before "
+                    "starting a different mowing task."
+                )
+            if mqtt_state == 5 or activity == ACTIVITY_RETURNING:
+                raise ServiceValidationError(
+                    "The mower is returning to dock. Wait for docking "
+                    "before starting another mowing task."
+                )
         paused_action = paused_mow_request_decision(
-            coordinator.data, requested_zones, reset=call.data["reset"],
+            command_snapshot, requested_zones, reset=call.data["reset"],
         )
         if paused_action == "blocked":
             raise ServiceValidationError(
@@ -356,6 +374,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(
                 "All zones in the last ordered mowing run are already complete."
             )
+        if not ordered_run_matches_current_task(
+            coordinator.data, run,
+            active_session=coordinator.history.active_session_metadata(),
+        ):
+            raise ServiceValidationError(
+                "The retained ordered run belongs to an older mowing task. "
+                "Use the vendor Resume action for the current task instead."
+            )
 
         try:
             fresh_completion = await coordinator.async_refresh_last_ordered_run_completion()
@@ -369,6 +395,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
             )
 
         run = coordinator.last_ordered_run() or run
+        if not ordered_run_matches_current_task(
+            coordinator.data, run,
+            active_session=coordinator.history.active_session_metadata(),
+        ):
+            raise ServiceValidationError(
+                "A newer vendor task was observed during refresh; "
+                "the retained ordered run cannot be replayed."
+            )
         zones = coordinator.remaining_last_ordered_run_zone_ids()
         if not zones:
             if run.get("complete"):
