@@ -4212,7 +4212,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         pending_activity = self._pending_activity_value()
         if (
             pending_activity == ACTIVITY_MOWING
-            and str(snapshot.get("state_code") or "") in {STATE_PAUSED, "0221"}
+            and (
+                str(snapshot.get("state_code") or "") in {STATE_PAUSED, "0221"}
+                or (
+                    mqtt_state == MQTT_STATE_PAUSED_OR_IDLE
+                    and snapshot.get("mqtt_named_state") == "isPaused"
+                )
+            )
             and mqtt_state != MQTT_STATE_MOWING
         ):
             self.clear_pending_activity()
@@ -4410,7 +4416,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict]):
         pending_activity = self._pending_activity_value()
         if (
             pending_activity == ACTIVITY_MOWING
-            and state_code in {STATE_PAUSED, "0221"}
+            and (
+                state_code in {STATE_PAUSED, "0221"}
+                or (
+                    mqtt_state == MQTT_STATE_PAUSED_OR_IDLE
+                    and snapshot.get("mqtt_named_state") == "isPaused"
+                )
+            )
             and mqtt_state != MQTT_STATE_MOWING
         ):
             self.clear_pending_activity()
