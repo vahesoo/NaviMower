@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import UTC, datetime
 
 from .const import (
     ACTIVITY_DOCKED,
@@ -35,6 +36,78 @@ def _zone_ids(values: Any) -> list[int]:
         if zone_id > 0 and zone_id not in result:
             result.append(zone_id)
     return result
+
+
+def confirmed_paused_vendor_task(data: dict[str, Any] | None) -> bool:
+    """Resolve Pause from fresh MQTT evidence before lagging cloud state.
+
+    MQTT vehicle state 3 can mean paused *or* idle: it is not enough alone.
+    The named isPaused event or a retained task and mowing cloud context
+    distinguishes an actual pause. Fresh MQTT mowing (4) overrides old cloud
+    Pause codes. The coordinator provides freshness-filtered MQTT state/name.
+    """
+    snapshot = data or {}
+    mqtt = snapshot.get("mqtt_vehicle_state")
+    if mqtt == 4:
+        return False
+    code = str(snapshot.get("state_code") or "").strip()
+    activity = str(snapshot.get("activity") or "").strip().lower()
+    if mqtt == 3:
+        named = str(snapshot.get("mqtt_named_state") or "").strip().lower()
+        if named == "ispaused":
+            return True
+        totals = snapshot.get("totals") or {}
+        pending_zones = _zone_ids(totals.get("task_zone_ids"))
+        # A fresh MQTT 3 observed during a known retained mowing task
+        # outranks an optimistic local mowing activity or stale cloud 0210.
+        if pending_zones and code in {"0210", *_RESUMABLE_VENDOR_PAUSED_STATES} and not snapshot.get("docked"):
+            return True
+    return code in _RESUMABLE_VENDOR_PAUSED_STATES or activity == ACTIVITY_PAUSED
+
+
+def ordered_run_matches_current_task(
+    data: dict[str, Any] | None,
+    ordered_run: dict[str, Any] | None,
+    *,
+    active_session: dict[str, Any] | None = None,
+) -> bool:
+    """Reject persisted ordered runs superseded by a newer vendor task.
+
+    Zone IDs are not task IDs: the same zone can be mowed again weeks later.
+    Require a valid run timestamp and reject a newer task start observed in
+    vendor zone coverage or the current active History session. Older vendor
+    timestamps are ignored because reset propagation can lag.
+    """
+    snapshot = data or {}
+    run = ordered_run or {}
+    stamp = str(run.get("started_at") or "")
+    try:
+        started = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        start_seconds = started.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+    totals = snapshot.get("totals") or {}
+    active_zone_ids = set(_zone_ids(totals.get("task_zone_ids")))
+    for row in snapshot.get("zone_states") or []:
+        if not isinstance(row, dict) or row.get("id") not in active_zone_ids:
+            continue
+        vendor_start = _as_float(row.get("vendor_start_time"))
+        if vendor_start and vendor_start > start_seconds + 300:
+            return False
+    session = active_session if isinstance(active_session, dict) else None
+    if session is not None:
+        current_start = str(session.get("started_at") or session.get("start_time") or "")
+        try:
+            actual = datetime.fromisoformat(current_start.replace("Z", "+00:00"))
+            if actual.tzinfo is None:
+                actual = actual.replace(tzinfo=UTC)
+            if actual.timestamp() > start_seconds + 300:
+                return False
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+    return True
 
 
 def _base_result(
@@ -196,10 +269,7 @@ def task_resume_decision(
     # activity. Map Card Resume must use c:behavior type=3 here rather than
     # repeatedly sending s:mower(reset=false) into an interrupted task.
     # A fresh MQTT mowing state (4) takes precedence over an older cloud pause.
-    vendor_paused = (
-        state_code in _RESUMABLE_VENDOR_PAUSED_STATES
-        or activity == ACTIVITY_PAUSED
-    ) and snapshot.get("mqtt_vehicle_state") != 4
+    vendor_paused = confirmed_paused_vendor_task(snapshot)
     if vendor_paused:
         return _base_result(
             available=True,
@@ -238,6 +308,11 @@ def task_resume_decision(
         and ordered_zone_ids
         and set(task_zone_ids).issubset(set(ordered_zone_ids))
     )
+    if ordered_resumable and ordered_matches_task and not ordered_run_matches_current_task(
+        snapshot, ordered_run, active_session=active
+    ):
+        ordered_resumable = False
+        evidence.append("ordered_run_superseded_by_newer_vendor_task")
     if ordered_resumable and ordered_matches_task:
         return _base_result(
             available=True,
@@ -318,9 +393,7 @@ def paused_mow_request_decision(
     """
     snapshot = data or {}
     state_code = str(snapshot.get("state_code") or "").strip()
-    if reset or state_code not in _RESUMABLE_VENDOR_PAUSED_STATES:
-        return "mow"
-    if snapshot.get("mqtt_vehicle_state") == 4:
+    if reset or not confirmed_paused_vendor_task(snapshot):
         return "mow"
 
     requested = _zone_ids(requested_zone_ids)
@@ -341,6 +414,8 @@ __all__ = [
     "RESUME_STRATEGY_ORDERED_RUN",
     "RESUME_STRATEGY_VENDOR",
     "guard_managed_schedule_resume",
+    "confirmed_paused_vendor_task",
+    "ordered_run_matches_current_task",
     "paused_mow_request_decision",
     "task_resume_decision",
 ]
