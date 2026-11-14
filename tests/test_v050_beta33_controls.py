@@ -83,6 +83,9 @@ def test_controls_use_one_paused_decision_and_recheck_before_replay():
     services = (ROOT / "services.py").read_text()
     mower = (ROOT / "lawn_mower.py").read_text()
     coordinator = (ROOT / "coordinator.py").read_text()
+    assert 'if not confirmed_paused_vendor_task(command_snapshot):' in services
+    assert 'if mqtt_state == 4 or activity == ACTIVITY_MOWING:' in services
+    assert 'if mqtt_state == 5 or activity == ACTIVITY_RETURNING:' in services
     assert 'paused_action = paused_mow_request_decision(' in services
     assert 'if not ordered_run_matches_current_task(' in services
     assert 'if confirmed_paused_vendor_task(self.data):' in mower
