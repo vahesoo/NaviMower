@@ -1,6 +1,7 @@
 """beta33: MQTT/cloud pause agreement and retained task identity."""
 from __future__ import annotations
 
+import ast
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -91,3 +92,17 @@ def test_controls_use_one_paused_decision_and_recheck_before_replay():
     assert 'if confirmed_paused_vendor_task(self.data):' in mower
     assert 'snapshot["mqtt_named_state"] = self._fresh_mqtt_named_state()' in coordinator
     assert 'snapshot["activity"] = ACTIVITY_PAUSED' in coordinator
+
+def test_mow_returning_guard_has_bound_activity_constant() -> None:
+    """The RETURNING safety guard must resolve its name at runtime."""
+    tree = ast.parse((ROOT / "services.py").read_text(encoding="utf-8"))
+    imported_constants = {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 1
+        and node.module == "const"
+        for alias in node.names
+    }
+    assert "ACTIVITY_RETURNING" in imported_constants
+
