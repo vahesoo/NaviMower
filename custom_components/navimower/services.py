@@ -12,6 +12,7 @@ from homeassistant.helpers import device_registry as dr
 from .runtime import install_runtime_extensions
 from .const import (
     ACTIVITY_MOWING,
+    ACTIVITY_RETURNING,
     DOMAIN,
     OPT_CHANNELS,
     encode_partition_ids,
