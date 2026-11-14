@@ -19,7 +19,7 @@ def test_paused_returning_start_resumes_existing_task() -> None:
     assert 'source="lawn_mower.start_mowing_paused"' in source
     assert "async_resume_task(" in source
     assert "client.mow_zones" in source
-    assert source.index("if state_code in _RESUMABLE_PAUSED_STATES:") < source.index(
+    assert source.index("if confirmed_paused_vendor_task(self.data):") < source.index(
         "client.mow_zones"
     )
 
