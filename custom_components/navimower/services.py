@@ -294,10 +294,15 @@ def async_setup_services(hass: HomeAssistant) -> None:
                     "The mower is already mowing. Pause or dock before "
                     "starting a different mowing task."
                 )
-            if mqtt_state == 5 or activity == ACTIVITY_RETURNING:
+            # The official app permits a selected-zone Mow during the trip
+            # home after the paused task was cancelled with Dock. Require
+            # fresh MQTT vehicleState=5; an optimistic/stale activity label
+            # is not enough to authorize a new task.
+            if activity == ACTIVITY_RETURNING and mqtt_state != 5:
                 raise ServiceValidationError(
-                    "The mower is returning to dock. Wait for docking "
-                    "before starting another mowing task."
+                    "The mower is returning to dock, but fresh MQTT has not "
+                    "confirmed it yet. Wait for the return state before "
+                    "starting another mowing task."
                 )
         paused_action = paused_mow_request_decision(
             command_snapshot, requested_zones, reset=call.data["reset"],
