@@ -86,7 +86,8 @@ def test_controls_use_one_paused_decision_and_recheck_before_replay():
     coordinator = (ROOT / "coordinator.py").read_text()
     assert 'if not confirmed_paused_vendor_task(command_snapshot):' in services
     assert 'if mqtt_state == 4 or activity == ACTIVITY_MOWING:' in services
-    assert 'if mqtt_state == 5 or activity == ACTIVITY_RETURNING:' in services
+    assert 'if activity == ACTIVITY_RETURNING and mqtt_state != 5:' in services
+    assert 'if mqtt_state == 5 or activity == ACTIVITY_RETURNING:' not in services
     assert 'paused_action = paused_mow_request_decision(' in services
     assert 'if not ordered_run_matches_current_task(' in services
     assert 'if confirmed_paused_vendor_task(self.data):' in mower
@@ -105,4 +106,17 @@ def test_mow_returning_guard_has_bound_activity_constant() -> None:
         for alias in node.names
     }
     assert "ACTIVITY_RETURNING" in imported_constants
+
+
+def test_native_cancel_allows_fresh_returning_mow_but_not_stale_return():
+    """H215: Dock 2 changes Paused to MQTT 5; a new reset Mow can then start."""
+    source = (ROOT / "services.py").read_text()
+    guard = source.split("if not confirmed_paused_vendor_task(command_snapshot):", 1)[1]
+    guard = guard.split("paused_action = paused_mow_request_decision(", 1)[0]
+    assert 'if activity == ACTIVITY_RETURNING and mqtt_state != 5:' in guard
+    assert '"The mower is returning to dock, but fresh MQTT has not "' in guard
+    assert 'if mqtt_state == 4 or activity == ACTIVITY_MOWING:' in guard
+    # Important: a new Mow is not translated into a vendor Resume or Dock.
+    assert 'coordinator.client.dock' not in guard
+    assert 'coordinator.client.resume' not in guard
 
